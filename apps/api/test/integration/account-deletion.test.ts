@@ -1,5 +1,7 @@
-import { randomBytes } from "node:crypto";
-import { existsSync } from "node:fs";
+import { randomBytes, randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { count, eq, sql } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -15,6 +17,7 @@ import { passwordSignIn } from "../../src/auth/flows/password";
 import { signIn } from "../../src/auth/flows/signin";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
+import { createImports, importSettingsFrom } from "../../src/imports";
 import { MemoryJobLock } from "../../src/lib/jobs";
 import { mediaForAccount } from "../../src/media";
 import { status } from "../../src/media/flows/status";
@@ -27,7 +30,8 @@ import { profile } from "../../src/social/flows/profiles";
 import { latestTimeline } from "../../src/social/flows/timelines";
 import { flowHarness, newTestDevice, onboardedUser, type FlowHarness } from "./flow-harness";
 import { mediaHarness, type MediaHarness } from "./media-harness";
-import { suspendRowForTest } from "./moderation-fixtures";
+import { importCounts } from "./imports-harness";
+import { suspendRowForTest, untilBlocked } from "./moderation-fixtures";
 import { rejection, socialHarness, type SocialHarness } from "./social-harness";
 
 const newHandle = () => `d_${randomBytes(5).toString("hex")}`;
@@ -49,6 +53,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
   let h: FlowHarness;
   let m: MediaHarness;
   let s: SocialHarness;
+  /** 3b Task 6: the import tables' rows before the file's first test, which the purges must leave as they found them. */
+  let importRows: Record<string, number>;
 
   beforeAll(async () => {
     const config = loadConfig();
@@ -56,6 +62,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     authDb = createDb(config.DATABASE_URL_AUTH, { max: 4 });
     migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     authRepo = createAuthRepo(authDb);
+    importRows = await importCounts(apiDb);
     h = flowHarness(authRepo, { profiles: createProfileStore(apiDb) });
     m = await mediaHarness(apiDb);
     s = socialHarness(apiDb, {
@@ -375,6 +382,91 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     }
   });
 
+  test("3b Task 6: the purge clears every import column as it tombstones (a disabled post's too), then deletes the account's imports and import key in its transaction, and asks for their files after the commit; a batch waiting at the profile's lock writes nothing", async () => {
+    const owner = await account();
+    const userId = owner.user.id;
+    const root = mkdtempSync(path.join(tmpdir(), "korbat-purge-imports-"));
+    // The imports module over volumes of this test's own; the purge reaches only its interface for the account module.
+    const imports = createImports({
+      apiDb,
+      archivesDir: path.join(root, "archives"),
+      workDir: path.join(root, "work"),
+      settings: importSettingsFrom(loadConfig()),
+      auth: {} as never,
+      social: {} as never,
+      media: {} as never,
+      moderation: {} as never,
+      profiles: {} as never,
+      rateLimitStore: new MemoryStore(),
+      requireSession: async (_c, next) => next(),
+      logger: pino({ level: "silent" }),
+    });
+    await imports.prepare();
+    try {
+      const [done, publishing] = [randomUUID(), randomUUID()];
+      const choice = JSON.stringify({ from: null, to: null, replies: false, warnings: false, protected: false, images: false, long: "leave" });
+      // As the migrator: the account's key, a done import with two posts (one disabled for an order) and one that publishes.
+      await migrateDb.execute(sql`insert into import_keys (owner_id, key) values (${userId}::uuid, ${randomBytes(32)}::bytea)`);
+      await migrateDb.execute(sql`
+        insert into import_jobs (id, owner_id, source, status, declared_bytes, received_bytes, uploaded_at, scanned_at, confirmed_at, ended_at, choice, stated_at, posts_published)
+        values (${done}::uuid, ${userId}::uuid, 'mastodon', 'done', 10, 10, now(), now(), now(), now(), ${choice}::jsonb, now(), 2),
+               (${publishing}::uuid, ${userId}::uuid, 'x', 'publishing', 10, 10, now(), now(), now(), null, ${choice}::jsonb, now(), 0)`);
+      await migrateDb.execute(sql`update import_jobs set seed = ${randomBytes(32)}::bytea where id = ${publishing}::uuid`);
+      const [shown, disabled] = [randomUUID(), randomUUID()];
+      await migrateDb.execute(sql`
+        insert into posts (id, author_id, body, created_at, import_job_id, import_source, original_created_at, import_shortened, import_key)
+        values (${shown}::uuid, ${userId}::uuid, 'imported one', now(), ${done}::uuid, 'mastodon', '2019-03-03T12:00:00Z', false, ${randomBytes(32)}::bytea),
+               (${disabled}::uuid, ${userId}::uuid, 'imported two', now(), ${done}::uuid, 'mastodon', '2019-03-04T12:00:00Z', true, ${randomBytes(32)}::bytea)`);
+      await migrateDb.execute(sql`update posts set state = 'disabled', moderation_level = 'disabled' where id = ${disabled}::uuid`);
+      await migrateDb.execute(sql`update profiles set post_count = 2 where id = ${userId}::uuid`);
+      await authRepo.markDeleted(userId, new Date());
+
+      // A batch of the publishing import comes while the purge holds the profile's row: it waits there, and then finds the
+      // account deleted and its import gone, and writes nothing.
+      let waiting: Promise<string | null> | null = null;
+      const marker = `waiting batch ${randomUUID()}`;
+      const purging: AccountDeps = {
+        ...deps(),
+        imports: {
+          ...imports.forAccount,
+          purgeOwner: async (tx, id) => {
+            waiting = rejection(
+              s.repo.publishImportedBatch(
+                { id: publishing, ownerId: userId, source: "x", cursor: 0 },
+                { lines: 1, posts: [{ id: randomUUID(), parentId: null, body: marker, originalCreatedAt: "2019-03-05T12:00:00Z", shortened: false, key: randomBytes(32).toString("hex"), images: [] }] },
+                new Date(),
+                async () => undefined,
+              ),
+            );
+            await untilBlocked(apiDb, "as suspended from profiles where id");
+            return imports.forAccount.purgeOwner(tx, id);
+          },
+        },
+      };
+      expect(await purge(purging, userId)).toBe("purged");
+      expect(await waiting).toBe("not_found");
+      // Every post a tombstone with nothing of its source, the disabled one too; no import row and no key is left.
+      for (const id of [shown, disabled]) {
+        const [row] = await migrateDb.execute<{ state: string; body: string; job: string | null; source: string | null; original: string | null; shortened: boolean | null; key: string | null }>(
+          sql`select state::text as state, body, import_job_id as job, import_source::text as source, original_created_at::text as original, import_shortened as shortened, encode(import_key, 'hex') as key
+                from posts where id = ${id}::uuid`,
+        );
+        expect(row, id).toEqual({ state: "deleted_by_author", body: "", job: null, source: null, original: null, shortened: null, key: null });
+      }
+      const [left] = await migrateDb.execute<{ jobs: number; keys: number; written: number }>(
+        sql`select (select count(*)::int from import_jobs where owner_id = ${userId}::uuid) as jobs, (select count(*)::int from import_keys where owner_id = ${userId}::uuid) as keys,
+                   (select count(*)::int from posts where body = ${marker}) as written`,
+      );
+      expect(left).toEqual({ jobs: 0, keys: 0, written: 0 });
+      // After the commit, each import's work folder is asked of the importer.
+      for (const id of [done, publishing]) expect(existsSync(imports.deps.files.archives.deletion(id)), id).toBe(true);
+      // A second purge changes nothing.
+      expect(await purge(purging, userId)).toBe("none");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("3f: a hold older than reportHoldDays reads as not held, and REPORT_HOLD off purges a held address at once, as 1b did", async () => {
     const aged = await account();
     const off = await account();
@@ -392,5 +484,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     } finally {
       await migrateDb.execute(sql`delete from auth.report_holds where user_id = any(${`{${aged.user.id},${off.user.id}}`}::uuid[])`);
     }
+  });
+
+  test("3b Task 6: this file left no import row behind: the purges deleted what they found", async () => {
+    expect(await importCounts(apiDb)).toEqual(importRows);
   });
 });

@@ -14,6 +14,7 @@ const post = (n: number, extra: Record<string, unknown> = {}) => ({
   counts: { likes: 3, reposts: 1, replies: 0, quotes: 0 },
   media: [],
   quoteOf: null,
+  imported: null,
   ...extra,
 });
 const at = "2026-09-28T12:05:00.000Z";
@@ -135,10 +136,11 @@ describe("the Explore page", () => {
 });
 
 describe("the author's Explore status", () => {
-  test("names one of thirteen reasons, in the order the status route tries them: suspended after not_visible (3e)", () => {
+  test("names one of fourteen reasons, in the order the status route tries them: suspended after not_visible (3e), imported after quote (3b)", () => {
     expect(ExploreStatusKind.options).toEqual([
       "reply",
       "quote",
+      "imported",
       "not_visible",
       "suspended",
       "hidden_by_author",

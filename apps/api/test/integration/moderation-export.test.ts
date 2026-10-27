@@ -97,8 +97,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the export's moderation 
     const raw = JSON.parse(text) as Record<string, unknown>;
     const json = ExportFormat.parse(raw);
     expect(raw).toStrictEqual(json);
-    // The member is the document's last.
-    expect(Object.keys(raw).at(-1)).toBe("moderation");
+    // The member is the document's last but 3b's imports, which follow it (3b Task 6, 11.2).
+    expect(Object.keys(raw).slice(-2)).toEqual(["moderation", "imports"]);
     return { entries: Object.keys(files).sort(), text, json };
   }
 

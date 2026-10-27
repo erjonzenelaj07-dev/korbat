@@ -39,6 +39,7 @@ const post = (extra: Record<string, unknown> = {}) => ({
   counts: { likes: 0, reposts: 0, replies: 0, quotes: 0 },
   media: [],
   quoteOf: null,
+  imported: null,
   ...extra,
 });
 

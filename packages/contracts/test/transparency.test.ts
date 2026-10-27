@@ -50,7 +50,7 @@ describe("the public figures' contracts (3d Task 4)", () => {
     }
   });
 
-  test("RECIPIENT_READ_ROUTES are the seven signed-out reads of the social module", () => {
+  test("RECIPIENT_READ_ROUTES are the eight signed-out reads of the social module: 3d's seven and 3b's Imported tab", () => {
     expect([...RECIPIENT_READ_ROUTES]).toEqual([
       "GET /api/posts/:id",
       "GET /api/posts/:id/thread",
@@ -59,6 +59,7 @@ describe("the public figures' contracts (3d Task 4)", () => {
       "GET /api/profiles/:handle",
       "GET /api/profiles/:handle/posts",
       "GET /api/profiles/:handle/replies",
+      "GET /api/profiles/:handle/imported",
     ]);
   });
 

@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
 import type { AuthForAccount } from "../auth";
+import type { ImportsForAccount } from "../imports";
 import type { MediaForAccount } from "../media";
 import type { ModerationForAccount } from "../moderation";
 import type { RateLimitStore } from "../middleware/rate-limit";
@@ -49,6 +50,12 @@ export interface AccountDeps {
    * may leave it out: the purge then skips those steps, and the export writes the member with two empty lists.
    */
   moderation?: ModerationForAccount;
+  /**
+   * 3b Task 6 (design, sections 4.7 and 11.2): the purge's step for the account's imports and import key, inside the social
+   * purge's transaction, with their files after it; and the export's member `imports`. The server always hands it over; a
+   * test of the other steps may leave it out: the purge then deletes no import row, and the export's member is empty.
+   */
+  imports?: ImportsForAccount;
   limits: RateLimitStore;
   log: Logger;
   now: () => Date;

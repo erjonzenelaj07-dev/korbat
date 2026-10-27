@@ -63,6 +63,8 @@ export async function exploreStatus(deps: SocialDeps, viewer: string, postId: st
   // Replies and quotes never enter.
   if (facts.reply) return answer("reply");
   if (facts.quote) return answer("quote");
+  // 3b (decision 8): an imported post enters no feed on its own, Explore included.
+  if (facts.imported) return answer("imported");
   // Withheld, removed or deleted: out for every reader, its author too.
   if (!facts.visible) return answer("not_visible");
   // The author's account is suspended now: its posts are out of the page and the chip at this read, listed or not.

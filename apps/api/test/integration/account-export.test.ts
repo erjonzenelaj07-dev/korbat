@@ -1,5 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { sql } from "drizzle-orm";
 import { strFromU8, unzipSync } from "fflate";
 import pino from "pino";
@@ -18,6 +20,7 @@ import { registerOptions, registerVerify } from "../../src/auth/passkeys/flows";
 import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import type { Session } from "../../src/auth/sessions";
 import { loadConfig } from "../../src/config";
+import { createImports, importSettingsFrom } from "../../src/imports";
 import { mediaForAccount } from "../../src/media";
 import { status } from "../../src/media/flows/status";
 import { upload } from "../../src/media/flows/upload";
@@ -29,6 +32,7 @@ import { createPost, deletePost } from "../../src/social/flows/posts";
 import { SoftAuthenticator, type SoftFlags } from "../auth/soft-authenticator";
 import { TEST_TERMS, flowHarness, onboardedUser, type FlowHarness } from "./flow-harness";
 import { mediaHarness, type MediaHarness } from "./media-harness";
+import { importCounts } from "./imports-harness";
 import { leavesNoModerationRows } from "./moderation-decide";
 import { retireHandleForTest } from "./moderation-fixtures";
 import { newPost } from "./social-fixtures";
@@ -64,6 +68,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
   let h: FlowHarness;
   let m: MediaHarness;
   let s: SocialHarness;
+  /** 3b Task 6: the import tables' rows before the file's first test. */
+  let importRows: Record<string, number>;
 
   beforeAll(async () => {
     const config = loadConfig();
@@ -72,6 +78,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     // 3e: only the migrator can retire a handle, as a decision does.
     migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     authRepo = createAuthRepo(authDb);
+    importRows = await importCounts(apiDb);
     h = flowHarness(authRepo);
     m = await mediaHarness(apiDb);
     s = socialHarness(apiDb, {
@@ -308,6 +315,66 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     // Lifted, as unretire_handle clears it: the handle is the account's again and the list is empty.
     await migrateDb.execute(sql`update handle_history set retired_at = null where handle_lower = ${handle}`);
     expect((await read()).profile.retiredHandles).toEqual([]);
+  });
+
+  test("3b Task 6 (11.2): an imported post carries its source, the archive's date and its mark, a deleted one none; the document ends with the account's imports, newest first, with their choice and counts", async () => {
+    const owner = await account();
+    const userId = owner.user.id;
+    const root = mkdtempSync(path.join(tmpdir(), "korbat-export-imports-"));
+    const imports = createImports({
+      apiDb,
+      archivesDir: path.join(root, "archives"),
+      workDir: path.join(root, "work"),
+      settings: importSettingsFrom(loadConfig()),
+      auth: {} as never,
+      social: {} as never,
+      media: {} as never,
+      moderation: {} as never,
+      profiles: {} as never,
+      rateLimitStore: new MemoryStore(),
+      requireSession: async (_c, next) => next(),
+      logger: pino({ level: "silent" }),
+    });
+    const [done, cancelled] = [randomUUID(), randomUUID()];
+    const [kept, deleted] = [randomUUID(), randomUUID()];
+    const choice = { from: "2019-01", to: null, replies: true, warnings: false, protected: false, images: false, long: "shorten" };
+    try {
+      // As the migrator: a published import, confirmed with its choice, and an older one cancelled before any choice.
+      await migrateDb.execute(sql`
+        insert into import_jobs (id, owner_id, source, status, declared_bytes, received_bytes, created_at, uploaded_at, scanned_at, confirmed_at, ended_at, choice, stated_at, posts_published, posts_removed)
+        values (${done}::uuid, ${userId}::uuid, 'mastodon', 'done', 10, 10, now() - interval '1 day', now(), now(), now(), now(), ${JSON.stringify(choice)}::jsonb, now() - interval '1 hour', 2, 0),
+               (${cancelled}::uuid, ${userId}::uuid, 'x', 'cancelled', 10, 0, now() - interval '2 days', null, null, null, now() - interval '2 days', null, null, 0, 0)`);
+      await migrateDb.execute(sql`
+        insert into posts (id, author_id, body, created_at, import_job_id, import_source, original_created_at, import_shortened, import_key)
+        values (${kept}::uuid, ${userId}::uuid, 'kept from the archive', now(), ${done}::uuid, 'mastodon', '2019-03-03T12:00:00Z', true, ${randomBytes(32)}::bytea),
+               (${deleted}::uuid, ${userId}::uuid, 'deleted later', now(), ${done}::uuid, 'mastodon', '2019-03-04T12:00:00Z', false, ${randomBytes(32)}::bytea)`);
+      await migrateDb.execute(sql`update profiles set post_count = 2 where id = ${userId}::uuid`);
+      // The author deletes one from its menu: its tombstone keeps nothing of its source.
+      await deletePost(s.deps, userId, deleted);
+      const text = await collect(exportJson(await buildExport({ ...deps(), imports: imports.forAccount }, userId, owner.session.handle, new Date())));
+      const document = ExportFormat.parse(JSON.parse(text));
+      expect(Object.keys(JSON.parse(text) as object).at(-1)).toBe("imports");
+      const byId = new Map(document.posts.map((post) => [post.id, post]));
+      expect(byId.get(kept)!.imported).toEqual({ source: "mastodon", originalCreatedAt: "2019-03-03T12:00:00.000Z", shortened: true });
+      expect(byId.get(deleted)!).toMatchObject({ state: "deleted_by_author", body: "", imported: null });
+      expect(document.imports.map((entry) => [entry.id, entry.status, entry.source])).toEqual([
+        [done, "done", "mastodon"],
+        [cancelled, "cancelled", "x"],
+      ]);
+      expect(document.imports[0]).toMatchObject({ choice, counts: { postsPublished: 2, postsRemoved: 0, imagesKept: 0, imagesLeftOut: 0 } });
+      expect(document.imports[0]!.statedAt).not.toBeNull();
+      expect(document.imports[1]).toMatchObject({ choice: null, statedAt: null });
+      // Never a file, an archive's name or a handle: the entries hold the format's members alone.
+      expect(Object.keys((JSON.parse(text) as { imports: object[] }).imports[0]!)).toEqual(["id", "source", "status", "createdAt", "endedAt", "statedAt", "choice", "counts"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      await migrateDb.execute(sql`delete from posts where id in (${kept}::uuid, ${deleted}::uuid)`);
+      await migrateDb.execute(sql`delete from import_jobs where id in (${done}::uuid, ${cancelled}::uuid)`);
+    }
+  });
+
+  test("3b Task 6: this file left no import row behind", async () => {
+    expect(await importCounts(apiDb)).toEqual(importRows);
   });
 
   leavesNoModerationRows(() => apiDb);

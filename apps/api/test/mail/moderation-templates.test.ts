@@ -5,7 +5,7 @@ import type { MailMessage, NoticeUpdateData, NoticeUpdateLine, TemplateName } fr
 import { MemoryMailer } from "../../src/mail/memory";
 import { TICK_MAILED_KINDS } from "../../src/moderation/alerts";
 import { ACCOUNT_DELETED_HELD, DECISION_MAIL_SUBJECTS, renderMail, renderNoticeUpdate, renderTemplate } from "../../src/mail/templates";
-import { IMAGE_LOST_NOTICE, RELEASE_NOTICE, STATEMENT_WORDS, UPLOAD_NOTICE, releaseNoticeParagraphs } from "@korbat/rules";
+import { IMAGE_LOST_NOTICE, RELEASE_NOTICE, STATEMENT_WORDS, UPLOAD_NOTICE, getRule, releaseNoticeParagraphs } from "@korbat/rules";
 
 /**
  * The mails of deciding and of the dispatch (3c design, section 7.15): the author's statement, the staff alerts for a
@@ -25,7 +25,7 @@ function linkless(r: { text: string; html: string }) {
 }
 
 describe("the closed union of templates", () => {
-  test("holds the templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3, the three of its Task 4, the two of its Task 5, the five staff mails of 3f's Task 1, the three of its Task 2, the six of its Task 3, the two of its Task 6 and the two of its Task 5 that its review joined, and 3b Task 5's", () => {
+  test("holds the templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3, the three of its Task 4, the two of its Task 5, the five staff mails of 3f's Task 1, the three of its Task 2, the six of its Task 3, the two of its Task 6 and the two of its Task 5 that its review joined, 3b Task 5's and 3b Task 6's", () => {
     // Every name is written out: a template added or dropped changes this list.
     const names = [
       "sign_in_code", "sign_up_code", "reauth_code", "new_device", "account_locked", "mfa_enabled", "mfa_disabled", "password_changed", "recovery_codes_regenerated", "sessions_revoked_all",
@@ -56,11 +56,13 @@ describe("the closed union of templates", () => {
       "head_unmailed",
       // 3b Task 5: imported images whose match does not act were left out.
       "import_image_flagged",
+      // 3b Task 6: an admin ended the person's whole import.
+      "import_ended_by_staff",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(78);
+    expect(new Set(names).size).toBe(79);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(78);
+    expect(Object.keys(all)).toHaveLength(79);
   });
 });
 
@@ -757,6 +759,19 @@ describe("3d Task 7: the known material's mails (W.7, W.8)", () => {
     expect(r.text).not.toMatch(/https?:|www[.]|:[/][/]/);
     expect(r.html).not.toMatch(/<img|<a |href=|https?:/);
     expect(() => renderTemplate("upload_refused", {})).toThrow(/notice/);
+  });
+
+  test("3b Task 6: import_ended_by_staff names the rule by its id and title and where to appeal, and nothing of the posts, the source or the staff member", () => {
+    const r = renderTemplate("import_ended_by_staff", { rule: "R6" });
+    expect(r.subject).toBe("korbat removed the posts of one of your imports");
+    expect(paragraphs(r.text)).toEqual([
+      `korbat's staff removed the posts of one of your imports under R6 (${getRule("R6")!.title}). The posts are being removed now, as when you remove an import yourself.`,
+      "You can appeal the decision on its case: in korbat, under Settings, Cases.",
+      LAST_USER,
+    ]);
+    expect(r.html).not.toMatch(/<img|<a |href=|https?:/);
+    expect(() => renderTemplate("import_ended_by_staff", { rule: "R9" })).toThrow(/rule/);
+    expect(() => renderTemplate("import_ended_by_staff", {})).toThrow(/rule/);
   });
 
   test("upload_hold_lifted: the end's paragraph and the same last paragraph without the objection", () => {

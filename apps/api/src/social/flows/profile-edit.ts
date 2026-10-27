@@ -31,7 +31,8 @@ export async function editProfile(deps: SocialDeps, viewer: string, input: Profi
   }
   // The event says that the profile changed, not what it says now: the events table holds no content.
   await deps.events?.append(viewer, "profile_updated");
-  return profileView(await own(deps, viewer));
+  const row = await own(deps, viewer);
+  return profileView(row, await deps.repo.hasImported(row.id));
 }
 
 /**
@@ -67,5 +68,6 @@ export async function changeHandle(deps: SocialDeps, viewer: string, input: Hand
     throw new SocialError("not_found", 404);
   }
   await deps.events?.append(viewer, "handle_changed", { from: result.from, to });
-  return profileView(await own(deps, viewer));
+  const row = await own(deps, viewer);
+  return profileView(row, await deps.repo.hasImported(row.id));
 }

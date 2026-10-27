@@ -431,7 +431,7 @@ const linkedReporter = (item: CaseItemRow): string | null => (item.intakeKind ==
  * The case as staff read it: what is, never what its senders are told (the status page keeps a live target from a dead
  * one; this answer does not). It writes nothing: readCase logs the read and holds it to the day's limit.
  */
-export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "media" | "config" | "now">, session: ActiveStaffSession, row: CaseRow): Promise<CaseView> {
+export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "media" | "config" | "now" | "imports">, session: ActiveStaffSession, row: CaseRow): Promise<CaseView> {
   const q = deps.apiDb;
   const origin = deps.config.APP_ORIGIN;
 
@@ -442,7 +442,11 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
   let authorId: string | null;
   if (row.targetType === "post") {
     const post = await livePost(q, row.targetId);
-    target = { type: "post", id: row.targetId, link: postLink(origin, row.targetId), authorHandle: post?.authorHandle ?? null, state: post?.state ?? null, level: post?.level ?? null };
+    // 3b (8.7): an imported post's label and its import's size, read through the imports module's interface (the
+    // orchestrator's ruling): the post's own columns name the import while they hold it.
+    const size = post?.imported && deps.imports ? await deps.imports.importSize(post.imported.importId) : null;
+    const imported = post?.imported && size !== null ? { source: post.imported.source, at: post.imported.at, importId: post.imported.importId, importSize: size, importedAt: post.imported.importedAt } : null;
+    target = { type: "post", id: row.targetId, link: postLink(origin, row.targetId), authorHandle: post?.authorHandle ?? null, state: post?.state ?? null, level: post?.level ?? null, imported };
     imagesAllowed = post?.imagesAllowed ?? false;
     authorId = post?.authorId ?? null;
   } else {

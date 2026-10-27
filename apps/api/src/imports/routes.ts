@@ -8,7 +8,7 @@ import { ImportError, type ImportDeps } from "./context";
 import { receiveChunk } from "./flows/chunk";
 import { createImport } from "./flows/create";
 import { confirmImport } from "./flows/confirm";
-import { cancelImport, stopImport } from "./flows/end";
+import { cancelImport, stopImport, undoImport } from "./flows/end";
 import { linesPage, mediaFile, pickLine } from "./flows/picks";
 import { importView } from "./view";
 
@@ -24,7 +24,7 @@ export interface ImportList {
  * The imports routes (3b design, section 9.2), mounted at /api/imports after the session's resolution. `guard` is the auth
  * module's requireSession: an onboarded account, with CSRF and Origin checked for cookie sessions. Every route is the
  * owner's only: an import of anyone else is not_found. The chunk route's body is the raw chunk, which app.ts leaves out
- * of the JSON body limit and no validator reads first; it is streamed, never parsed. Undo comes with Task 6.
+ * of the JSON body limit and no validator reads first; it is streamed, never parsed.
  */
 export function importRoutes(deps: ImportDeps, guard: MiddlewareHandler<AppEnv>) {
   const r = new Hono<AppEnv>();
@@ -97,6 +97,8 @@ export function importRoutes(deps: ImportDeps, guard: MiddlewareHandler<AppEnv>)
   // 3b Task 5 (4.5, 4.6): the confirmation with the choice and the statement, and the Stop while preparing or publishing.
   r.post("/:id/confirm", guard, async (c) => c.json(await confirmImport(deps, me(c), importId(c), await json(c))));
   r.post("/:id/stop", guard, async (c) => c.json(await stopImport(deps, me(c), importId(c))));
+  // 3b Task 6 (4.6): "Remove imported posts", on a done import or a stopped one with posts.
+  r.post("/:id/undo", guard, async (c) => c.json(await undoImport(deps, me(c), importId(c))));
 
   return r;
 }

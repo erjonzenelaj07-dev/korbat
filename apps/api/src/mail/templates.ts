@@ -1,5 +1,5 @@
 import { ACCOUNT_DELETION_WORDS, REPLY_AIM_HOURS, isTimeFact, renderAlert, type AlertKind } from "@korbat/contracts";
-import { IMAGE_LOST_NOTICE, STATEMENT_WORDS, UPLOAD_NOTICE, releaseNoticeParagraphs } from "@korbat/rules";
+import { IMAGE_LOST_NOTICE, STATEMENT_WORDS, UPLOAD_NOTICE, getRule, releaseNoticeParagraphs } from "@korbat/rules";
 import type { FlatTemplateName, MailMessage, NoticeUpdateData } from "./mailer";
 
 export interface RenderedMail {
@@ -503,6 +503,17 @@ export function renderTemplate(template: FlatTemplateName, data: Record<string, 
       // 3d Task 7 (design, sections 7.12 step 1 and 7.15; W.8): UPLOAD_NOTICE's paragraphs as they stand at sending, one per
       // line as the app's screen renders them, then where to read it and object. No link, no file, no hash.
       return userMail("korbat did not accept an image you uploaded", [...need(data, "notice").split(String.fromCharCode(10)), UPLOAD_NOTICE.mailRead]);
+    case "import_ended_by_staff": {
+      // 3b Task 6 (design, sections 8.7 and 10.9, import.endedByStaff): the rule by its id and title, and where to appeal.
+      // No post, no source, no staff member and no link: the person reads the decision on its case in korbat.
+      const rule = need(data, "rule");
+      const title = getRule(rule)?.title;
+      if (title === undefined) throw new Error(`mail template data holds a rule that import_ended_by_staff does not have: "${rule}"`);
+      return userMail("korbat removed the posts of one of your imports", [
+        `korbat's staff removed the posts of one of your imports under ${rule} (${title}). The posts are being removed now, as when you remove an import yourself.`,
+        "You can appeal the decision on its case: in korbat, under Settings, Cases.",
+      ]);
+    }
     case "upload_hold_lifted":
       // Sent once a hold ended as no_report has passed its delay and the end still stands: the end's paragraph.
       return userMail("korbat lifted the hold on an image you uploaded", [...need(data, "notice").split(String.fromCharCode(10)), UPLOAD_NOTICE.mailReadLifted]);

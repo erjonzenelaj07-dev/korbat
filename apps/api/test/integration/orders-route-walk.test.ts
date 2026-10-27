@@ -7,7 +7,8 @@ import { authorCases, authorDecisionView, authorFacts, exportedDecisions } from 
 import { deletePost, getPost, thread } from "../../src/social/flows/posts";
 import { setEngagement } from "../../src/social/flows/engagement";
 import { exportProfile } from "../../src/social/flows/export";
-import { profilePosts } from "../../src/social/flows/timelines";
+import { profileImported, profilePosts } from "../../src/social/flows/timelines";
+import { IMPORT_TABLES } from "./imports-harness";
 import { mediaHarness, type MediaHarness } from "./media-harness";
 import { CHANNEL_TABLES, aPost, act, decideIn, ground, intake, newTestStaff, removeFixtures, rowCounts, staffProfile, type TestStaff } from "./moderation-fixtures";
 import { noticesWorld, type NoticesWorld } from "./notices-harness";
@@ -41,11 +42,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a disabled post, walked 
     admin = await newTestStaff(w.authDb, w.migrateDb, w.repo, "admin");
     await staffProfile(w.apiDb, moderator);
     await staffProfile(w.apiDb, admin);
-    before = await rowCounts(w.apiDb, [...ORDER_TABLES, ...CHANNEL_TABLES]);
+    before = await rowCounts(w.apiDb, [...ORDER_TABLES, ...CHANNEL_TABLES, ...IMPORT_TABLES]);
   }, 60_000);
   afterAll(async () => {
     media?.cleanup();
-    expect(await rowCounts(w.apiDb, [...ORDER_TABLES, ...CHANNEL_TABLES])).toEqual(before);
+    expect(await rowCounts(w.apiDb, [...ORDER_TABLES, ...CHANNEL_TABLES, ...IMPORT_TABLES])).toEqual(before);
     await removeFixtures(w.migrateDb, [moderator.id, admin.id]);
     await closeNotifyFixtures();
     await w.close();
@@ -96,13 +97,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: a disabled post, walked 
           post: (viewer: string | null) => outcome(() => getPost(social, viewer, m.postId)),
           thread: (viewer: string | null) => outcome(() => thread(social, viewer, m.postId, { limit: 20 })),
           listed: async (viewer: string | null) => ((await profilePosts(social, viewer, m.author.handle, { limit: 50 })).items.some((item) => JSON.stringify(item).includes(m.postId)) ? "listed" : "absent"),
+          // 3b Task 6 (design, section 8.6): the Imported tab, the new reader of 9.2, walked with the others.
+          imported: async (viewer: string | null) => ((await profileImported(social, viewer, m.author.handle, { limit: 50 })).items.some((item) => JSON.stringify(item).includes(m.postId)) ? "listed" : "absent"),
           image: async (viewer: string | null) => (await serve(media!.deps, { id: m.mediaIds[0]!, size: "small", ifNoneMatch: undefined, viewer: async () => viewer })).kind,
         };
         for (const [name, read] of Object.entries(readers)) {
           const answers = await Promise.all(viewers.map((viewer) => read(viewer)));
           expect(answers, `post ${index}: ${name}`).toEqual([answers[1], answers[1], answers[1]]);
           expect(answers[0], `post ${index}: ${name}`).not.toBe("answered");
-          if (name === "listed") expect(answers[0], `post ${index}: ${name}`).toBe("absent");
+          if (name === "listed" || name === "imported") expect(answers[0], `post ${index}: ${name}`).toBe("absent");
           if (name === "image") expect(answers[0], `post ${index}: ${name}`).toBe("not_found");
         }
         // Writing to it: like, bookmark, and the author's own deletion, all as for a post that does not exist.

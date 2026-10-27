@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Email, OpaqueId, TurnstileToken } from "./auth";
 import { hex, sha256, sha256Bytes, sortedJson, utf8 } from "./canonical";
+import { ImportSource } from "./imports";
 import { EDGE_RULES, EdgePurgeView, MediaId } from "./media";
 import { ALERT_CHANNEL_STATES, GAP_CLASSES, GAP_DISPOSITIONS, ORDER_RULES, OrderNoticeFacts, OrderTexts, OrdersUnverified, ReportsOwed, type OrderGround } from "./orders";
 import { AUTOMATION_RULES, MATCH_ANSWER_REASONS, MATCH_HASH_TYPES, MATCH_KINDS, SIGNAL_KINDS, UPLOAD_END_REASONS, UPLOAD_ENDS } from "./automation";
@@ -1840,12 +1841,29 @@ export const CaseHistoryEntry = z.object({
 export type CaseHistoryEntry = z.infer<typeof CaseHistoryEntry>;
 
 /**
+ * 3b (design, sections 8.7 and 10.7): an imported post's label and its import as a case shows them: the source and the
+ * archive's day from the post's own columns, the import's id, how many posts that import published (its size), and the
+ * day the post was published on korbat, which is the day it was imported.
+ */
+export const CaseImported = z.object({ source: ImportSource, at: z.iso.date(), importId: z.uuid(), importSize: z.int().min(0), importedAt: z.iso.date() });
+export type CaseImported = z.infer<typeof CaseImported>;
+
+/**
  * What a case is about, as it stands now: a post with its state and its level, or an account with the handle, display
  * name and bio it holds now. `link` is the post's korbat address, as text: the console links nowhere into the app. A
- * member is null when the row is gone. 3f: a post an order disabled has the level `disabled`.
+ * member is null when the row is gone. 3f: a post an order disabled has the level `disabled`. 3b: a post's member gains,
+ * last, `imported`, null for a native post and for a post whose import columns were cleared.
  */
 export const CaseTarget = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("post"), id: z.uuid(), link: z.string(), authorHandle: z.string().nullable(), state: StoredPostState.nullable(), level: z.enum(["visible", "withheld", "removed", "disabled"]).nullable() }),
+  z.object({
+    type: z.literal("post"),
+    id: z.uuid(),
+    link: z.string(),
+    authorHandle: z.string().nullable(),
+    state: StoredPostState.nullable(),
+    level: z.enum(["visible", "withheld", "removed", "disabled"]).nullable(),
+    imported: CaseImported.nullable(),
+  }),
   z.object({ type: z.literal("account"), id: z.uuid(), handle: z.string().nullable(), displayName: z.string().nullable(), bio: z.string().nullable(), deleted: z.boolean() }),
 ]);
 export type CaseTarget = z.infer<typeof CaseTarget>;

@@ -561,6 +561,7 @@ describe("the chips and the labels", () => {
     counts: { likes: 0, reposts: 0, replies: 0, quotes: 0 },
     media: [],
     quoteOf: null,
+    imported: null,
     ...extra,
   });
   const me = (userId: string) => ({ status: "signed-in", me: { user: { id: userId, onboarded: true }, profile: { handle: "ada" } } });
@@ -930,6 +931,7 @@ function sheetOf(card: string, decisionId: string): string {
     counts: { likes: 0, reposts: 0, replies: 0, quotes: 0 },
     media: [],
     quoteOf: null,
+    imported: null,
   };
   return html(<StatusSheetBody load={{ kind: "shown", view: { ...sheetDecision, id: decisionId } }} post={post} me={null} onRetry={() => undefined} />);
 }

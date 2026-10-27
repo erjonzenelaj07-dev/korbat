@@ -25,8 +25,10 @@ const full = {
   },
   profile: { handle: "ada", displayName: "Ada", bio: "hello", createdAt: at, handleHistory: ["ada_l", "ada"], showInExplore: false, retiredHandles: [{ handle: "ada_l", retiredAt: at }] },
   posts: [
-    { id: id(2), body: "first", createdAt: at, replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [{ id: id(3), file: `media/${id(3)}.webp`, altText: "a cat", width: 2048, height: 1536 }] },
-    { id: id(4), body: "", createdAt: at, replyToId: id(2), quoteOfId: null, state: "deleted_by_author", deletedAt: at, media: [] },
+    { id: id(2), body: "first", createdAt: at, replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [{ id: id(3), file: `media/${id(3)}.webp`, altText: "a cat", width: 2048, height: 1536 }], imported: null },
+    { id: id(4), body: "", createdAt: at, replyToId: id(2), quoteOfId: null, state: "deleted_by_author", deletedAt: at, media: [], imported: null },
+    // 3b (11.2): an imported post, with its source, the date its archive gave it and whether it was shortened.
+    { id: id(50), body: "from the archive", createdAt: at, replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [], imported: { source: "mastodon", originalCreatedAt: "2019-03-03T12:00:00.000Z", shortened: false } },
   ],
   likes: [{ postId: id(5), at }],
   reposts: [{ postId: id(5), at }],
@@ -122,6 +124,20 @@ const full = {
     ],
     releases: [{ id: id(41), basis: "leave", releasedAt: at, upload: false }],
   },
+  // 3b (11.2): the account's imports, newest first: one published and one cancelled before its confirmation.
+  imports: [
+    {
+      id: id(51),
+      source: "mastodon",
+      status: "done",
+      createdAt: at,
+      endedAt: at,
+      statedAt: at,
+      choice: { from: null, to: null, replies: false, warnings: false, protected: false, images: false, long: "leave" },
+      counts: { postsPublished: 1, postsRemoved: 0, imagesKept: 0, imagesLeftOut: 0 },
+    },
+    { id: id(52), source: "x", status: "cancelled", createdAt: at, endedAt: at, statedAt: null, choice: null, counts: { postsPublished: 0, postsRemoved: 0, imagesKept: 0, imagesLeftOut: 0 } },
+  ],
 };
 
 /**
@@ -157,8 +173,29 @@ describe("export format", () => {
       events: [],
       missingMedia: [],
       moderation: { decisions: [], reports: [], strikes: [], ...NO_STANDING },
+      imports: [],
     };
     expect(ExportFormat.parse(empty)).toEqual(empty);
+  });
+
+  test("3b (11.2): a post carries its import last, or null, and the document ends with the account's imports, each with its counts and never a file or a handle", () => {
+    expect(Object.keys(ExportFormat.shape).at(-1)).toBe("imports");
+    const [native, , imported] = full.posts;
+    expect(Object.keys(ExportFormat.shape.posts.element.shape).at(-1)).toBe("imported");
+    const withPost = (post: unknown) => ExportFormat.safeParse({ ...full, posts: [post] }).success;
+    expect(withPost(imported)).toBe(true);
+    expect(withPost({ ...native, imported: undefined })).toBe(false);
+    expect(withPost({ ...imported, imported: { ...imported!.imported, source: "threads" } })).toBe(false);
+    expect(withPost({ ...imported, imported: { source: "x", originalCreatedAt: "2019-03-03", shortened: true } })).toBe(false);
+    const [done, cancelled] = full.imports;
+    const withImport = (entry: unknown) => ExportFormat.safeParse({ ...full, imports: [entry] }).success;
+    expect(withImport(cancelled)).toBe(true);
+    expect(withImport({ ...done, status: "bored" })).toBe(false);
+    expect(withImport({ ...done, counts: { ...done!.counts, postsPublished: -1 } })).toBe(false);
+    expect(withImport({ ...done, choice: { ...done!.choice, long: "split" } })).toBe(false);
+    expect(ExportFormat.safeParse({ ...full, imports: undefined }).success).toBe(false);
+    // Nothing of the archive: a member beyond the format is dropped, never passed on.
+    expect(ExportFormat.parse({ ...full, imports: [{ ...done, file: "archive.zip", handle: "@ada" }] }).imports[0]).toEqual(done);
   });
 
   test("the format name is fixed, so a reader can tell what it opened", () => {
@@ -241,10 +278,11 @@ describe("the export's moderation member", () => {
   const withReport = (change: Record<string, unknown>) => withModeration({ decisions: [], reports: [{ ...report, ...change }], strikes: [], ...NO_STANDING });
   const withItem = (change: Record<string, unknown>) => withReport({ items: [{ ...released, ...change }] });
 
-  test("is part of korbat-export-1 since 3c, the last member of the document: always present, with its two lists, either of which may be empty", () => {
+  test("is part of korbat-export-1 since 3c, the last member of the document until 3b's imports: always present, with its two lists, either of which may be empty", () => {
     // Added without a new format name, as the passkeys and the Explore switch were: a reader that skips it loses nothing.
     expect(ExportFormat.parse(full).format).toBe("korbat-export-1");
-    expect(Object.keys(ExportFormat.shape).at(-1)).toBe("moderation");
+    // 3b (11.2): the account's imports come after it, the document's last member since.
+    expect(Object.keys(ExportFormat.shape).at(-2)).toBe("moderation");
     expect(withModeration(undefined)).toBe(false);
     expect(withModeration({ decisions: [] })).toBe(false);
     expect(withModeration({ reports: [] })).toBe(false);

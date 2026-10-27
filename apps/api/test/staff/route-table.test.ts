@@ -43,6 +43,7 @@ import { createMedia } from "../../src/media";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createModeration } from "../../src/moderation";
 import { createSocial, socialForModeration } from "../../src/social";
+import type { ImportsForStaff } from "../../src/imports";
 import { createStaff } from "../../src/staff";
 
 const key = Buffer.alloc(32, 7).toString("base64");
@@ -128,7 +129,15 @@ function build() {
     requireStaff: marked(countedRequireStaff, "session"),
     requireStaffStepUp: (action, target) => marked(auth.forStaff.requireStaffStepUp(action, target), `step-up:${action}`),
   };
-  const staff = createStaff({ apiDb, auth: forStaff, moderation: moderation.forStaff });
+  // 3b Task 6: with the imports module's staff interface, as the server builds it, so its route is in the table; the
+  // table only reads routes and guards, and no request here reaches it past the session guard.
+  const imports: ImportsForStaff = {
+    endByStaff: async () => {
+      throw new Error("not reached by the route table");
+    },
+    endedByStaff: async () => undefined,
+  };
+  const staff = createStaff({ apiDb, auth: forStaff, moderation: moderation.forStaff, imports });
   const app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social, media, account, staff, moderation });
   // What the staff module mounts at /api/staff, as createApp mounts it.
   const mounted = staff.routes(CONSOLE_ORIGIN).routes;
@@ -328,6 +337,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
         "GET /api/staff/uploads",
         "POST /api/staff/uploads/:refusal/end",
         "POST /api/staff/uploads/:refusal/release",
+        // 3b Task 6: an admin's end of a whole import.
+        "POST /api/staff/imports/:import/end",
       ].sort(),
     );
   });
@@ -354,6 +365,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       // 3d Task 7: the end of a held upload's hold, and its release.
       "POST /api/staff/uploads/:refusal/end": "upload_hold_ended",
       "POST /api/staff/uploads/:refusal/release": "upload_released",
+      // 3b Task 6: an admin's end of a whole import.
+      "POST /api/staff/imports/:import/end": "import_ended_by_staff",
     });
     // The changing routes without a step-up, by method and path: 3a's four kinds, and the three of moderation cases,
     // none of which changes anything a user sees (3c design, section 2, Free text under the step-up).
@@ -530,6 +543,8 @@ describe("the staff routes in the route table (3a design, section 11)", () => {
       // 3f: a message at the contact point.
       "POST /api/staff/contact/:message/close",
       "POST /api/staff/decisions/:decision/review",
+      // 3b Task 6: an import, by its id, which names no account.
+      "POST /api/staff/imports/:import/end",
       "POST /api/staff/items/:item/reveal",
       "POST /api/staff/orders/:order/correct",
       "POST /api/staff/orders/:order/effect",

@@ -92,23 +92,27 @@ export async function importView(deps: ImportDeps, row: ImportRow): Promise<Impo
     failure: row.failure,
     stopReason: row.stopReason as ImportView["stopReason"],
     endedByStaff: row.staffRuleId,
+    // 3b Task 6 (the orchestrator's ruling, migration 0048): the decision the admin's end rests on, for the screen's link.
+    staffDecisionId: row.staffDecisionId,
     scan: scan === null ? null : (facts as ImportView["scan"]),
     samples: row.status === "ready" && scan !== null ? await samples(deps, row, scan) : [],
     choice: choice.success ? choice.data : null,
     picks,
-    // 3b Task 5: the totals the confirmation counted and kept in the scan (the orchestrator's ruling); Task 6 counts the
-    // posts left to publish.
+    // 3b Task 5: the totals the confirmation counted and kept in the scan (the orchestrator's ruling). 3b Task 6 (the
+    // orchestrator's ruling): the posts left are the chosen posts less those published, while the import publishes, and 0
+    // in every other state (a line the batch finds already imported, or with nothing visible, is published by no one).
     progress: {
       imagesTotal: scan?.chosen?.images ?? 0,
       imagesSettled: row.imagesKept + row.imagesLeftOut,
       postsTotal: scan?.chosen?.posts ?? 0,
       postsPublished: row.postsPublished,
       postsRemoved: row.postsRemoved,
-      postsLeft: 0,
+      postsLeft: row.status === "publishing" ? Math.max(0, (scan?.chosen?.posts ?? 0) - row.postsPublished) : 0,
       imagesLeftOut,
     },
-    // Task 6 reads whether the author is suspended through the standing module (8.5).
-    paused: false,
+    // 3b Task 6 (8.5): while the import prepares or publishes and its author's suspension runs, its writes wait; read as
+    // the confirmation reads it, through the profile store.
+    paused: (row.status === "preparing" || row.status === "publishing") && (await deps.profiles.suspended(row.ownerId)),
     // 8.2: the refusal of the image that stopped the import, read through the media module, for the link to its notice.
     refusalId: row.stopReason === "refused_image" ? await deps.media.refusalOf(row.id) : null,
     refusedAt: row.refusedAtOriginal,

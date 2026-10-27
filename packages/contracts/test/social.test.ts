@@ -36,6 +36,7 @@ const post = (n: number, extra: Record<string, unknown> = {}) => ({
   counts,
   media: [],
   quoteOf: null,
+  imported: null,
   ...extra,
 });
 
@@ -120,6 +121,22 @@ describe("post views", () => {
     expect(PostView.parse(post(1, { quoteOf: post(2, { inExplore: true }) })).quoteOf).not.toHaveProperty("inExplore");
     expect(TimelineItem.parse({ kind: "post", post: post(1, { inExplore: true }) }).post.inExplore).toBe(true);
   });
+  test("3b: an imported post carries its label last, the archive's day and never its second; a native post and a quoted one carry null or the label", () => {
+    const label = { source: "x", at: "2019-03-03", shortened: false };
+    expect(Object.keys(PostView.shape).at(-1)).toBe("imported");
+    expect(PostView.parse(post(1, { imported: label })).imported).toEqual(label);
+    expect(PostView.parse(post(1)).imported).toBeNull();
+    // Required: a view without the member is not a view of this contract.
+    const { imported: _imported, ...without } = post(1);
+    expect(PostView.safeParse(without).success).toBe(false);
+    // The day only: a time of day, another source or a missing mark is refused.
+    expect(PostView.safeParse(post(1, { imported: { ...label, at: "2019-03-03T12:00:00Z" } })).success).toBe(false);
+    expect(PostView.safeParse(post(1, { imported: { ...label, source: "threads" } })).success).toBe(false);
+    expect(PostView.safeParse(post(1, { imported: { source: "mastodon", at: "2019-03-03" } })).success).toBe(false);
+    // A quoted post carries its label too (QuoteEmbed's short line), and is refused without the member.
+    expect(PostView.parse(post(1, { quoteOf: post(2, { imported: { ...label, shortened: true } }) })).quoteOf).toMatchObject({ imported: { source: "x", shortened: true } });
+    expect(PostView.safeParse(post(1, { quoteOf: without })).success).toBe(false);
+  });
   test("timeline items are posts or reposts with the reposter", () => {
     expect(TimelineItem.safeParse({ kind: "post", post: post(1) }).success).toBe(true);
     expect(TimelineItem.safeParse({ kind: "repost", post: post(1), repostedBy: author, repostedAt: "2026-09-17T11:00:00.000Z" }).success).toBe(true);
@@ -130,10 +147,14 @@ describe("post views", () => {
 
 describe("profiles", () => {
   test("profile views carry counts and an optional viewer relation", () => {
-    const base = { id: id(1), handle: "ada", displayName: "Ada", bio: "", verified: true, createdAt: "2026-09-17T10:00:00.000Z", counts: { posts: 1, followers: 2, following: 3 } };
+    const base = { id: id(1), handle: "ada", displayName: "Ada", bio: "", verified: true, createdAt: "2026-09-17T10:00:00.000Z", counts: { posts: 1, followers: 2, following: 3 }, hasImported: false };
     expect(ProfileView.safeParse(base).success).toBe(true);
     expect(ProfileView.safeParse({ ...base, viewer: { following: true, followedBy: false, blocked: false, muted: false } }).success).toBe(true);
     expect(ProfileView.safeParse({ ...base, counts: { posts: -1, followers: 0, following: 0 } }).success).toBe(false);
+    // 3b: whether the profile shows its Imported tab, for every reader alike; always present.
+    expect(ProfileView.parse({ ...base, hasImported: true }).hasImported).toBe(true);
+    const { hasImported: _hasImported, ...withoutTab } = base;
+    expect(ProfileView.safeParse(withoutTab).success).toBe(false);
     expect(ProfileListItem.safeParse({ ...author, bio: "hi", viewerFollows: true }).success).toBe(true);
     // The author's Explore switch is theirs (2c design, section 6): the public profile never carries it.
     expect(Object.keys(ProfileView.shape)).not.toContain("showInExplore");

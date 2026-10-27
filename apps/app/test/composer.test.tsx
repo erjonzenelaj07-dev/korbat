@@ -68,6 +68,7 @@ const POST: PostView = {
   counts: { likes: 3, reposts: 1, replies: 2, quotes: 0 },
   media: [],
   quoteOf: null,
+  imported: null,
 };
 
 afterEach(() => {

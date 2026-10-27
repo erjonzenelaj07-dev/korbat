@@ -15,6 +15,7 @@ import { createProfileStore } from "../../src/profiles/store";
 import { createSocial } from "../../src/social";
 import { DAY_MS } from "../../src/social/tiers";
 import { Browser } from "./http-client";
+import { importCounts } from "./imports-harness";
 import { liftRowForTest, suspendRowForTest } from "./moderation-fixtures";
 
 type App = ReturnType<typeof createApp>;
@@ -29,13 +30,15 @@ describe.skipIf(!process.env.INTEGRATION)("integration: posting and feed over HT
   let apiDb: Db;
   let migrateDb: Db;
   let app: App;
+  /** 3b Task 6: the import tables' rows before the file's first test. */
+  let importRows: Record<string, number>;
   const mailer = new MemoryMailer();
   let offsetMs = 0;
   let tick = 0;
   /** Strictly increasing even within one millisecond, so list order never depends on a tie-breaker. */
   const now = () => new Date(Date.now() + offsetMs + ++tick);
 
-  beforeAll(() => {
+  beforeAll(async () => {
     config = loadConfig();
     const logger = pino({ level: "silent" });
     authDb = createDb(config.DATABASE_URL_AUTH, { max: 4 });
@@ -55,6 +58,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: posting and feed over HT
     });
     const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession, requireFreshAuth: auth.requireFreshAuth(), now });
     app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social });
+    importRows = await importCounts(apiDb);
   });
   afterAll(async () => {
     await Promise.all([closeDb(authDb), closeDb(apiDb), closeDb(migrateDb)]);
@@ -287,6 +291,57 @@ describe.skipIf(!process.env.INTEGRATION)("integration: posting and feed over HT
     expect((await app.request("/api/profiles/no_such_handle_xyz")).status).toBe(404);
   });
 
+  // 3b Task 6 (design, sections 9.2 and 10.6): the profile's Imported tab, public as its Posts tab is.
+  test("the Imported tab: an account's imported top-level posts, newest archive date first, each labelled with its day, signed out too; in no timeline and no Posts or Replies tab; the profile says it has one", async () => {
+    offsetMs = 3 * DAY_MS;
+    const ada = await signUp();
+    const native = await post(ada.b, "a post written on korbat");
+    const adaId = native.author.id;
+    expect(ProfileView.parse(await json(await app.request(`/api/profiles/${ada.handle}`))).hasImported).toBe(false);
+    const job = randomUUID();
+    const [first, second, reply]: string[] = [randomUUID(), randomUUID(), randomUUID()];
+    // As the migrator, as a publishing import writes them: a post of January 2019, one of May shortened on import, and the
+    // account's own reply to the first.
+    await migrateDb.execute(sql`
+      insert into import_jobs (id, owner_id, source, status, declared_bytes, received_bytes, uploaded_at, scanned_at, confirmed_at, ended_at, choice, stated_at, posts_published)
+      values (${job}::uuid, ${adaId}::uuid, 'x', 'done', 10, 10, now(), now(), now(), now(),
+              ${JSON.stringify({ from: null, to: null, replies: false, warnings: false, protected: false, images: false, long: "shorten" })}::jsonb, now(), 3)`);
+    await migrateDb.execute(sql`
+      insert into posts (id, author_id, body, reply_to_id, created_at, import_job_id, import_source, original_created_at, import_shortened, import_key)
+      values (${first}::uuid, ${adaId}::uuid, 'from the archive, January', null, now(), ${job}::uuid, 'x', '2019-01-02T23:30:00Z', false, ${randomBytes(32)}::bytea),
+             (${second}::uuid, ${adaId}::uuid, 'from the archive, May', null, now(), ${job}::uuid, 'x', '2019-05-06T00:30:00Z', true, ${randomBytes(32)}::bytea),
+             (${reply}::uuid, ${adaId}::uuid, 'and a reply of the thread', ${first}::uuid, now(), ${job}::uuid, 'x', '2019-01-03T08:00:00Z', false, ${randomBytes(32)}::bytea)`);
+    try {
+      const tab = PostPage.parse(await json(await app.request(`/api/profiles/${ada.handle}/imported`)));
+      expect(tab.items.map((item) => item.id)).toEqual([second, first]);
+      // The archive's day in UTC, never its second.
+      expect(tab.items.map((item) => item.imported)).toEqual([
+        { source: "x", at: "2019-05-06", shortened: true },
+        { source: "x", at: "2019-01-02", shortened: false },
+      ]);
+      expect(JSON.stringify(tab)).not.toContain("23:30");
+      expect(PostPage.parse(await json(await ada.b.fetch(`/api/profiles/${ada.handle}/imported`))).items.map((item) => item.id)).toEqual([second, first]);
+      expect(ProfileView.parse(await json(await app.request(`/api/profiles/${ada.handle}`))).hasImported).toBe(true);
+      // A native post carries no label and is not on the tab; the imported ones are on no other list.
+      expect(native.imported).toBeNull();
+      const posts = TimelinePage.parse(await json(await app.request(`/api/profiles/${ada.handle}/posts?limit=50`)));
+      expect(posts.items.map((item) => item.post.id)).toEqual([native.id]);
+      const replies = PostPage.parse(await json(await app.request(`/api/profiles/${ada.handle}/replies?limit=50`)));
+      expect(replies.items.map((item) => item.id)).not.toContain(reply);
+      const latest = TimelinePage.parse(await json(await app.request("/api/timeline/latest?limit=50")));
+      expect(latest.items.map((item) => item.post.id).filter((id) => [first, second, reply].includes(id))).toEqual([]);
+      const own = TimelinePage.parse(await json(await ada.b.fetch("/api/timeline/following?limit=50")));
+      expect(own.items.map((item) => item.post.id).filter((id) => [first, second, reply].includes(id))).toEqual([]);
+      // The reply is on its post's page, with its own label.
+      const read = ThreadResponse.parse(await json(await app.request(`/api/posts/${first}/thread`)));
+      expect(read.replies.items.map((item) => [item.id, item.imported?.at])).toEqual([[reply, "2019-01-03"]]);
+      expect((await app.request(`/api/profiles/no_such_handle_xyz/imported`)).status).toBe(404);
+    } finally {
+      await migrateDb.execute(sql`delete from posts where import_job_id = ${job}::uuid`);
+      await migrateDb.execute(sql`delete from import_jobs where id = ${job}::uuid`);
+    }
+  });
+
   // 3f (design, section 7.12; invariant 19): the status of a post's page, which Caddy asks for /post/*, follows what a
   // signed-out read of the post answers: 204 while it is public, 404 once its author deleted it, with no body either way.
   test("a post's status is 204 while a signed-out read shows it, and 404 once its author deleted it", async () => {
@@ -300,5 +355,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: posting and feed over HT
     const gone = await app.request(`/api/posts/${made.id}/status`);
     expect([gone.status, await gone.text()]).toEqual([404, ""]);
     expect((await app.request(`/api/posts/${made.id}`)).status).toBe(404);
+  });
+
+  test("3b Task 6: this file left no import row behind", async () => {
+    expect(await importCounts(apiDb)).toEqual(importRows);
   });
 });

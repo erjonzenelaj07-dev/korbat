@@ -24,6 +24,7 @@ function post(n: number): PostView {
     counts: { likes: 0, reposts: 0, replies: 0, quotes: 0 },
     media: [],
     quoteOf: null,
+    imported: null,
   };
 }
 const item = (n: number): TimelineItem => ({ kind: "post", post: post(n) });

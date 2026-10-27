@@ -14,7 +14,8 @@ import { WITHOUT_MEDIA, type SocialDeps, type SocialEvents } from "./context";
 import type { StoredPostState } from "./visibility";
 import { startExplore } from "./explore";
 import { exportProfile, type ProfileExport } from "./flows/export";
-import { createSocialRepo, type AccountLockMode, type CapturedPost, type CapturedProfile, type LockedAccount } from "./repo";
+import { publishImportedBatch, removeImportedBatch } from "./flows/imports";
+import { createSocialRepo, type AccountLockMode, type CapturedPost, type CapturedProfile, type ImportBatchJob, type ImportBatchPost, type ImportBatchResult, type LockedAccount } from "./repo";
 import { postStatusRoutes, socialRoutes } from "./routes";
 
 export { SocialError } from "./context";
@@ -23,7 +24,7 @@ export { enforceWriteLimit } from "./limits";
 export { limitsFor } from "./tiers";
 export type { ImportAction, WriteAction } from "./tiers";
 export type { SocialDeps, SocialEvents, ViewerId } from "./context";
-export type { AccountLockMode, CapturedPost, CapturedProfile, LockedAccount } from "./repo";
+export type { AccountLockMode, CapturedPost, CapturedProfile, ImportBatchJob, ImportBatchPost, ImportBatchResult, LockedAccount } from "./repo";
 export type { ExportedMedia, ExportedPost, ProfileExport } from "./flows/export";
 
 /** What the account module needs from this one (1b design, section 5): the purge of a deleted account, and the data export. */
@@ -70,11 +71,18 @@ export interface SocialForModeration {
 
 /**
  * What the imports module needs from this one (3b design, section 9.1): the read of 7.5 step 2 that tells which lines of
- * an archive the account already imported. Task 6 adds the batch writers of section 6.5.
+ * an archive the account already imported, and (Task 6) the batch writers of section 6.5.
  */
 export interface SocialForImports {
   /** Which of these keys (64 lowercase hex each) the account's posts that still exist carry; at most a thousand a call. */
   importedKeys(ownerId: string, keys: readonly string[]): Promise<Set<string>>;
+  /**
+   * One batch of an import's posts in one transaction judged by 3e's predicate: { written: false } when the import is no
+   * longer publishing at the cursor given; a suspended author's batch throws account_suspended and writes nothing.
+   */
+  publishImportedBatch(job: ImportBatchJob, batch: { lines: number; posts: readonly ImportBatchPost[] }, now: Date): Promise<ImportBatchResult>;
+  /** One batch of an import's undo, at most `limit` posts, their image files asked for after the commit; selected 0 when none is left. */
+  removeImportedBatch(job: { id: string; ownerId: string }, now: Date, limit: number): Promise<{ selected: number; removed: number }>;
 }
 
 /**
@@ -129,6 +137,8 @@ export function createSocial(options: CreateSocialOptions) {
   };
   const forImports: SocialForImports = {
     importedKeys: (ownerId, keys) => deps.repo.importedKeys(ownerId, keys),
+    publishImportedBatch: (job, batch, now) => publishImportedBatch(deps, job, batch, now),
+    removeImportedBatch: (job, now, limit) => removeImportedBatch(deps, job, now, limit),
   };
   return {
     deps,

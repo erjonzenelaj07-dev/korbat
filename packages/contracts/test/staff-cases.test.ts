@@ -211,7 +211,7 @@ describe("the case answer", () => {
     answeredSeq: 0,
     openedAt: TIME,
     closedAt: null,
-    target: { type: "post", id: POST, link: `https://korbat.example/post/${POST}`, authorHandle: "author", state: "visible", level: "visible" },
+    target: { type: "post", id: POST, link: `https://korbat.example/post/${POST}`, authorHandle: "author", state: "visible", level: "visible", imported: null },
     suspicion: { open: true, reach: { posts: 1, images: 1, sealed: 0, served: 1, newestPostOn: "2026-09-04" }, earlier: { target: { count: 0, lastOn: null, imagesOpenedOn: null }, author: { count: 1, lastOn: "2026-08-01" } } },
     imagesAllowed: false,
     snapshots: [shown, { id: CASE, takenAt: TIME, digest: HEX, withheld: true }],
@@ -315,7 +315,19 @@ describe("the case answer", () => {
     const account = { ...view, target: { type: "account", id: POST, handle: "now_named", displayName: "A name", bio: "A bio", deleted: false }, suspicion: null, snapshots: [], items: [], decisions: [] };
     expect(CaseView.safeParse(account).success).toBe(true);
     // A target whose row is gone is still an answer: staff see what is.
-    expect(CaseView.safeParse({ ...view, target: { type: "post", id: POST, link: `https://korbat.example/post/${POST}`, authorHandle: null, state: null, level: null } }).success).toBe(true);
+    expect(CaseView.safeParse({ ...view, target: { type: "post", id: POST, link: `https://korbat.example/post/${POST}`, authorHandle: null, state: null, level: null, imported: null } }).success).toBe(true);
+  });
+
+  test("3b (8.7): a post's target carries its import last: the source and the archive's day, the import's id and size, and the day it was imported", () => {
+    const imported = { source: "x", at: "2019-03-03", importId: CASE, importSize: 1240, importedAt: "2026-10-21" };
+    const target = { ...view.target, imported };
+    expect(CaseView.parse({ ...view, target }).target).toEqual(target);
+    expect(Object.keys(CaseView.parse({ ...view, target }).target).at(-1)).toBe("imported");
+    for (const bad of [{ ...imported, at: "2019-03-03T12:00:00Z" }, { ...imported, importSize: -1 }, { ...imported, importId: "R6" }, { ...imported, source: "threads" }]) {
+      expect(CaseView.safeParse({ ...view, target: { ...view.target, imported: bad } }).success).toBe(false);
+    }
+    const { imported: _imported, ...without } = view.target;
+    expect(CaseView.safeParse({ ...view, target: without }).success).toBe(false);
   });
 
 

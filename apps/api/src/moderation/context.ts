@@ -3,6 +3,7 @@ import type { Db } from "@korbat/db";
 import type { Logger } from "pino";
 import type { AuthForModeration } from "../auth";
 import type { Config } from "../config";
+import type { ImportsForModeration } from "../imports";
 import type { MediaForCases } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialForModeration } from "../social";
@@ -231,6 +232,12 @@ export interface ModerationDeps {
   social: SocialForModeration;
   /** The media module's interface: an intake's holds on image rows, which this module never names itself. */
   media: MediaForCases;
+  /**
+   * 3b Task 6 (design, section 8.7; the orchestrator's ruling): the imports module's interface, through which a case reads
+   * an import's size, never its table. The server always hands it over; a module built without it shows no import on a
+   * case.
+   */
+  imports?: ImportsForModeration;
   /** The shared limit store: what one sender may send, and the throttles of the staff alerts. */
   limits: RateLimitStore;
   /** The tasks requests started and did not wait for. */

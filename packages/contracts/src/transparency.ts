@@ -51,10 +51,11 @@ export const RECIPIENT_RULES = {
 } as const;
 
 /**
- * The seven routes of the social module that answer without a session (7.5): a post, its thread, the two public
- * timelines, a profile, its posts and its replies. A signed-out GET of one of them feeds the day's sketch. The image
- * route and the page status are not counted. A route-table test fails when the social module gains a signed-out read
- * that is neither here nor refused by name in that test.
+ * The routes of the social module that answer without a session (7.5): a post, its thread, the two public timelines, a
+ * profile, its posts and its replies, and (3b Task 6) its Imported tab, a read of the profile as its Posts tab is. A
+ * signed-out GET of one of them feeds the day's sketch. The image route and the page status are not counted. A
+ * route-table test fails when the social module gains a signed-out read that is neither here nor refused by name in that
+ * test.
  */
 export const RECIPIENT_READ_ROUTES = [
   "GET /api/posts/:id",
@@ -64,6 +65,7 @@ export const RECIPIENT_READ_ROUTES = [
   "GET /api/profiles/:handle",
   "GET /api/profiles/:handle/posts",
   "GET /api/profiles/:handle/replies",
+  "GET /api/profiles/:handle/imported",
 ] as const;
 
 /** Why a version of a year's edition was stored (the CHECK of transparency_editions.reason): version 1 alone is `first`. */

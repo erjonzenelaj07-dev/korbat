@@ -4,14 +4,15 @@ import type { ImportDeps } from "./context";
 import { feedRound } from "./feeder";
 import { endFiles } from "./flows/end";
 import { runIntake, type IntakeCaps } from "./intake";
+import { PUBLISH_SIZES, publishRound } from "./publisher";
 
 /**
  * The job import-drive (3b design, section 7.5): every five seconds, under the shared job lock, one round that moves the
  * imports along. A round is a plain function of the clock, so tests run it with any time, and each step is safe to
  * repeat. Task 4 builds steps 1 to 3 (scans done, the intake, the time limits of 4.8, each one statement), 7 (retention)
- * and 8 (orphans, every tenth round); Task 5 step 4 (feeding, feeder.ts) and the leftovers of 7.4; publishing and undoing
- * are Task 6's. A round never holds a lock across rounds, and a failure of one import's step is logged and passes on to
- * the next.
+ * and 8 (orphans, every tenth round); Task 5 step 4 (feeding, feeder.ts) and the leftovers of 7.4; Task 6 steps 5
+ * (publishing, publisher.ts) and 6 (undoing), after the leftovers. A round never holds a lock across rounds, and a failure
+ * of one import's step is logged and passes on to the next.
  */
 
 export interface DriveReport {
@@ -32,6 +33,13 @@ export interface DriveReport {
   publishing: number;
   /** 7.4: rows on no post of imports that have ended, deleted. */
   leftovers: number;
+  /** Step 5 (Task 6): posts written, imports done, and imports whose author's suspension made them wait. */
+  postsPublished: number;
+  done: number;
+  paused: number;
+  /** Step 6 (Task 6): posts tombstoned by undos, and imports undone. */
+  postsRemoved: number;
+  undone: number;
   /** Step 7. */
   picksDeleted: number;
   rowsDeleted: number;
@@ -46,10 +54,11 @@ const NEEDS_WORK = new Set(["scanning", "ready", "preparing", "publishing"]);
 /** States whose import still needs its archive: the upload writes it, the scan reads it. */
 const NEEDS_ARCHIVE = new Set(["uploading", "scanning"]);
 
-/** Tests only: the intake's caps. */
+/** Tests only: the intake's caps, and (Task 6) smaller batches: posts a batch, publishing and undo batches a round. */
 export interface DriveOptions {
   orphans: boolean;
   caps?: Partial<IntakeCaps>;
+  batches?: { posts?: number; publish?: number; undo?: number };
 }
 
 /** Steps 1 and 2: each import in scanning whose importer has written its summary. */
@@ -157,6 +166,52 @@ async function leftovers(deps: ImportDeps, report: DriveReport): Promise<void> {
 }
 
 /**
+ * Step 5 (Task 6): each import that was publishing when the round began, up to publishBatchesPerRound batches of
+ * batchPosts lines each (publisher.ts). An import whose images settled in this round's feeding publishes from the next
+ * round, five seconds on: its rows on no post are then those the batches attach. A suspended author's import waits.
+ */
+async function publishing(deps: ImportDeps, imports: Awaited<ReturnType<ImportDeps["repo"]["publishing"]>>, now: Date, report: DriveReport, batches: DriveOptions["batches"]): Promise<void> {
+  const sizes = { posts: batches?.posts ?? PUBLISH_SIZES.posts, batches: batches?.publish ?? PUBLISH_SIZES.batches };
+  for (const job of imports) {
+    try {
+      const round = await publishRound(deps, job, now, sizes);
+      report.postsPublished += round.posts;
+      if (round.done) report.done++;
+      if (round.paused) report.paused++;
+    } catch (err) {
+      deps.log.error({ id: job.id, err }, "import: a publishing batch failed; the next round tries again");
+    }
+  }
+  if (report.postsPublished > 0) deps.log.info({ posts: report.postsPublished, done: report.done }, "import-drive: published");
+}
+
+/**
+ * Step 6 (Task 6): each import in undoing, up to undoBatchesPerRound batches of batchPosts posts through the social
+ * module's removeImportedBatch, the author's own deletion path; a batch that finds no post of the import left that is
+ * neither deleted nor disabled moves it to undone.
+ */
+async function undoing(deps: ImportDeps, now: Date, report: DriveReport, batches: DriveOptions["batches"]): Promise<void> {
+  const limit = batches?.posts ?? IMPORT_RULES.batchPosts;
+  const rounds = batches?.undo ?? IMPORT_RULES.undoBatchesPerRound;
+  for (const job of await deps.repo.undoing()) {
+    try {
+      for (let batch = 0; batch < rounds; batch++) {
+        const removed = await deps.social.removeImportedBatch(job, now, limit);
+        report.postsRemoved += removed.removed;
+        if (removed.selected > 0) continue;
+        if (await deps.repo.toUndone(job.id)) {
+          report.undone++;
+          deps.log.info({ id: job.id, phase: "undone" }, "import: undone");
+        }
+        break;
+      }
+    } catch (err) {
+      deps.log.error({ id: job.id, err }, "import: an undo batch failed; the next round tries again");
+    }
+  }
+}
+
+/**
  * Step 8: what a crash between a commit and a file operation left behind, once older than an hour. An archive folder or
  * a queue marker goes unless its import is still uploading or scanning; a work folder is asked for unless its import
  * still needs it; a deletion request is withdrawn once the importer has carried it out and an hour has passed, so a scan
@@ -209,6 +264,11 @@ export async function driveRound(deps: ImportDeps, now: Date, options: DriveOpti
     refused: 0,
     publishing: 0,
     leftovers: 0,
+    postsPublished: 0,
+    done: 0,
+    paused: 0,
+    postsRemoved: 0,
+    undone: 0,
     picksDeleted: 0,
     rowsDeleted: 0,
     orphanArchives: 0,
@@ -217,8 +277,12 @@ export async function driveRound(deps: ImportDeps, now: Date, options: DriveOpti
   };
   await scansDone(deps, now, report, options.caps);
   await timeLimits(deps, now, report);
+  // The imports that publish as the round begins (step 5 takes these, after the feeding and the leftovers).
+  const publishable = await deps.repo.publishing();
   await feeding(deps, now, report);
   await leftovers(deps, report);
+  await publishing(deps, publishable, now, report, options.batches);
+  await undoing(deps, now, report, options.batches);
   const kept = await deps.repo.retention(now);
   report.picksDeleted = kept.picks;
   report.rowsDeleted = kept.rows;

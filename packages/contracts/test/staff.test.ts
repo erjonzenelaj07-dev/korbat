@@ -10,6 +10,8 @@ import {
   AuditPageQuery,
   GapClosedParams,
   AuthenticationResponseJSON,
+  ImportEndRequest,
+  ImportEndedByStaffParams,
   CEREMONY_CHALLENGE,
   CHALLENGE_PURPOSES,
   DisplayName,
@@ -250,6 +252,8 @@ describe("step-up actions", () => {
       // 3d Task 7: the two ends of a held upload's hold and its release.
       "upload_hold_ended",
       "upload_released",
+      // 3b: an admin's end of a whole import.
+      "import_ended_by_staff",
     ]);
     expect(StaffStepUpActionName.options).toEqual(Object.keys(STAFF_STEP_UP_ACTIONS));
     const spec = STAFF_STEP_UP_ACTIONS.staff_session_revoked;
@@ -262,6 +266,25 @@ describe("step-up actions", () => {
     expect(spec.params.parse({})).toEqual({});
     // Params are hashed as they are sent, so a member the schema does not know is refused, never dropped.
     expect(spec.params.safeParse({ all: true }).success).toBe(false);
+  });
+
+  test("3b (8.7): an admin's end of a whole import targets the import by its lower-case id; its params are the case, the decision and the rule, and nothing else", () => {
+    const spec = STAFF_STEP_UP_ACTIONS.import_ended_by_staff;
+    expect(spec.targetType).toBe("import");
+    expect(spec.params).toBe(ImportEndedByStaffParams);
+    expect(spec.targetId.safeParse(uuid).success).toBe(true);
+    expect(spec.targetId.safeParse(uuid.toUpperCase()).success).toBe(false);
+    const params = { caseId: uuid, decisionId: uuid, ruleId: "R6" };
+    expect(spec.params.parse(params)).toEqual(params);
+    everyFieldRequired(spec.params, params);
+    expect(spec.params.safeParse({ ...params, ruleId: "R9" }).success).toBe(false);
+    expect(spec.params.safeParse({ ...params, decisionId: uuid.toUpperCase() }).success).toBe(false);
+    expect(spec.params.safeParse({ ...params, reason: "spam" }).success).toBe(false);
+    const request = { action: "import_ended_by_staff", target: { type: "import", id: uuid }, params };
+    expect(StaffStepUpOptionsRequest.parse(request)).toEqual(request);
+    expect(StaffStepUpOptionsRequest.safeParse({ ...request, target: { type: "case", id: uuid } }).success).toBe(false);
+    expect(ImportEndRequest.parse({ ...params, stepUp: assertion })).toEqual({ ...params, stepUp: assertion });
+    expect(ImportEndRequest.safeParse(params).success).toBe(false);
   });
 
   test("the options request names the action, its target and its params, each checked by that action's own schema", () => {

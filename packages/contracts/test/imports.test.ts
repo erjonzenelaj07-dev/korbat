@@ -503,6 +503,7 @@ describe("views", () => {
     failure: null,
     stopReason: null,
     endedByStaff: null,
+    staffDecisionId: null,
     scan: facts,
     samples: [{ at: "2019-03-03", text: "Hello" }],
     choice: null,
@@ -522,7 +523,11 @@ describe("views", () => {
     expect(Object.keys(parsed.scan!)).not.toContain("pages");
     expect(parsed.samples).toEqual([{ at: "2019-03-03", text: "Hello" }]);
     expect(ImportView.safeParse({ ...view, samples: [...view.samples, ...view.samples, ...view.samples, ...view.samples] }).success).toBe(false);
-    expect(ImportView.safeParse({ ...view, status: "stopped", stopReason: "by_staff", endedByStaff: "R6", scan: null, samples: [] }).success).toBe(true);
+    expect(ImportView.safeParse({ ...view, status: "stopped", stopReason: "by_staff", endedByStaff: "R6", staffDecisionId: ID, scan: null, samples: [] }).success).toBe(true);
+    // 3b Task 6 (the orchestrator's ruling): the decision an admin's end rests on, by its id, always present.
+    expect(ImportView.safeParse({ ...view, staffDecisionId: "R6" }).success).toBe(false);
+    const { staffDecisionId: _decision, ...withoutDecision } = view;
+    expect(ImportView.safeParse(withoutDecision).success).toBe(false);
     expect(ImportView.safeParse({ ...view, stopReason: "bored" }).success).toBe(false);
   });
 

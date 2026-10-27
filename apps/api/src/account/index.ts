@@ -5,6 +5,7 @@
 import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
 import type { AuthForAccount } from "../auth";
+import type { ImportsForAccount } from "../imports";
 import type { AppEnv } from "../env";
 import type { JobLock } from "../lib/jobs";
 import type { MediaForAccount } from "../media";
@@ -25,6 +26,8 @@ export interface CreateAccountOptions {
   media: MediaForAccount;
   /** The moderation module's interface for this one: moderation.forAccount. Without it the purge forgets no report's sender, and the export's moderation member is empty. */
   moderation?: ModerationForAccount;
+  /** 3b Task 6: the imports module's interface for this one, imports.forAccount: the purge's step and the export's member. */
+  imports?: ImportsForAccount;
   /** The auth module's requireSession: an onboarded account with CSRF and Origin checked. */
   requireSession: MiddlewareHandler<AppEnv>;
   /** The auth module's requireFreshAuth: a credential proven in the last five minutes, which the export needs. */
@@ -43,6 +46,7 @@ export function createAccount(options: CreateAccountOptions) {
     social: options.social,
     media: options.media,
     moderation: options.moderation,
+    imports: options.imports,
     limits: options.rateLimitStore,
     log: options.logger,
     now: options.now ?? (() => new Date()),

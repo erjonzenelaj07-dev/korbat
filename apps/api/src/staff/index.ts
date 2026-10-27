@@ -12,6 +12,7 @@
 import type { AuditMarkRequest, AuditPageQuery } from "@korbat/contracts";
 import type { Db } from "@korbat/db";
 import type { ActiveStaffSession, AuthForStaff, StaffStepUpConfirmed } from "../auth";
+import type { ImportsForStaff } from "../imports";
 import type { ModerationForStaff } from "../moderation";
 import { auditPage, exportAudit, exportLines, markCopy } from "./audit";
 import { staffRoutes, type StaffAudit } from "./routes";
@@ -26,6 +27,12 @@ export interface CreateStaffOptions {
   auth: AuthForStaff;
   /** The moderation module's staff interface: the console's operations on cases. */
   moderation: ModerationForStaff;
+  /**
+   * 3b Task 6: the imports module's staff interface, imports.forStaff: an admin's end of a whole import (8.7). Without it
+   * the route is not mounted; the server always hands it over.
+   */
+  imports?: ImportsForStaff;
+  now?: () => Date;
 }
 
 export function createStaff(options: CreateStaffOptions) {
@@ -38,7 +45,8 @@ export function createStaff(options: CreateStaffOptions) {
   };
   return {
     /** The routes under /api/staff, behind the staff gate for the console at `consoleOrigin`. */
-    routes: (consoleOrigin: string) => staffRoutes(consoleOrigin, options.auth, options.moderation, audit),
+    routes: (consoleOrigin: string) =>
+      staffRoutes(consoleOrigin, options.auth, options.moderation, audit, options.imports ? { apiDb: options.apiDb, imports: options.imports, now: options.now ?? (() => new Date()) } : undefined),
     /** One page of the audit log, newest first, as GET /api/staff/audit answers it (with the reader's own copy, given its account). */
     readAudit: (query: AuditPageQuery, staffId: string | null = null) => auditPage(options.apiDb, query, staffId),
   };

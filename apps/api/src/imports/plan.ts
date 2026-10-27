@@ -228,6 +228,24 @@ export async function refusedPost(files: Pick<ImportFiles, "openWork" | "work">,
   }
 }
 
+/** The ellipsis a shortened post ends with (decision 13), built without an escape. */
+export const ELLIPSIS = String.fromCharCode(0x2026);
+
+/**
+ * Decision 13's cut, for a post the choice shortens: a text over IMPORT_RULES.shortenTo code points is cut at the last
+ * space or line break within its first shortenTo - 1 code points (at shortenTo - 1 when there is none), its trailing
+ * space dropped, and the ellipsis added, so the body is at most shortenTo code points, as posts_body_len holds it. A text
+ * within the limit is kept as it is. Code points, as postLength and the CHECK count them.
+ */
+export function shortenText(text: string): { body: string; shortened: boolean } {
+  const points = Array.from(text);
+  if (points.length <= IMPORT_RULES.shortenTo) return { body: text, shortened: false };
+  const head = points.slice(0, IMPORT_RULES.shortenTo - 1);
+  const space = Math.max(head.lastIndexOf(" "), head.lastIndexOf(String.fromCharCode(10)));
+  const cut = (space > 0 ? head.slice(0, space) : head).join("").trimEnd();
+  return { body: cut + ELLIPSIS, shortened: true };
+}
+
 /** A run of spaces, tabs and line breaks (an imported text holds no other control character, 5.3), built without escapes. */
 const SPACES = new RegExp(`[ ${String.fromCharCode(9, 10, 13)}]+`, "g");
 

@@ -15,6 +15,7 @@ import { EXPORT_WINDOW_MS, buildExport, enforceExportLimit, exportFilename, expo
 import { accountRoutes } from "../../src/account/routes";
 import { createZipWriter, type OpenFile } from "../../src/account/zip";
 import type { AccountExport, AuthEventType, Session } from "../../src/auth";
+import type { ImportRecord } from "../../src/imports";
 import type { AppEnv } from "../../src/env";
 import { createMediaFiles } from "../../src/media/files";
 import { MemoryStore } from "../../src/middleware/rate-limit";
@@ -394,8 +395,9 @@ function harness() {
           { id: imageA, altText: "a harbour at dawn", width: 1600, height: 1200 },
           { id: imageB, altText: "a lighthouse", width: 900, height: 1600 },
         ],
+        imported: null,
       },
-      { id: deletedId, body: "", createdAt: new Date(T0 - DAY_MS), replyToId: postId, quoteOfId: null, state: "deleted_by_author", deletedAt: new Date(T0 - 1_000), media: [] },
+      { id: deletedId, body: "", createdAt: new Date(T0 - DAY_MS), replyToId: postId, quoteOfId: null, state: "deleted_by_author", deletedAt: new Date(T0 - 1_000), media: [], imported: null },
     ],
     likes: [{ postId: likedId, at: new Date(T0 - DAY_MS) }],
     reposts: [],
@@ -417,6 +419,8 @@ function harness() {
       },
     };
   }
+  /** 3b Task 6: none unless a test adds some. */
+  const imports: ImportRecord[] = [];
   const deps: AccountDeps = {
     auth: {
       startDeletion: notHere,
@@ -450,6 +454,8 @@ function harness() {
       }),
     },
     media: { purgeOwner: notHere, requestDeletion: notHere, exportImages: async () => images },
+    // 3b Task 6: the account's imports, newest first, as the imports module hands them over (11.2).
+    imports: { purgeOwner: notHere, removeFiles: notHere, exportFor: async () => imports },
     moderation: {
       forgetAccount: notHere,
       takeDownDue: notHere,
@@ -486,6 +492,7 @@ function harness() {
     images,
     events,
     lists,
+    imports,
     reads,
     failures,
     now: () => new Date(t),
@@ -529,6 +536,8 @@ function expectedDocument(h: Harness, missingMedia: string[] = []) {
       state: post.state,
       deletedAt: post.deletedAt ? post.deletedAt.toISOString() : null,
       media: post.media.map((image) => ({ id: image.id, file: `media/${image.id}.webp`, altText: image.altText, width: image.width, height: image.height })),
+      // 3b (11.2): last in the post.
+      imported: post.imported === null ? null : { source: post.imported.source, originalCreatedAt: post.imported.originalCreatedAt.toISOString(), shortened: post.imported.shortened },
     })),
     likes: h.lists.likes.map(ref),
     reposts: h.lists.reposts.map(ref),
@@ -546,8 +555,22 @@ function expectedDocument(h: Harness, missingMedia: string[] = []) {
       { type: "signup", at: iso(T0 - 3 * DAY_MS) },
     ],
     missingMedia,
-    // Last, with every entry's members in the format's order, whatever order the moderation module handed them over in.
+    // With every entry's members in the format's order, whatever order the moderation module handed them over in.
     moderation: expectedModeration(h),
+    // 3b (11.2): last, the account's imports, each member in the format's order.
+    imports: h.imports.map((entry) => ({
+      id: entry.id,
+      source: entry.source,
+      status: entry.status,
+      createdAt: entry.createdAt.toISOString(),
+      endedAt: entry.endedAt ? entry.endedAt.toISOString() : null,
+      statedAt: entry.statedAt ? entry.statedAt.toISOString() : null,
+      choice:
+        entry.choice === null
+          ? null
+          : { from: entry.choice.from, to: entry.choice.to, replies: entry.choice.replies, warnings: entry.choice.warnings, protected: entry.choice.protected, images: entry.choice.images, long: entry.choice.long },
+      counts: entry.counts,
+    })),
   };
 }
 
@@ -702,6 +725,7 @@ function addManyRows(h: Harness): void {
       state: i === 4 ? "withheld" : "visible",
       deletedAt: null,
       media: i === 1 ? [{ id: randomUUID(), altText: `alt ${accented}`, width: 10, height: 20 }] : [],
+      imported: null,
     });
   }
   for (let i = 0; i < 6; i++) h.lists.likes.push({ postId: randomUUID(), at: new Date(T0 - 900 + i) });
@@ -762,8 +786,10 @@ describe("building the export", () => {
         { id: h.imageA, file: `media/${h.imageA}.webp`, altText: "a harbour at dawn", width: 1600, height: 1200 },
         { id: h.imageB, file: `media/${h.imageB}.webp`, altText: "a lighthouse", width: 900, height: 1600 },
       ],
+      // 3b (11.2): a native post carries no import.
+      imported: null,
     });
-    expect(json.posts[1]).toEqual({ id: h.deletedId, body: "", createdAt: iso(T0 - DAY_MS), replyToId: h.postId, quoteOfId: null, state: "deleted_by_author", deletedAt: iso(T0 - 1_000), media: [] });
+    expect(json.posts[1]).toEqual({ id: h.deletedId, body: "", createdAt: iso(T0 - DAY_MS), replyToId: h.postId, quoteOfId: null, state: "deleted_by_author", deletedAt: iso(T0 - 1_000), media: [], imported: null });
     expect(json.likes).toEqual([{ postId: h.likedId, at: iso(T0 - DAY_MS) }]);
     expect(json.reposts).toEqual([]);
     expect(json.bookmarks).toEqual([{ postId: h.bookmarkedId, at: iso(T0 - 500) }]);
@@ -809,20 +835,21 @@ describe("building the export", () => {
     expect((await collect(exportJson(plan))).join("")).toBe(JSON.stringify(expectedDocument(h, [h.imageA, h.imageB]), null, 2));
   });
 
-  test("the moderation member is the document's last: read once, before the first byte, for the account that asks, and written with the format's members in the format's order and nothing else", async () => {
+  test("the moderation member comes last but 3b's imports: read once, before the first byte, for the account that asks, and written with the format's members in the format's order and nothing else", async () => {
     const h = harness();
     const plan = await buildExport(h.deps, h.userId, h.currentSession, h.now());
     // Read with the account's own facts, before anything is written.
     expect(h.asked).toEqual([h.userId]);
     const text = (await collect(exportJson(plan))).join("");
     const raw = JSON.parse(text) as Record<string, unknown>;
-    expect(Object.keys(raw).at(-1)).toBe("moderation");
+    // 3b Task 6 (11.2): the account's imports follow it, the document's last member since.
+    expect(Object.keys(raw).slice(-2)).toEqual(["moderation", "imports"]);
     expect(raw.moderation).toStrictEqual(expectedModeration(h));
     // The contract reads it whole: nothing of it lies outside the format.
     expect(ExportFormat.parse(raw).moderation).toStrictEqual(raw.moderation);
     // Member for member in the format's order, though the module handed every object over in another one.
     const NL = String.fromCharCode(10);
-    expect(text.endsWith(`,${NL}  "moderation": ${JSON.stringify(expectedModeration(h), null, 2).replaceAll(NL, `${NL}  `)}${NL}}`)).toBe(true);
+    expect(text.endsWith(`,${NL}  "moderation": ${JSON.stringify(expectedModeration(h), null, 2).replaceAll(NL, `${NL}  `)},${NL}  "imports": []${NL}}`)).toBe(true);
     // What the module's objects carry beyond the format is not written.
     expect(text).not.toContain("decidedBy");
     expect(text).not.toContain("a staff member the export must never name");
@@ -838,11 +865,40 @@ describe("building the export", () => {
     expect(h.asked).toEqual([]);
   });
 
+  test("3b (11.2): an imported post carries its source, the archive's date and its mark last; the document ends with the account's imports, member by member", async () => {
+    const h = harness();
+    const original = new Date(Date.UTC(2019, 2, 3, 12, 0, 0));
+    h.lists.posts.push({ id: randomUUID(), body: "from the archive", createdAt: new Date(T0 - 500), replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [], imported: { source: "mastodon", originalCreatedAt: original, shortened: true } });
+    // Handed over with the choice's members in another order: the export writes the format's.
+    h.imports.push(
+      {
+        id: randomUUID(),
+        source: "mastodon",
+        status: "done",
+        createdAt: new Date(T0 - 2 * DAY_MS),
+        endedAt: new Date(T0 - DAY_MS),
+        statedAt: new Date(T0 - 2 * DAY_MS + 1_000),
+        choice: { long: "shorten", images: false, protected: false, warnings: false, replies: true, to: "2019-12", from: null },
+        counts: { postsPublished: 1, postsRemoved: 0, imagesKept: 0, imagesLeftOut: 0 },
+      },
+      { id: randomUUID(), source: "x", status: "cancelled", createdAt: new Date(T0 - 3 * DAY_MS), endedAt: new Date(T0 - 3 * DAY_MS), statedAt: null, choice: null, counts: { postsPublished: 0, postsRemoved: 0, imagesKept: 0, imagesLeftOut: 0 } },
+    );
+    const text = (await collect(exportJson(await buildExport(h.deps, h.userId, h.currentSession, h.now())))).join("");
+    const document = JSON.parse(text) as { posts: { imported: unknown }[]; imports: { choice: Record<string, unknown> | null }[] };
+    expect(ExportFormat.parse(document)).toEqual(document);
+    expect(Object.keys(document).at(-1)).toBe("imports");
+    expect(document.posts.at(-1)!.imported).toEqual({ source: "mastodon", originalCreatedAt: original.toISOString(), shortened: true });
+    expect(document.posts[0]!.imported).toBeNull();
+    expect(Object.keys(document.imports[0]!.choice!)).toEqual(["from", "to", "replies", "warnings", "protected", "images", "long"]);
+    expect(document.imports[1]!.choice).toBeNull();
+    expect(text).toBe(JSON.stringify(expectedDocument(h), null, 2));
+  });
+
   test("a large account's export.json comes in several pieces of at most 64 KiB of UTF-8", async () => {
     const h = harness();
     const accented = String.fromCharCode(0xe9).repeat(200);
     for (let i = 0; i < 3_000; i++) h.lists.likes.push({ postId: randomUUID(), at: new Date(T0 - 100_000 + i) });
-    for (let i = 0; i < 1_000; i++) h.lists.posts.push({ id: randomUUID(), body: accented, createdAt: new Date(T0 - 50_000 + i), replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [] });
+    for (let i = 0; i < 1_000; i++) h.lists.posts.push({ id: randomUUID(), body: accented, createdAt: new Date(T0 - 50_000 + i), replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [], imported: null });
     const pieces = await collect(exportJson(await buildExport(h.deps, h.userId, h.currentSession, h.now())));
     expect(pieces.length).toBeGreaterThan(5);
     for (const piece of pieces) expect(Buffer.byteLength(piece, "utf8")).toBeLessThanOrEqual(KIB64);

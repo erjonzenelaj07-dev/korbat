@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { decisionClass, parseRestoreArgs, readTail, walkTail } from "../src/cli/restore";
+import { GAP_MEASURE_CLASSES, GAP_SITE_CLASSES } from "@korbat/contracts";
+import { IMPORT_END_GAP_CLASS, decisionClass, parseRestoreArgs, readTail, walkTail } from "../src/cli/restore";
 import { parseStaffArgs } from "../src/cli/staff";
 import { CHAIN_ZERO_HASH, canonicalText, chainHash } from "../src/staff";
 
@@ -103,6 +104,12 @@ describe("restore-import's walk of the keeper's files", () => {
     expect(decisionClass({ kind: "final", actions: [{ kind: "remove" }, { kind: "strike" }] })).toBe("restriction");
     expect(decisionClass({ kind: "correction", actions: [{ kind: "restore" }] })).toBe("reversal");
     expect(decisionClass({ kind: "final", actions: [] })).toBe("no_measure");
+  });
+
+  test("3b Task 6: a lost admin's end of an import is a gap of the class restriction, a measure that keeps retention off while it is open, and no site class", () => {
+    expect(IMPORT_END_GAP_CLASS).toBe("restriction");
+    expect(GAP_MEASURE_CLASSES).toContain(IMPORT_END_GAP_CLASS);
+    expect(GAP_SITE_CLASSES).not.toContain(IMPORT_END_GAP_CLASS);
   });
 
   test("the commands' words: kept places, and --after a place", () => {

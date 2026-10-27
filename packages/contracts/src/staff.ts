@@ -423,6 +423,15 @@ export const UploadReleasedParams = z
 export type UploadReleasedParams = z.infer<typeof UploadReleasedParams>;
 
 /**
+ * 3b (design, section 8.7; the orchestrator's ruling for Task 6): POST /api/staff/imports/:import/end, an admin's end of a
+ * whole import, by the import's id: the case about one of its posts that the admin acts from, the decision recorded on
+ * that case that the end rests on (a final decision that restricted, under a rule), and that rule. The import's row keeps
+ * all three with the time; the person's mail names the rule and the decision, which can be appealed as any.
+ */
+export const ImportEndedByStaffParams = z.strictObject({ caseId: LowerCaseUuid, decisionId: LowerCaseUuid, ruleId: z.enum(RULE_IDS) });
+export type ImportEndedByStaffParams = z.infer<typeof ImportEndedByStaffParams>;
+
+/**
  * 3d Task 6 (design, sections 6.6, 7.9 and 10.4): the params of the system's audit row automated_decided, no step-up's:
  * a program's decision as decision_holds compares it with the decision's row, member for member as CaseDecidedParams, with
  * these values fixed: kind interim, throughSeq 0, no reviewed decision, outcome restricted, ground incompatible, rule R1
@@ -488,6 +497,8 @@ export const STAFF_STEP_UP_ACTIONS = {
   upload_hold_ended: { targetType: "upload_refusal", targetId: LowerCaseUuid, params: UploadHoldEndedParams },
   /** 3d Task 7: POST /api/staff/uploads/:refusal/release: the release of a held upload, by the refusal's id. */
   upload_released: { targetType: "upload_refusal", targetId: LowerCaseUuid, params: UploadReleasedParams },
+  /** 3b: POST /api/staff/imports/:import/end: an admin's end of a whole import, by the import's id. */
+  import_ended_by_staff: { targetType: "import", targetId: LowerCaseUuid, params: ImportEndedByStaffParams },
 } as const;
 export type StaffStepUpAction = keyof typeof STAFF_STEP_UP_ACTIONS;
 
@@ -517,6 +528,7 @@ export const StaffStepUpOptionsRequest = z.discriminatedUnion("action", [
   stepUpRequest("seal_released"),
   stepUpRequest("upload_hold_ended"),
   stepUpRequest("upload_released"),
+  stepUpRequest("import_ended_by_staff"),
 ]);
 export type StaffStepUpOptionsRequest = z.infer<typeof StaffStepUpOptionsRequest>;
 
@@ -542,6 +554,13 @@ export type OrderEffectRequest = z.infer<typeof OrderEffectRequest>;
  */
 export const OrderCorrectRequest = z.strictObject({ facts: OrderCorrectFacts, stepUp: AuthenticationResponseJSON.optional() });
 export type OrderCorrectRequest = z.infer<typeof OrderCorrectRequest>;
+
+/**
+ * 3b: POST /api/staff/imports/:import/end: the action's params with the step-up assertion added as `stepUp`. The route
+ * answers 201 with the case as it now stands (CaseView), whose target shows the import's size.
+ */
+export const ImportEndRequest = ImportEndedByStaffParams.safeExtend({ stepUp: AuthenticationResponseJSON });
+export type ImportEndRequest = z.infer<typeof ImportEndRequest>;
 
 /** POST /api/staff/items/:item/reveal: the action's params with the step-up assertion added as `stepUp`. */
 export const IdentityRevealRequest = IdentityRevealedParams.extend({ stepUp: AuthenticationResponseJSON });

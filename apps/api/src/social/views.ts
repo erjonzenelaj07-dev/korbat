@@ -84,7 +84,8 @@ export async function loadPostViews({ repo, media, moderation }: ViewSource, vie
     const row = all.get(id);
     if (!row) return tombstone(id, "hidden");
     const a = access(row);
-    return a === "shown" ? { ...base(row), quoteOf: null } : tombstone(id, a);
+    // 3b: a quoted post carries its provenance label too, last, for the embed's short line (10.6).
+    return a === "shown" ? { ...base(row), quoteOf: null, imported: row.imported } : tombstone(id, a);
   };
 
   const out = new Map<string, LoadedPost>();
@@ -96,7 +97,11 @@ export async function loadPostViews({ repo, media, moderation }: ViewSource, vie
     }
     const a = access(row);
     const decision = decisions?.get(id);
-    out.set(id, a === "shown" ? { ...base(row), ...(inExplore.has(id) ? { inExplore: true as const } : {}), ...(decision ? { moderation: decision } : {}), quoteOf: quoteOf(row.quoteOfId) } : tombstone(id, a));
+    // 3b (9.3): the provenance label last, from the post's own columns: the archive's day, never its second.
+    out.set(
+      id,
+      a === "shown" ? { ...base(row), ...(inExplore.has(id) ? { inExplore: true as const } : {}), ...(decision ? { moderation: decision } : {}), quoteOf: quoteOf(row.quoteOfId), imported: row.imported } : tombstone(id, a),
+    );
   }
   return out;
 }

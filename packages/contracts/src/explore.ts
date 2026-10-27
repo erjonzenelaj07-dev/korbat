@@ -86,6 +86,8 @@ export const ExploreStatusKind = z.enum([
   // Replies and quotes never enter.
   "reply",
   "quote",
+  // 3b (design, sections 8.5 and 10.6): an imported post enters no feed on its own, Explore included.
+  "imported",
   // Withheld, removed or deleted.
   "not_visible",
   // The author's account is suspended now (3e): its posts leave Explore at the next read.

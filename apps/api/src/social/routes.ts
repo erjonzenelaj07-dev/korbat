@@ -12,7 +12,7 @@ import { blockedList, mutedList, setBlock, setFollow, setMute } from "./flows/gr
 import { createPost, deletePost, getPost, thread } from "./flows/posts";
 import { changeHandle, editProfile } from "./flows/profile-edit";
 import { followers, following, profile } from "./flows/profiles";
-import { bookmarkedPosts, followingTimeline, latestTimeline, likedPosts, profilePosts, profileReplies } from "./flows/timelines";
+import { bookmarkedPosts, followingTimeline, latestTimeline, likedPosts, profileImported, profilePosts, profileReplies } from "./flows/timelines";
 
 const PostParam = z.object({ id: PostId });
 const ProfileParam = z.object({ handle: HandleParam });
@@ -80,6 +80,10 @@ export function socialRoutes(deps: SocialDeps, guard: MiddlewareHandler<AppEnv>,
   );
   r.get("/profiles/:handle/replies", validate("param", ProfileParam), validate("query", Pagination), async (c) =>
     c.json(await profileReplies(deps, viewer(c), c.req.valid("param").handle, c.req.valid("query"))),
+  );
+  // 3b (design, section 9.2): the Imported tab, public as the Posts tab is.
+  r.get("/profiles/:handle/imported", validate("param", ProfileParam), validate("query", Pagination), async (c) =>
+    c.json(await profileImported(deps, viewer(c), c.req.valid("param").handle, c.req.valid("query"))),
   );
   r.get("/profiles/:handle/followers", guard, validate("param", ProfileParam), validate("query", Pagination), async (c) =>
     c.json(await followers(deps, me(c), c.req.valid("param").handle, c.req.valid("query"))),

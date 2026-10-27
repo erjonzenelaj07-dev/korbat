@@ -241,6 +241,9 @@ export function exploreStatusText(status: ExploreStatusKind, formula: ExploreFor
     case "reply":
     case "quote":
       return null;
+    // 3b (design, section 10.6): for completeness; the author's own imported post's "Who sees this" never asks /explore.
+    case "imported":
+      return "Not in Explore: imported posts enter no feed on their own.";
     case "not_visible":
       return "Not in Explore: posts under review or removed never appear there.";
     case "suspended":

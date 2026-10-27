@@ -55,6 +55,14 @@ export const importJobs = pgTable(
     /** An admin's end of the whole import (8.7): when, and under which rule. Set together, once. */
     staffEndedAt: ts("staff_ended_at"),
     staffRuleId: text("staff_rule_id"),
+    /**
+     * 3b Task 6 (the orchestrator's ruling; migration 0048): the case about one of the import's posts that the admin
+     * ended it from, and the decision recorded on that case that the end rests on, set with the two above, together and
+     * once. No foreign key: the moderation module's retention erases what it erases on its own clock, and the import's
+     * row keeps the ids it was ended by.
+     */
+    staffCaseId: uuid("staff_case_id"),
+    staffDecisionId: uuid("staff_decision_id"),
     /** The archive's day and first words of the post whose image was refused (8.2). Set together, once. */
     refusedAtOriginal: date("refused_at_original"),
     refusedWords: text("refused_words"),
@@ -101,7 +109,11 @@ export const importJobs = pgTable(
     check("import_jobs_stop_reason", sql`${t.stopReason} in ('refused_image', 'by_author', 'by_staff', 'time_ran_out')`),
     // A stopped import has its reason; the reason stays through the undo, and no other state has one.
     check("import_jobs_stopped", sql`(${t.status}::text <> 'stopped' or ${t.stopReason} is not null) and (${t.stopReason} is null or ${t.status}::text in ('stopped', 'undoing', 'undone'))`),
-    check("import_jobs_staff", sql`(${t.staffEndedAt} is null) = (${t.staffRuleId} is null)`),
+    // 3b Task 6 (0048): the staff end's four columns are set together or not at all.
+    check(
+      "import_jobs_staff",
+      sql`(${t.staffEndedAt} is null) = (${t.staffRuleId} is null) and (${t.staffEndedAt} is null) = (${t.staffCaseId} is null) and (${t.staffEndedAt} is null) = (${t.staffDecisionId} is null)`,
+    ),
     check("import_jobs_refused", sql`(${t.refusedAtOriginal} is null) = (${t.refusedWords} is null)`),
     // IMPORT_RULES.refusedWordsMax, in code points.
     check("import_jobs_refused_words", sql`char_length(${t.refusedWords}) <= 80`),

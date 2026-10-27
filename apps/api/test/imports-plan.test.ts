@@ -3,7 +3,7 @@ import { describe, expect, test } from "vitest";
 import { IMPORT_RULES, type ImportChoice, type ImportedPost } from "@korbat/contracts";
 import { isMediaId } from "@korbat/media-protocol";
 import { settlementOf } from "../src/imports/feeder";
-import { chosenTotals, firstWords, imageAlt, importImageId, importPostId, keptLine, marksPass, monthInChoice, uuidFrom } from "../src/imports/plan";
+import { ELLIPSIS, chosenTotals, firstWords, imageAlt, importImageId, importPostId, keptLine, marksPass, monthInChoice, shortenText, uuidFrom } from "../src/imports/plan";
 import type { PickRow } from "../src/imports/repo";
 
 /**
@@ -105,6 +105,30 @@ describe("a refused post's first words (8.2)", () => {
     // Code points, not UTF-16 units: an astral character counts once.
     const astral = String.fromCodePoint(0x1f600);
     expect([...firstWords(astral.repeat(100))].length).toBe(IMPORT_RULES.refusedWordsMax);
+  });
+});
+
+describe("a long post shortened on import (decision 13; 3b Task 6)", () => {
+  test("within shortenTo it is kept as it is; over it, cut at the last space within shortenTo - 1 code points, then the ellipsis, never over shortenTo", () => {
+    const exact = "x".repeat(IMPORT_RULES.shortenTo);
+    expect(shortenText(exact)).toEqual({ body: exact, shortened: false });
+    const words = Array.from({ length: 400 }, (_, i) => `w${i}`).join(" ");
+    const { body, shortened } = shortenText(words);
+    expect(shortened).toBe(true);
+    expect(body.endsWith(ELLIPSIS)).toBe(true);
+    expect([...body].length).toBeLessThanOrEqual(IMPORT_RULES.shortenTo);
+    const kept = body.slice(0, -1);
+    expect(words.startsWith(kept)).toBe(true);
+    expect(words[kept.length]).toBe(" ");
+    // A line break is a place to cut too, and is not kept at the end.
+    const NL = String.fromCharCode(10);
+    const lines = `${"a".repeat(990)}${NL}${"b".repeat(50)}`;
+    expect(shortenText(lines).body).toBe(`${"a".repeat(990)}${ELLIPSIS}`);
+    // No space at all: cut at shortenTo - 1, so the ellipsis makes shortenTo.
+    expect([...shortenText("y".repeat(5_000)).body].length).toBe(IMPORT_RULES.shortenTo);
+    // Code points, not UTF-16 units: an astral character counts once.
+    const astral = String.fromCodePoint(0x1f600);
+    expect([...shortenText(astral.repeat(2_000)).body].length).toBe(IMPORT_RULES.shortenTo);
   });
 });
 

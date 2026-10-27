@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { DisplayName, HandleInput } from "./auth";
+import { ImportSource } from "./imports";
 import { HiddenMedia, MEDIA_MAX_PER_POST, MediaAttachment, MediaView } from "./media";
 import { RULE_IDS } from "./moderation";
 import { FORBIDDEN_CONTROL, FORBIDDEN_FORMAT, normalizePostBody, postLength, visibleLength } from "./text";
@@ -101,8 +102,19 @@ const postFields = {
   viewer: ViewerPostState.optional(),
 };
 
-/** A quoted post as embedded: one level deep, so its own quote is not expanded. */
-export const QuotedPost = z.object({ ...postFields, quoteOf: z.null() });
+/**
+ * 3b (design, sections 8.4, 9.3 and 10.6): the provenance label of an imported post, made from the post's own columns and
+ * nothing else: its source, the archive's day (YYYY-MM-DD in UTC, never its second, which with the text would fingerprint
+ * the original) and whether it was cut to 1,000 characters on import. Null on every native post.
+ */
+export const ImportedLabel = z.object({ source: ImportSource, at: z.iso.date(), shortened: z.boolean() });
+export type ImportedLabel = z.infer<typeof ImportedLabel>;
+
+/**
+ * A quoted post as embedded: one level deep, so its own quote is not expanded. 3b (the orchestrator's ruling for Task 6):
+ * it carries the label as PostView does, last, for QuoteEmbed's short line (10.6).
+ */
+export const QuotedPost = z.object({ ...postFields, quoteOf: z.null(), imported: ImportedLabel.nullable() });
 export type QuotedPost = z.infer<typeof QuotedPost>;
 
 /**
@@ -128,6 +140,8 @@ export const PostView = z.object({
   /** Present only on the viewer's own post while moderation withholds or removed it; nobody else's view carries it, nor does a quoted embed. */
   moderation: PostModeration.optional(),
   quoteOf: z.union([QuotedPost, Tombstone]).nullable(),
+  /** 3b (9.3): the provenance label of an imported post, last; null on a native post. */
+  imported: ImportedLabel.nullable(),
 });
 export type PostView = z.infer<typeof PostView>;
 
@@ -187,6 +201,11 @@ export const ProfileView = z.object({
   verified: z.boolean(),
   createdAt: z.iso.datetime(),
   counts: ProfileCounts,
+  /**
+   * 3b (9.3, 10.6): the account has a visible imported top-level post, so the profile shows its Imported tab, for every
+   * reader alike.
+   */
+  hasImported: z.boolean(),
   /** Present only for a signed-in viewer looking at someone else. */
   viewer: ViewerProfileState.optional(),
 });

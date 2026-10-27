@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { Platform, Role } from "./auth";
+import { ImportChoice, ImportSource, ImportStatus } from "./imports";
 import { AUTOMATED_DECISIONS, ITEM_OUTCOMES, MEASURE_KINDS, NoticeRef, REPLY_TEXT_MAX, REVERSAL_KINDS, RULE_IDS, STANDING_BASES, STANDING_DAYS, StatementSignal, TDB_CATEGORIES, UploadRefusalView } from "./moderation";
 import { OrderNoticeFacts, OrderTexts } from "./orders";
 
@@ -26,6 +27,28 @@ const ExportedPost = z.object({
   state: z.enum(["visible", "withheld", "removed", "deleted_by_author"]),
   deletedAt: at.nullable(),
   media: z.array(ExportedMedia),
+  /**
+   * 3b (design, section 11.2): an imported post's source, the date its archive gave it and whether it was shortened on
+   * import, last; null on a native post and on a deleted one, whose import columns are cleared. Added to korbat-export-1
+   * without a new format name.
+   */
+  imported: z.object({ source: ImportSource, originalCreatedAt: at, shortened: z.boolean() }).nullable(),
+});
+
+/**
+ * 3b (design, section 11.2): one of the account's imports, newest first: its source, state and times, when the person made
+ * the statement, the choice confirmed (null before a confirmation) and its counts. Never a file name, a handle or a text:
+ * the archive and the work folder are not exported.
+ */
+const ExportedImport = z.object({
+  id: z.uuid(),
+  source: ImportSource,
+  status: ImportStatus,
+  createdAt: at,
+  endedAt: at.nullable(),
+  statedAt: at.nullable(),
+  choice: ImportChoice.nullable(),
+  counts: z.object({ postsPublished: z.int().min(0), postsRemoved: z.int().min(0), imagesKept: z.int().min(0), imagesLeftOut: z.int().min(0) }),
 });
 
 /** A passkey of the account as the export lists it (1c design, section 7.7): what the Security screen shows, and nothing that identifies the key, its id or its authenticator. */
@@ -293,5 +316,10 @@ export const ExportFormat = z.object({
     uploads: z.array(UploadRefusalView),
     releases: z.array(ExportedRelease),
   }),
+  /**
+   * 3b (design, section 11.2): the account's imports, newest first, each as ExportedImport. Added to korbat-export-1
+   * without a new format name, last in the document: a reader that does not know the member loses nothing by skipping it.
+   */
+  imports: z.array(ExportedImport),
 });
 export type ExportFormat = z.infer<typeof ExportFormat>;

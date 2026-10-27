@@ -110,7 +110,9 @@ export type TemplateName =
   | "automated_waiting"
   // 3b Task 5: imported images whose match does not act were left out of their import, a staff alert whose mail is its
   // push's sentence.
-  | "import_image_flagged";
+  | "import_image_flagged"
+  // 3b Task 6: an admin ended the person's whole import under a rule; its posts are being removed.
+  | "import_ended_by_staff";
 
 /** Every template but the one whose data is a structure: its data are flat strings. */
 export type FlatTemplateName = Exclude<TemplateName, "notice_update">;

@@ -40,6 +40,7 @@ import type { Logger } from "pino";
 import type { ActiveStaffSession, AuthForModeration, StaffStepUpConfirmed } from "../auth";
 import type { Config } from "../config";
 import type { AppEnv } from "../env";
+import type { ImportsForModeration } from "../imports";
 import type { JobLock } from "../lib/jobs";
 import type { MediaForCases, StoredFile } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
@@ -57,7 +58,7 @@ import { exportFor, type ModerationExport } from "./export";
 import { addItems, closeContact, contactPage, correctOrderRecord, giveEffect, openOrder, orderView, ordersPage, recordEvent, type OrderOutcome } from "./orders";
 import { releaseSeal, type ReleaseOutcome } from "./release";
 import { endHold, heldUploads, matchedHandler, releaseUpload } from "./uploads";
-import { forgetReporter } from "./repo";
+import { forgetReporter, importEndBasis } from "./repo";
 import { RETENTION_OFF_WARNING, createRetentionJob } from "./retention";
 import { standingFor, standingLists, takeDownDue, type TakeDown } from "./standing";
 import { reveal, type RevealOutcome } from "./reveal";
@@ -185,6 +186,12 @@ export interface ModerationForStaff {
   endHold(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<HeldUpload | "ended" | "late">;
   /** 3d Task 7: an admin's release of a held upload ended as report, as a seal's release; the refusal as it now shows. */
   releaseUpload(session: ActiveStaffSession, confirmed: StaffStepUpConfirmed, ctx: { requestId: string }): Promise<HeldUpload | "ended" | "late">;
+  /**
+   * 3b Task 6 (design, section 8.7; the orchestrator's ruling): what an admin's end of a whole import rests on: the case's
+   * post, when the decision is one of the case's, final and restricting, under the rule the end names, and the case is
+   * about a post; null otherwise. The staff module holds the post to the import in the end's transaction.
+   */
+  importEndBasis(caseId: string, decisionId: string, ruleId: string): Promise<{ postId: string } | null>;
 }
 
 /**
@@ -204,9 +211,15 @@ export interface ModerationForSocial {
 
 /**
  * What the imports module needs from this one (3b design, section 8.1; Task 5): the staff alert for imported images whose
- * match does not act, which an import leaves out and never publishes. Task 6 adds imagesPublished for imported posts.
+ * match does not act, which an import leaves out and never publishes; and (Task 6, 4.5 step 3) the automated step of a
+ * published imported post's images, as for a native post.
  */
 export interface ModerationForImports {
+  /**
+   * After the commit of a batch that wrote this post with images: the automated step of each image whose score is at or
+   * over the threshold starts on the module's background, unwaited for, as createPost's does (ModerationForSocial).
+   */
+  imagesPublished(postId: string): void;
   /**
    * After the commit that left `count` images of import `importId` out as flagged: the alert import_image_flagged to every
    * staff account, its facts the time and the count alone, at most once an hour an import (IMPORT_FLAGGED_WINDOW_MS); a
@@ -246,6 +259,11 @@ export interface CreateModerationOptions {
   apiDb: Db;
   /** The auth module's interface for moderation: auth.forModeration. */
   auth: AuthForModeration;
+  /**
+   * 3b Task 6: the imports module's interface for cases, importsForModeration(apiDb), through which a case reads an
+   * import's size. Without it a case shows no import.
+   */
+  imports?: ImportsForModeration;
   /** The social module's interface for cases: socialForModeration(apiDb). */
   social: SocialForModeration;
   /** The media module's interface for cases: media.forCases. */
@@ -268,6 +286,7 @@ export function createModeration(options: CreateModerationOptions) {
     auth: options.auth,
     social: options.social,
     media: options.media,
+    imports: options.imports,
     limits: options.rateLimitStore,
     background: createBackground(options.logger),
     config: options.config,
@@ -305,6 +324,7 @@ export function createModeration(options: CreateModerationOptions) {
     uploads: (session, cursor) => heldUploads(deps, session, cursor),
     endHold: (session, confirmed, ctx) => endHold(deps, session, confirmed, ctx),
     releaseUpload: (session, confirmed, ctx) => releaseUpload(deps, session, confirmed, ctx),
+    importEndBasis: (caseId, decisionId, ruleId) => importEndBasis(deps.apiDb, caseId, decisionId, ruleId),
     copyTaken: async (facts) => {
       // Started and not waited for, as what follows a decision is: the download's answer never waits for a mail relay.
       deps.background.start(async () => {
@@ -321,6 +341,7 @@ export function createModeration(options: CreateModerationOptions) {
     imagesPublished: (postId) => imagesPublished(deps, postId),
   };
   const forImports: ModerationForImports = {
+    imagesPublished: (postId) => imagesPublished(deps, postId),
     async imagesFlagged({ importId, count, at }) {
       try {
         return await staffAlert(deps, `import-image-flagged:${importId}`, IMPORT_FLAGGED_WINDOW_MS, { template: "import_image_flagged", facts: { at: at.toISOString(), count } });

@@ -117,7 +117,9 @@ export async function standingFacts(q: Runner, accountId: string): Promise<Stand
     repeat_newer: string | null;
   }>(
     q,
-    sql`select (select count(*)::int from posts p where p.author_id = ${account} and p.created_at > now() - make_interval(mins => k.flood_minutes)) as posts,
+    // 3b (design, section 8.5; decision 9): the flood count is of native posts only, as 0044's decision_actions_check counts
+    // it: an import is published at once by design and reaches no feed, so it is no flood.
+    sql`select (select count(*)::int from posts p where p.author_id = ${account} and p.created_at > now() - make_interval(mins => k.flood_minutes) and p.import_job_id is null) as posts,
                ${iso("(now() - make_interval(mins => k.flood_minutes))")} as from_at, ${iso("now()")} as to_at,
                -- 3f: each basis below takes only a decision its subject was told of, as decision_actions_check does.
                (select ${iso("x.decided_at")} from decisions x join cases xc on xc.id = x.case_id and xc.target_type = 'post' join posts xp on xp.id = xc.target_id and xp.author_id = ${account}

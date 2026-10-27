@@ -117,6 +117,7 @@ function post(n: number, signedIn: boolean, extra: Partial<PostView> = {}): Post
     counts: { likes: (n * 3) % 17, reposts: n % 4, replies: n % 3, quotes: n % 2 },
     media: n === 8 ? [image(8), image(80)] : n % 4 === 0 ? [image(n)] : [],
     quoteOf: null,
+    imported: null,
     ...extra,
   };
   if (signedIn) view.viewer = { liked: n % 5 === 0, reposted: false, bookmarked: false };
@@ -177,6 +178,8 @@ function profile(author: Author, signedIn: boolean) {
       verified: author.verified,
       createdAt: ago(60 * 24 * 90),
       counts: { posts: 42, followers: 128, following: 64 },
+      // 3b Task 6: no account of the walk has imported posts; Task 7 gives one an Imported tab.
+      hasImported: false,
       // The reader follows nobody yet, so the follow step starts from Follow.
       ...(signedIn && !self ? { viewer: { following: false, followedBy: false, blocked: false, muted: false } } : {}),
     },
@@ -487,6 +490,7 @@ export function createFixtureApi(): FixtureApi {
           media: [],
           viewer: { liked: false, reposted: false, bookmarked: false },
           quoteOf: quoted ? { ...quoted, quoteOf: null } : null,
+          imported: null,
         },
         "written post",
       );

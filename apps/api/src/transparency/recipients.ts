@@ -12,7 +12,7 @@ import type { TransparencyRepo } from "./repo";
  * else indeed, and no file keeps a value that was added to a sketch.
  *
  *   A, signed in: every request whose session resolved adds the account's id to `mau:in:<yyyy-mm>`, the UTC month's sketch.
- *   B, signed out (only while RECIPIENTS_SIGNED_OUT is on): a GET of one of the seven public reads of the social module
+ *   B, signed out (only while RECIPIENTS_SIGNED_OUT is on): a GET of one of the public reads of the social module (3d's seven, and 3b's Imported tab)
  *      without a session adds HMAC-SHA-256(the day's salt, network LF user agent) to `mau:out:<yyyy-mm-dd>`, the network
  *      being clientNetwork(address) and the agent cut at 256 bytes. The salt, `mau:salt:<yyyy-mm-dd>`, is 32 random bytes
  *      set once with SET NX and 26 hours to live, kept in memory for its UTC day and written nowhere else, so after 26
@@ -52,7 +52,7 @@ export const sketchKeys = {
 };
 
 /**
- * The seven reads as patterns of a GET's path: a parameter matches one segment. Built once from the contracts' list,
+ * The public reads as patterns of a GET's path: a parameter matches one segment. Built once from the contracts' list,
  * which names the routes with their method.
  */
 const READ_PATHS: readonly RegExp[] = RECIPIENT_READ_ROUTES.map((route) => {
@@ -64,7 +64,7 @@ const READ_PATHS: readonly RegExp[] = RECIPIENT_READ_ROUTES.map((route) => {
   return new RegExp(`^${pattern}$`);
 });
 
-/** Whether a GET of this path is one of the seven public reads. */
+/** Whether a GET of this path is one of the public reads. */
 export const isReadRoute = (path: string) => READ_PATHS.some((pattern) => pattern.test(path));
 
 const LF = Buffer.from([10]);

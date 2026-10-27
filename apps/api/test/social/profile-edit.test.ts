@@ -23,7 +23,7 @@ describe("profile editing", () => {
     const h = profileHarness();
     const ada = h.profile("ada");
     const named = await editProfile(h.deps, ada.id, { displayName: "Ada Lovelace" });
-    expect(ProfileView.parse(named)).toMatchObject({ id: ada.id, handle: "ada", displayName: "Ada Lovelace", bio: "", verified: false, counts: { posts: 0, followers: 0, following: 0 } });
+    expect(ProfileView.parse(named)).toMatchObject({ id: ada.id, handle: "ada", displayName: "Ada Lovelace", bio: "", verified: false, counts: { posts: 0, followers: 0, following: 0 }, hasImported: false });
     expect(named.viewer).toBeUndefined();
     expect((await editProfile(h.deps, ada.id, { bio: "Analytical engines." })).bio).toBe("Analytical engines.");
     const both = await editProfile(h.deps, ada.id, { displayName: "Ada", bio: "" });

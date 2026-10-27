@@ -193,7 +193,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the queue and the case, 
         const view = await readCase(deps, sessionOf(mod), caseId);
         expect(CaseView.safeParse(view).success, JSON.stringify(CaseView.safeParse(view).error?.issues)).toBe(true);
         expect(view).toMatchObject({ id: caseId, lane: 1, stateVersion: 0, intakeSeq: 1, answeredSeq: 0, closedAt: null, suspicion: null, imagesAllowed: true, decisions: [], appeals: [], drafts: [], notes: [], sealsDeclined: [] });
-        expect(view.target).toEqual({ type: "post", id: p.postId, link: `${new URL(deps.config.APP_ORIGIN).origin}/post/${p.postId}`, authorHandle: await handleOf(tx, p.authorId), state: "visible", level: "visible" });
+        expect(view.target).toEqual({ type: "post", id: p.postId, link: `${new URL(deps.config.APP_ORIGIN).origin}/post/${p.postId}`, authorHandle: await handleOf(tx, p.authorId), state: "visible", level: "visible", imported: null });
 
         // The snapshot is shown, and recomputes from the answer alone to the digest stored with it.
         expect(view.snapshots).toHaveLength(1);

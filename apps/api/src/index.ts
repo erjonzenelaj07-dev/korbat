@@ -5,7 +5,7 @@ import { createAccount } from "./account";
 import { createApp } from "./app";
 import { createAuth, verificationProviderFrom } from "./auth";
 import { loadConfig } from "./config";
-import { createImports, importSettingsFrom } from "./imports";
+import { createImports, importSettingsFrom, importsForModeration } from "./imports";
 import { redisJobLock } from "./lib/jobs";
 import { createLogger } from "./lib/logger";
 import { smtpMailer } from "./mail/smtp";
@@ -89,7 +89,19 @@ const stopTransparency = transparency.startJobs(jobLock);
 // that module's own, built over the same pool, the image rows through the media module's interface for cases, and a
 // notifier's contact and every mail through the auth module's. Its limits count in the store the per-IP limit uses, and
 // the routes of an account's own decisions and reports stand behind the auth module's session guard.
-const moderation = createModeration({ apiDb, auth: auth.forModeration, social: socialForModeration(apiDb), media: media.forCases, requireSession: auth.requireSession, rateLimitStore, config, logger });
+// 3b Task 6: a case reads an import's size through the imports module's own factory over the same pool, since this
+// module is built before that one (which sends this one its alerts).
+const moderation = createModeration({
+  apiDb,
+  auth: auth.forModeration,
+  social: socialForModeration(apiDb),
+  media: media.forCases,
+  imports: importsForModeration(apiDb),
+  requireSession: auth.requireSession,
+  rateLimitStore,
+  config,
+  logger,
+});
 // The dispatch job: the staff alerts that are still due, the daily release of outcomes, and the mails that waited. And the
 // retention job: what is due is erased, and kept image rows nothing retains go; while MODERATION_RETENTION is off it only
 // forgets the hashes and ratings of a tool that is off (3d Task 8).
@@ -113,28 +125,14 @@ const social = createSocial({
 // Explore's ranking: a round at once, so Explore is filled on a new database or after downtime, then one every five minutes.
 const stopExplore = social.startExplore(jobLock);
 
-// The account module owns no table: it reaches the three modules above only through the interfaces their index files export.
-const account = createAccount({
-  auth: auth.forAccount,
-  social: social.forAccount,
-  media: media.forAccount,
-  // The purge forgets that the deleted account sent its reports, which the moderation module's tables hold.
-  moderation: moderation.forAccount,
-  requireSession: auth.requireSession,
-  requireFreshAuth: auth.requireFreshAuth(),
-  requireStrongFreshAuth: auth.requireStrongFreshAuth(),
-  rateLimitStore,
-  logger,
-});
-// Deletions the process did not finish (a crash after the auth step, a failed purge) are completed within five minutes.
-const stopPurge = account.startPurge(jobLock);
-
 // 3b: import from other platforms. The module owns the three import tables, writes import-archives and reads import-work
 // (the importer's output) only through openWorkFile; it asks the auth module whether an address is verified and the
 // social module which posts an account already imported. Its job, import-drive, reads finished scans, runs the intake,
 // applies the time limits and clears what a crash left, a round every five seconds. 3b Task 5: it feeds imported images
 // to the media module's pipeline through that module's interface, alerts staff to a non-acting match through the
-// moderation module's, and reads whether an account is suspended, for a confirmation, from the profile store.
+// moderation module's, and reads whether an account is suspended, for a confirmation, from the profile store. 3b Task 6:
+// built before the account module, whose purge deletes an account's imports and whose export lists them through
+// imports.forAccount; it publishes and removes posts through the social module's batch writers.
 const imports = createImports({
   apiDb,
   archivesDir: config.IMPORT_ARCHIVES_DIR,
@@ -152,9 +150,28 @@ const imports = createImports({
 await imports.prepare();
 const stopImports = imports.startJobs(jobLock);
 
+// The account module owns no table: it reaches the three modules above only through the interfaces their index files export.
+const account = createAccount({
+  auth: auth.forAccount,
+  social: social.forAccount,
+  media: media.forAccount,
+  // The purge forgets that the deleted account sent its reports, which the moderation module's tables hold.
+  moderation: moderation.forAccount,
+  // 3b Task 6: the purge deletes the account's imports and import key in its transaction; the export lists the imports.
+  imports: imports.forAccount,
+  requireSession: auth.requireSession,
+  requireFreshAuth: auth.requireFreshAuth(),
+  requireStrongFreshAuth: auth.requireStrongFreshAuth(),
+  rateLimitStore,
+  logger,
+});
+// Deletions the process did not finish (a crash after the auth step, a failed purge) are completed within five minutes.
+const stopPurge = account.startPurge(jobLock);
+
 // The staff console's API; createApp mounts it only while CONSOLE_ORIGIN is set. Its credential work is the auth module's,
 // its case work the moderation module's.
-const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff });
+// 3b Task 6: and an admin's end of a whole import, the imports module's.
+const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff, imports: imports.forStaff });
 
 const app = createApp({
   config,

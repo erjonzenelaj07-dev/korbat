@@ -20,8 +20,11 @@ export async function visibleProfile(deps: SocialDeps, viewer: ViewerId, handle:
   return profile;
 }
 
-/** The public facts of a profile row, as every viewer sees them; `profile` adds the viewer's relation to someone else's. */
-export function profileView(target: ProfileRow): ProfileView {
+/**
+ * The public facts of a profile row, as every viewer sees them; `profile` adds the viewer's relation to someone else's. 3b
+ * (9.3, 10.6): `hasImported`, whether the account has a visible imported top-level post, the same for every reader.
+ */
+export function profileView(target: ProfileRow, hasImported: boolean): ProfileView {
   return {
     id: target.id,
     handle: target.handle,
@@ -30,12 +33,13 @@ export function profileView(target: ProfileRow): ProfileView {
     verified: target.verified,
     createdAt: target.createdAt.toISOString(),
     counts: { posts: target.postCount, followers: target.followerCount, following: target.followingCount },
+    hasImported,
   };
 }
 
 export async function profile(deps: SocialDeps, viewer: ViewerId, handle: string): Promise<ProfileView> {
   const target = await visibleProfile(deps, viewer, handle);
-  const view = profileView(target);
+  const view = profileView(target, await deps.repo.hasImported(target.id));
   if (viewer && viewer !== target.id) {
     const relation = await deps.repo.relation(viewer, target.id);
     view.viewer = { following: relation.following, followedBy: relation.followedBy, blocked: relation.blocked, muted: relation.muted };

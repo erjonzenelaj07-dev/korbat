@@ -45,6 +45,7 @@ import {
   storeNotifierContact,
   type AccountMailResult,
   type AccountMessage,
+  type ImportEndedMessage,
   type KeeperMailResult,
   type KeeperMessage,
   type NotifierFacts,
@@ -83,6 +84,7 @@ export type {
   AccountMessage,
   AccountUpdateMessage,
   DecisionMessage,
+  ImportEndedMessage,
   KeeperMailResult,
   KeeperMessage,
   NoticeReceivedMessage,
@@ -277,6 +279,8 @@ export interface AuthForTransparency {
  */
 export interface AuthForImports {
   emailVerified(userId: string): Promise<boolean>;
+  /** 3b Task 6 (design, section 8.7): the person's mail when an admin ended their import (template import_ended_by_staff). */
+  mailAccount(userId: string, message: ImportEndedMessage): Promise<AccountMailResult>;
 }
 
 export interface CreateAuthOptions {
@@ -388,6 +392,7 @@ export function createAuth(options: CreateAuthOptions) {
   };
   const forImports: AuthForImports = {
     emailVerified: async (userId) => ((await repo.findUserById(userId))?.emailVerifiedAt ?? null) !== null,
+    mailAccount: (userId, message) => mailAccount(deps, userId, message),
   };
   return {
     deps,

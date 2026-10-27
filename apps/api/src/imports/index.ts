@@ -4,8 +4,8 @@
  */
 import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
-import { IMPORT_RULES, type ImportSource } from "@korbat/contracts";
-import type { Db } from "@korbat/db";
+import { IMPORT_RULES, ImportChoice, type ImportSource, type ImportStatus } from "@korbat/contracts";
+import type { Db, DbTx } from "@korbat/db";
 import type { AuthForImports, ProfileStore } from "../auth";
 import type { Config } from "../config";
 import type { AppEnv } from "../env";
@@ -17,14 +17,70 @@ import type { SocialForImports } from "../social";
 import type { ImportDeps, ImportSettings } from "./context";
 import { createDriveJob, driveRound, type DriveOptions } from "./drive";
 import { createImportFiles } from "./files";
-import { createImportRepo } from "./repo";
+import { endFiles } from "./flows/end";
+import { endByStaff, endedByStaff, type StaffEndInput } from "./flows/staff-end";
+import { createImportRepo, type StaffEnd } from "./repo";
 import { importRoutes } from "./routes";
 
 export { ImportError } from "./context";
 export type { ImportDeps, ImportErrorKind, ImportSettings } from "./context";
 export type { DriveReport } from "./drive";
 export type { FeedReport } from "./feeder";
+export type { StaffEndInput } from "./flows/staff-end";
+export type { StaffEnd } from "./repo";
 export type { ImportList } from "./routes";
+
+/**
+ * 3b Task 6 (design, section 8.7; the orchestrator's ruling): what the moderation module needs from this one: how many
+ * posts an import published, its size on a case. The moderation module never names import_jobs.
+ */
+export interface ImportsForModeration {
+  /** The import's posts_published, or null when there is no such import. */
+  importSize(importId: string): Promise<number | null>;
+}
+
+/**
+ * The moderation module's interface over this module's repository on the pool it is given: a factory of its own, as
+ * socialForModeration is, since the moderation module is built before this one (this one sends that one its alerts).
+ */
+export function importsForModeration(apiDb: Db): ImportsForModeration {
+  const repo = createImportRepo(apiDb);
+  return { importSize: (importId) => repo.importSize(importId) };
+}
+
+/** 3b Task 6 (design, section 11.2): one of the account's imports as the data export lists it; times are Dates here. */
+export interface ImportRecord {
+  id: string;
+  source: ImportSource;
+  status: ImportStatus;
+  createdAt: Date;
+  endedAt: Date | null;
+  statedAt: Date | null;
+  choice: ImportChoice | null;
+  counts: { postsPublished: number; postsRemoved: number; imagesKept: number; imagesLeftOut: number };
+}
+
+/** 3b Task 6 (design, sections 4.7 and 11.2): what the account module needs from this one: the purge's step and the export's member. */
+export interface ImportsForAccount {
+  /**
+   * In the social module's purge transaction, after the profile is marked deleted and every post tombstoned with its
+   * import columns cleared: every import row of the account and its import key. The ids, whose files `removeFiles` asks
+   * for after the commit.
+   */
+  purgeOwner(tx: DbTx, ownerId: string): Promise<string[]>;
+  /** After that commit: each import's archive folder and marker go, and the importer is asked to delete its work folder. */
+  removeFiles(ids: readonly string[]): Promise<void>;
+  /** The account's imports, newest first, for the export. */
+  exportFor(ownerId: string): Promise<ImportRecord[]>;
+}
+
+/** 3b Task 6 (design, section 8.7): what the staff module needs from this one for an admin's end of a whole import. */
+export interface ImportsForStaff {
+  /** In the staff module's transaction, before its audit row: the moves of 8.7; throws ImportError (not_found, invalid_request, wrong_state). */
+  endByStaff(tx: DbTx, input: StaffEndInput): Promise<StaffEnd>;
+  /** After its commit: the files and plans of a running import, and the person's mail. */
+  endedByStaff(end: StaffEnd, basis: { ruleId: string; decisionId: string }): Promise<void>;
+}
 
 /** The owner's settings of section 7.7, as config.ts read and checked them. */
 export function importSettingsFrom(config: Pick<Config, "IMPORTS" | "IMPORT_IMAGES" | "IMPORT_SOURCES" | "IMPORT_MAX_ACTIVE" | "IMPORT_IMAGES_PER_HOUR" | "IMPORT_MIN_FREE_BYTES">): ImportSettings {
@@ -83,6 +139,36 @@ export function createImports(options: CreateImportsOptions) {
     chunkBytes: options.chunkBytes ?? IMPORT_RULES.chunkBytes,
     inFlight: new Set(),
     plans: new Map(),
+    offsets: new Map(),
+  };
+  const forAccount: ImportsForAccount = {
+    purgeOwner: (tx, ownerId) => deps.repo.purgeOwner(tx, ownerId),
+    async removeFiles(ids) {
+      for (const id of ids) {
+        deps.plans.delete(id);
+        deps.offsets.delete(id);
+        await endFiles(deps, id);
+      }
+    },
+    async exportFor(ownerId) {
+      return (await deps.repo.exportRows(ownerId)).map((row) => {
+        const choice = ImportChoice.safeParse(row.choice);
+        return {
+          id: row.id,
+          source: row.source,
+          status: row.status,
+          createdAt: row.createdAt,
+          endedAt: row.endedAt,
+          statedAt: row.statedAt,
+          choice: choice.success ? choice.data : null,
+          counts: { postsPublished: row.postsPublished, postsRemoved: row.postsRemoved, imagesKept: row.imagesKept, imagesLeftOut: row.imagesLeftOut },
+        };
+      });
+    },
+  };
+  const forStaff: ImportsForStaff = {
+    endByStaff: (tx, input) => endByStaff(deps, tx, input),
+    endedByStaff: (end, basis) => endedByStaff(deps, end, basis),
   };
   return {
     deps,
@@ -94,6 +180,10 @@ export function createImports(options: CreateImportsOptions) {
     drive: (now: Date, driveOptions: DriveOptions) => driveRound(deps, now, driveOptions),
     /** Starts import-drive under the shared job lock, a round every five seconds, and returns the function that stops it. */
     startJobs: (lock: JobLock) => createDriveJob(deps, lock).start(),
+    /** 3b Task 6: the interface the account module uses (the purge's step, the export's member). */
+    forAccount,
+    /** 3b Task 6: the interface the staff module uses (an admin's end of a whole import). */
+    forStaff,
   };
 }
 

@@ -1739,6 +1739,9 @@ describe("import from other platforms 3b", () => {
       ["stop_reason", "text", false],
       ["staff_ended_at", "timestamp with time zone", false],
       ["staff_rule_id", "text", false],
+      // 3b Task 6 (migration 0048): the case an admin ended the import from and the decision the end rests on.
+      ["staff_case_id", "uuid", false],
+      ["staff_decision_id", "uuid", false],
       ["refused_at_original", "date", false],
       ["refused_words", "text", false],
       ["scan", "jsonb", false],
@@ -1764,7 +1767,7 @@ describe("import from other platforms 3b", () => {
     for (const name of ["received_bytes", "post_cursor", "image_cursor", "posts_published", "images_kept", "images_left_out", "posts_removed"]) {
       expect(column("import_jobs", name)?.default, name).toBe(0);
     }
-    // No on delete clause: no profile row is ever deleted.
+    // No on delete clause: no profile row is ever deleted. 3b Task 6: the staff end's case and decision name no table.
     expect(foreignKeys("import_jobs")).toEqual([["owner_id", "profiles", "no action"]]);
   });
 
@@ -1797,7 +1800,10 @@ describe("import from other platforms 3b", () => {
     expect(checkSql("import_jobs", "import_jobs_stopped")).toBe(
       `("import_jobs"."status"::text <> 'stopped' or "import_jobs"."stop_reason" is not null) and ("import_jobs"."stop_reason" is null or "import_jobs"."status"::text in ('stopped', 'undoing', 'undone'))`,
     );
-    expect(checkSql("import_jobs", "import_jobs_staff")).toBe(`("import_jobs"."staff_ended_at" is null) = ("import_jobs"."staff_rule_id" is null)`);
+    // 3b Task 6 (0048): the staff end's four columns together.
+    expect(checkSql("import_jobs", "import_jobs_staff")).toBe(
+      `("import_jobs"."staff_ended_at" is null) = ("import_jobs"."staff_rule_id" is null) and ("import_jobs"."staff_ended_at" is null) = ("import_jobs"."staff_case_id" is null) and ("import_jobs"."staff_ended_at" is null) = ("import_jobs"."staff_decision_id" is null)`,
+    );
     expect(checkSql("import_jobs", "import_jobs_refused")).toBe(`("import_jobs"."refused_at_original" is null) = ("import_jobs"."refused_words" is null)`);
     expect(checkSql("import_jobs", "import_jobs_refused_words")).toBe(`char_length("import_jobs"."refused_words") <= 80`);
     expect(checkSql("import_jobs", "import_jobs_scan")).toBe(`jsonb_typeof("import_jobs"."scan") = 'object' and octet_length("import_jobs"."scan"::text) <= 262144`);

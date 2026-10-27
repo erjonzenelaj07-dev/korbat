@@ -9,14 +9,17 @@ import {
   type AuditExportLine,
   type AuditPage,
 } from "@korbat/contracts";
-import { Hono, type Context } from "hono";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { z } from "zod";
 import { AuthError, clearStaffCookies, setStaffCookies, type ActiveStaffSession, type AuthForStaff, type StaffRequestContext, type StaffStepUpConfirmed } from "../auth";
 import type { AppEnv } from "../env";
+import type { Db } from "@korbat/db";
+import type { ImportsForStaff } from "../imports";
 import { errorBody } from "../lib/errors";
 import { validate } from "../lib/validate";
 import type { ModerationForStaff } from "../moderation";
 import { caseRoutes } from "./cases";
+import { endImport } from "./imports";
 import { staffGate } from "./gate";
 import { orderRoutes } from "./orders";
 import type { ExportOutcome } from "./audit";
@@ -43,7 +46,7 @@ const LF = String.fromCharCode(10);
  * changes something stands behind requireStaffStepUp as well, which verifies the key's confirmation of exactly what the
  * route is about to do; sign-out alone needs none. No route answers a HEAD request (below).
  */
-export function staffRoutes(consoleOrigin: string, auth: AuthForStaff, moderation: ModerationForStaff, audit: StaffAudit) {
+export function staffRoutes(consoleOrigin: string, auth: AuthForStaff, moderation: ModerationForStaff, audit: StaffAudit, imports?: { apiDb: Db; imports: ImportsForStaff; now: () => Date }) {
   const routes = new Hono<AppEnv>();
   routes.use("*", staffGate(consoleOrigin));
 
@@ -166,6 +169,37 @@ export function staffRoutes(consoleOrigin: string, auth: AuthForStaff, moderatio
       return revoked ? c.body(null, 204) : c.json(errorBody("not_found", "No such session", c.get("requestId")), 404);
     },
   );
+
+  // 3b Task 6 (design, section 8.7; the orchestrator's rulings): an admin's end of a whole import, from a case about one of
+  // its posts, by a decision recorded on that case. The path's import is the action's target, and the body the params of
+  // import_ended_by_staff with the assertion as `stepUp`; `gap` (a lower-case uuid) names a restore's gap of a lost end
+  // that this end takes again. A moderator is refused before the step-up is read (admin_required), so no confirmation of
+  // theirs is used. The end commits with its audit row or not at all; an ended confirmation and a late one answer as a
+  // decision's do. The answer is the case as it now stands, whose target shows the import.
+  if (imports) {
+    const adminOnly: MiddlewareHandler<AppEnv> = async (c, next) => {
+      if (staffSession(c).role !== "admin") return c.json(errorBody("admin_required", "Only an admin can end a whole import.", c.get("requestId")), 403);
+      await next();
+    };
+    const GapQuery = z.object({ gap: z.uuid().regex(/^[0-9a-f-]+$/, { message: "a uuid in lower case" }).optional() });
+    routes.post(
+      "/imports/:import/end",
+      auth.requireStaff,
+      adminOnly,
+      validate("query", GapQuery),
+      auth.requireStaffStepUp("import_ended_by_staff", (c) => c.req.param("import")),
+      async (c) => {
+        const outcome = await endImport(imports.apiDb, imports.imports, moderation, staffSession(c), confirmedStepUp(c), {
+          requestId: c.get("requestId"),
+          gap: c.req.valid("query").gap ?? null,
+          now: imports.now,
+        });
+        if (outcome === "ended") throw new AuthError("staff_session_required", 401);
+        if (outcome === "late") throw new AuthError("challenge_expired", 400);
+        return c.json(await moderation.decidedCase(staffSession(c), outcome.caseId), 201);
+      },
+    );
+  }
 
   // The console's case routes, behind the gate above like every path here.
   routes.route("/", caseRoutes(auth, moderation));

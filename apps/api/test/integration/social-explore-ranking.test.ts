@@ -5,6 +5,7 @@ import { EXPLORE_V2, type ExploreFormula } from "@korbat/contracts";
 import { closeDb, createDb, likes, posts, profiles, type Db } from "@korbat/db";
 import { loadConfig } from "../../src/config";
 import { createSocialRepo, type SocialRepo } from "../../src/social/repo";
+import { importCounts } from "./imports-harness";
 import { closeDecisions, decideForTest, leavesNoModerationRows } from "./moderation-decide";
 import { newPost, newProfile } from "./social-fixtures";
 
@@ -37,16 +38,21 @@ interface RunRow {
 
 describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", () => {
   let db: Db;
+  /** 3b Task 6: the migrator writes an imported post, as a publishing import's batch would, outside the publisher. */
+  let migrateDb: Db;
   let repo: SocialRepo;
   let spans = 0;
+  let importRows: Record<string, number>;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     db = createDb(loadConfig().DATABASE_URL_API, { max: 4 });
+    migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 1 });
     repo = createSocialRepo(db);
+    importRows = await importCounts(db);
   });
   afterAll(async () => {
     await closeDecisions();
-    await closeDb(db);
+    await Promise.all([closeDb(db), closeDb(migrateDb)]);
   });
   // Every test starts without any ranking (the cascade empties explore_items) and reads the generations its rounds answer.
   beforeEach(async () => {
@@ -160,6 +166,32 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", ()
     expect(await listed(result.generation)).toEqual([shown]);
     expect(result.candidates).toBe(1);
     // The withheld and removed states come from real, confirmed decisions: a staff key's enrolment, a sign-in, and a step-up for each.
+  }, 30_000);
+
+  test("3b Task 6 (decision 8): an imported post is never a candidate, however many approve it, and its author's other posts rank as before", async () => {
+    const asOf = nextAsOf();
+    const [author, ...fans] = await accounts(asOf, 4);
+    const at = before(asOf, 3 * HOUR);
+    const shown = await post(author!, at);
+    const job = randomUUID();
+    const imported = randomUUID();
+    await migrateDb.execute(sql`
+      insert into import_jobs (id, owner_id, source, status, declared_bytes, received_bytes, uploaded_at, scanned_at, confirmed_at, ended_at, choice, stated_at, posts_published)
+      values (${job}::uuid, ${author!.id}::uuid, 'mastodon', 'done', 10, 10, now(), now(), now(), now(),
+              ${JSON.stringify({ from: null, to: null, replies: false, warnings: false, protected: false, images: false, long: "leave" })}::jsonb, now(), 1)`);
+    await migrateDb.execute(sql`
+      insert into posts (id, author_id, body, created_at, import_job_id, import_source, original_created_at, import_shortened, import_key)
+      values (${imported}::uuid, ${author!.id}::uuid, 'from an archive', ${at.toISOString()}::timestamptz, ${job}::uuid, 'mastodon', '2019-03-03T12:00:00Z', false, ${randomBytes(32)}::bytea)`);
+    try {
+      for (const id of [shown, imported]) await likedBy(id, fans, before(asOf, 2 * HOUR));
+      const result = await rank(asOf);
+      expect(await listed(result.generation)).toEqual([shown]);
+      expect(result.candidates).toBe(1);
+    } finally {
+      await migrateDb.execute(sql`delete from likes where post_id = ${imported}::uuid`);
+      await migrateDb.execute(sql`delete from posts where id = ${imported}::uuid`);
+      await migrateDb.execute(sql`delete from import_jobs where id = ${job}::uuid`);
+    }
   }, 30_000);
 
   test("the author's own likes and reposts do not count", async () => {
@@ -517,6 +549,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the Explore ranking", ()
     expect(await order({ gravity: 0 })).toEqual([old, fresh]);
     expect(await order({ gravity: 1, offsetHours: 100 })).toEqual([old, fresh]);
     expect(await order({ gravity: 1 })).toEqual([fresh, old]);
+  });
+
+  test("3b Task 6: this file left no import row behind", async () => {
+    expect(await importCounts(db)).toEqual(importRows);
   });
 
   leavesNoModerationRows(() => db);

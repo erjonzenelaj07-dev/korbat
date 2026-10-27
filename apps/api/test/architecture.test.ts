@@ -201,7 +201,8 @@ function mentions(files: SourceFile[], name: string): Record<string, number> {
  * disposal's caller (after its commit) ask for it through the module's interfaces; and the one retry of what the purge
  * and the disposal owe asks for it only for a row that is gone. 3b Task 5: the imports module's interface asks for the
  * files of an import's rows on no post after the commit that deleted them (media.forImports.releaseFiles), and the
- * imports module itself names it nowhere.
+ * imports module itself names it nowhere. 3b Task 6: the undo's batches, the author's deletion path, ask for the files of
+ * the rows they detached after each commit (social/flows/imports.ts).
  */
 const REQUEST_DELETION = {
   "account/flows/deletion.ts": 1,
@@ -217,6 +218,8 @@ const REQUEST_DELETION = {
   // The retention job, which asks for a batch's files after the commit of the transaction that deleted their rows.
   "moderation/retention.ts": 1,
   "social/context.ts": 1,
+  // 3b Task 6: the undo's batches ask for the files of the image rows they detached, after each commit (6.5).
+  "social/flows/imports.ts": 1,
   "social/flows/posts.ts": 1,
 };
 

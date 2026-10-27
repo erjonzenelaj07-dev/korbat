@@ -64,7 +64,11 @@ export function profileHarness(start = 1_789_000_000_000) {
       row.handleChangedAt = now;
       return { ok: true, from };
     },
-  } satisfies Pick<SocialRepo, "findProfileById" | "updateProfile" | "changeHandle">;
+    // 3b Task 6: the profile's view says whether it has an Imported tab; no profile of these tests imported anything.
+    async hasImported(_id: string): Promise<boolean> {
+      return false;
+    },
+  } satisfies Pick<SocialRepo, "findProfileById" | "updateProfile" | "changeHandle" | "hasImported">;
   const deps: SocialDeps = {
     repo: repo as unknown as SocialRepo,
     media: WITHOUT_MEDIA,

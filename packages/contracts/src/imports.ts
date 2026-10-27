@@ -359,7 +359,9 @@ export type ConfirmImportRequest = z.infer<typeof ConfirmImportRequest>;
 /**
  * An import as its owner sees it (9.3). No text but the samples (only in ready) and the refused post's first words, no
  * file name, no source id. `scan` holds the facts without their offsets; `endedByStaff` is the rule's id when an admin
- * ended it; `refusedAt` is the archive's day of the post whose image was refused.
+ * ended it; `refusedAt` is the archive's day of the post whose image was refused. 3b Task 6: `postsLeft` counts the chosen
+ * posts not yet handled while the import publishes, 0 in every other state, and `paused` is true while the author is
+ * suspended and the import prepares or publishes.
  */
 export const ImportView = z.object({
   id: z.uuid(),
@@ -373,6 +375,11 @@ export const ImportView = z.object({
   failure: ImportFailure.nullable(),
   stopReason: z.enum(IMPORT_STOP_REASONS).nullable(),
   endedByStaff: z.string().nullable(),
+  /**
+   * 3b Task 6 (the orchestrator's ruling): the decision an admin's end of the import rests on, set exactly with
+   * `endedByStaff`, so the import's screen links to it under the person's Cases (10.5).
+   */
+  staffDecisionId: z.uuid().nullable(),
   scan: ImportScanFacts.omit({ samples: true, pages: true }).nullable(),
   samples: z.array(z.object({ at: Day, text: z.string() })).max(IMPORT_RULES.samples),
   choice: ImportChoice.nullable(),

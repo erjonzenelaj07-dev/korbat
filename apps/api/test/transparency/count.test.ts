@@ -198,8 +198,8 @@ describe("the recipients' count, as resolveSession hands it on (3d Task 4)", () 
     await settle();
   });
 
-  test("the seven public reads are counted, and their neighbours are not", () => {
-    for (const path of ["/api/posts/p1", "/api/posts/p1/thread", "/api/timeline/latest", "/api/timeline/explore", "/api/profiles/h", "/api/profiles/h/posts", "/api/profiles/h/replies"]) {
+  test("the public reads are counted (3b Task 6: the Imported tab with them), and their neighbours are not", () => {
+    for (const path of ["/api/posts/p1", "/api/posts/p1/thread", "/api/timeline/latest", "/api/timeline/explore", "/api/profiles/h", "/api/profiles/h/posts", "/api/profiles/h/replies", "/api/profiles/h/imported"]) {
       expect([path, isReadRoute(path)]).toEqual([path, true]);
     }
     for (const path of ["/api/posts", "/api/posts/p1/status", "/api/posts/p1/like", "/api/profiles/h/follow", "/api/timeline/latest/x", "/api/public/facts"]) {

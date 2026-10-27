@@ -225,9 +225,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
         await tx.execute(sql`
           insert into import_jobs (id, owner_id, source, status, declared_bytes, received_bytes, created_at, uploaded_at, scanned_at, confirmed_at, ended_at, failure,
                                    stop_reason, staff_ended_at, staff_rule_id, refused_at_original, refused_words, scan, choice, stated_at, seed, post_cursor, image_cursor,
-                                   posts_published, images_kept, images_left_out, posts_removed, images_left_out_by)
+                                   posts_published, images_kept, images_left_out, posts_removed, images_left_out_by, staff_case_id, staff_decision_id)
           values (${id}::uuid, ${owner.id}::uuid, 'mastodon', 'done', 5000, 5000, '2001-01-01T00:00:00Z', now(), now(), now(), now(), 'unreadable',
-                  'by_staff', now(), 'R6', '2019-03-03', 'first words', ${json(FULL_SCAN)}, ${json(CHOICE)}, now(), ${seed()}, 7, 7, 7, 7, 7, 7, ${json({ flagged: 7 })})`);
+                  'by_staff', now(), 'R6', '2019-03-03', 'first words', ${json(FULL_SCAN)}, ${json(CHOICE)}, now(), ${seed()}, 7, 7, 7, 7, 7, 7, ${json({ flagged: 7 })},
+                  ${randomUUID()}::uuid, ${randomUUID()}::uuid)`);
         const [row] = await tx.execute<Record<string, unknown>>(sql`select *, created_at >= now() as fresh from import_jobs where id = ${id}::uuid`);
         expect({ ...row, created_at: null }).toEqual({
           id,
@@ -261,6 +262,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
           images: false,
           // 3b Task 5 (migration 0047): no image left out yet, whatever the insert sent.
           images_left_out_by: {},
+          // 3b Task 6 (migration 0048): ended by nobody, whatever the insert sent.
+          staff_case_id: null,
+          staff_decision_id: null,
           fresh: true,
         });
         const other = await profile(tx);
@@ -391,6 +395,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
       await asApi(async (tx) => {
         const upd = (id: string, set: SQL) => attempt(tx, sql`update import_jobs set ${set} where id = ${id}::uuid`);
         const stop = sql`status = 'stopped', seed = null, ended_at = now()`;
+        // 3b Task 6 (0048): an admin's end writes four columns together: the time, the rule, the case and the decision.
+        const [caseId, decisionId] = [randomUUID(), randomUUID()];
+        const staff = sql`staff_ended_at = now(), staff_rule_id = 'R6', staff_case_id = ${caseId}::uuid, staff_decision_id = ${decisionId}::uuid`;
         const publishing = await jobIn(tx, "publishing");
         // Without a reason the CHECK refuses the stop; a reason outside the closed list, or outside stopped, too.
         expect(await upd(publishing.id, stop)).toMatchObject(check("import_jobs_stopped"));
@@ -398,12 +405,17 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
         expect(await upd(publishing.id, sql`stop_reason = 'by_author'`)).toEqual(REFUSED);
         // An admin's end names itself with its time and rule, and nothing else does.
         expect(await upd(publishing.id, sql`${stop}, stop_reason = 'by_staff'`)).toEqual(REFUSED);
-        expect(await upd(publishing.id, sql`${stop}, stop_reason = 'by_author', staff_ended_at = now(), staff_rule_id = 'R6'`)).toEqual(REFUSED);
+        expect(await upd(publishing.id, sql`${stop}, stop_reason = 'by_author', ${staff}`)).toEqual(REFUSED);
         expect(await upd(publishing.id, sql`${stop}, stop_reason = 'by_staff', staff_ended_at = now()`)).toMatchObject(check("import_jobs_staff"));
-        expect(await upd(publishing.id, sql`staff_ended_at = now(), staff_rule_id = 'R6'`)).toEqual(REFUSED);
-        expect(await step(tx, sql`update import_jobs set ${stop}, stop_reason = 'by_staff', staff_ended_at = now(), staff_rule_id = 'R6' where id = ${publishing.id}::uuid`)).toBeNull();
+        // 3b Task 6: the time and the rule without the case and the decision, or one of those alone, are not an end.
+        expect(await upd(publishing.id, sql`${stop}, stop_reason = 'by_staff', staff_ended_at = now(), staff_rule_id = 'R6'`)).toMatchObject(check("import_jobs_staff"));
+        expect(await upd(publishing.id, sql`${stop}, stop_reason = 'by_staff', staff_ended_at = now(), staff_rule_id = 'R6', staff_case_id = ${caseId}::uuid`)).toMatchObject(check("import_jobs_staff"));
+        expect(await upd(publishing.id, staff)).toEqual(REFUSED);
+        expect(await step(tx, sql`update import_jobs set ${stop}, stop_reason = 'by_staff', ${staff} where id = ${publishing.id}::uuid`)).toBeNull();
         expect(await upd(publishing.id, sql`stop_reason = 'by_author'`)).toEqual(REFUSED);
         expect(await upd(publishing.id, sql`staff_rule_id = 'R1'`)).toEqual(REFUSED);
+        expect(await upd(publishing.id, sql`staff_case_id = ${randomUUID()}::uuid`)).toEqual(REFUSED);
+        expect(await upd(publishing.id, sql`staff_decision_id = ${randomUUID()}::uuid`)).toEqual(REFUSED);
         // It published nothing, so it cannot be undone; once it has, the undo keeps the staff pair as it is.
         expect(await upd(publishing.id, sql`status = 'undoing'`)).toEqual(REFUSED);
         expect(await step(tx, sql`update import_jobs set posts_published = 3 where id = ${publishing.id}::uuid`)).toBeNull();
@@ -411,8 +423,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
         expect(await upd(publishing.id, sql`status = 'undoing'`)).toBeNull();
         // From done, an admin's end is the move into undoing.
         const done = await jobIn(tx, "done");
-        expect(await upd(done.id, sql`status = 'undoing', staff_ended_at = now(), staff_rule_id = 'R6'`)).toBeNull();
-        expect(await upd(done.id, sql`status = 'undoing', stop_reason = 'by_staff', staff_ended_at = now(), staff_rule_id = 'R6'`)).toEqual(REFUSED);
+        expect(await upd(done.id, sql`status = 'undoing', ${staff}`)).toBeNull();
+        expect(await upd(done.id, sql`status = 'undoing', stop_reason = 'by_staff', ${staff}`)).toEqual(REFUSED);
         // A refused image stops the import with the post's date and first words, at most refusedWordsMax code points, set once.
         const preparing = await jobIn(tx, "preparing");
         const refused = (words: string) => sql`${stop}, stop_reason = 'refused_image', refused_at_original = '2019-03-03', refused_words = ${words}`;
@@ -836,6 +848,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
         "posts_removed",
         // 3b Task 5 (0047), under import_jobs_guard's two rules of its own.
         "images_left_out_by",
+        // 3b Task 6 (0048): the staff end's case and decision, under its rule.
+        "staff_case_id",
+        "staff_decision_id",
       ]);
       expect(await updatableColumns("korbat_api", "import_picks")).toEqual(["left_out", "alts"]);
       expect(await updatableColumns("korbat_api", "import_keys")).toEqual([]);

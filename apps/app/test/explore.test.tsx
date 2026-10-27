@@ -128,6 +128,7 @@ function post(n: number, extra: Partial<PostView> = {}): PostView {
     counts: { likes: 3, reposts: 1, replies: 0, quotes: 0 },
     media: [],
     quoteOf: null,
+    imported: null,
     ...extra,
   };
 }
@@ -735,6 +736,8 @@ describe("the author's status line", () => {
     const expected: Record<ExploreStatusKind, string | null> = {
       reply: null,
       quote: null,
+      // 3b (design, section 10.6), word for word.
+      imported: "Not in Explore: imported posts enter no feed on their own.",
       not_visible: "Not in Explore: posts under review or removed never appear there.",
       // 3e design, section 9.7, word for word.
       suspended:

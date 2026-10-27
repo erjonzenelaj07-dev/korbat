@@ -21,7 +21,7 @@ const ENDED = sql`('done', 'stopped', 'undoing', 'undone', 'failed', 'cancelled'
 const COLUMNS = sql`j.id, j.owner_id, j.source::text as source, j.status::text as status, j.declared_bytes::float8 as declared_bytes,
   j.received_bytes::float8 as received_bytes, j.created_at, j.uploaded_at, j.scanned_at, j.confirmed_at, j.ended_at, j.failure,
   j.stop_reason, j.staff_rule_id, to_char(j.refused_at_original, 'YYYY-MM-DD') as refused_at_original, j.refused_words, j.scan,
-  j.choice, j.posts_published, j.images_kept, j.images_left_out, j.posts_removed, j.images, j.images_left_out_by`;
+  j.choice, j.posts_published, j.images_kept, j.images_left_out, j.posts_removed, j.images, j.images_left_out_by, j.staff_decision_id, j.stated_at`;
 
 /**
  * The move out of ready (whichever it is) keeps the counts and fromRef and leaves the month table, the samples, the pages
@@ -68,6 +68,34 @@ export interface ImportRow {
   images: boolean;
   /** 3b Task 5 (migration 0047): the images the preparation left out, by reason. */
   imagesLeftOutBy: Partial<Record<ImportImageSkip, number>>;
+  /** 3b Task 6 (migration 0048): the decision an admin's end of the import rests on, set with staffRuleId. */
+  staffDecisionId: string | null;
+  /** When the person made the statement, with the confirmation (the data export lists it, 11.2). */
+  statedAt: Date | null;
+}
+
+/** 3b Task 6: an import that publishes (7.5 step 5), as the publisher reads it. */
+export interface PublishingImport {
+  id: string;
+  ownerId: string;
+  source: ImportSource;
+  /** The 32 bytes the post and image ids are derived from (6.5). */
+  seed: Buffer;
+  choice: unknown;
+  scan: unknown;
+  createdAt: Date;
+  /** Lines of posts.jsonl handled so far. */
+  postCursor: number;
+}
+
+/** 3b Task 6 (8.7): what an admin's end of an import did, for what follows its commit. */
+export interface StaffEnd {
+  id: string;
+  ownerId: string;
+  /** The state it was in: a running import's work folder and plan go after the commit. */
+  from: ImportStatus;
+  /** The state it is in now: stopped (nothing was published) or undoing. */
+  to: "stopped" | "undoing";
 }
 
 /** 3b Task 5: the import the feeder feeds (7.4), as it reads it. */
@@ -110,6 +138,8 @@ interface RawRow {
   posts_removed: number;
   images: boolean;
   images_left_out_by: Partial<Record<ImportImageSkip, number>> | null;
+  staff_decision_id: string | null;
+  stated_at: Date | string | null;
 }
 
 const time = (value: Date | string | null): Date | null => (value === null ? null : new Date(value));
@@ -140,6 +170,8 @@ function toRow(raw: RawRow): ImportRow {
     postsRemoved: raw.posts_removed,
     images: raw.images,
     imagesLeftOutBy: raw.images_left_out_by ?? {},
+    staffDecisionId: raw.staff_decision_id,
+    statedAt: time(raw.stated_at),
   };
 }
 
@@ -422,10 +454,129 @@ export function createImportRepo(db: Db) {
       });
     },
 
+    /** 3b Task 6 (7.5 step 5): every import that publishes, oldest confirmation first, with its seed. */
+    async publishing(): Promise<PublishingImport[]> {
+      const found = await rows<{ id: string; owner_id: string; source: ImportSource; seed: string | null; choice: unknown; scan: unknown; created_at: Date | string; post_cursor: number }>(
+        db,
+        sql`select j.id, j.owner_id, j.source::text as source, encode(j.seed, 'hex') as seed, j.choice, j.scan, j.created_at, j.post_cursor
+              from import_jobs j where j.status = 'publishing' order by j.confirmed_at, j.id`,
+      );
+      return found
+        .filter((row) => row.seed !== null)
+        .map((row) => ({
+          id: row.id,
+          ownerId: row.owner_id,
+          source: row.source,
+          seed: Buffer.from(row.seed!, "hex"),
+          choice: row.choice,
+          scan: row.scan,
+          createdAt: new Date(row.created_at),
+          postCursor: row.post_cursor,
+        }));
+    },
+
+    /**
+     * 3b Task 6 (4.5 step 4, 7.5 step 5): at the end of posts.jsonl, publishing to done in one UPDATE that clears the seed
+     * and sets the end, as import_jobs_guard requires of the move; only at the cursor the publisher reached. False when the
+     * import moved on.
+     */
+    async toDone(id: string, cursor: number): Promise<boolean> {
+      const done = await rows<{ id: string }>(
+        db,
+        sql`update import_jobs j set status = 'done', seed = null, ended_at = clock_timestamp()
+             where j.id = ${id}::uuid and j.status = 'publishing' and j.post_cursor = ${cursor}::int returning j.id`,
+      );
+      return done.length === 1;
+    },
+
+    /**
+     * 3b Task 6 (4.6, 9.2): the person's undo, done (or stopped with posts published) to undoing in one UPDATE. False when the
+     * import is in neither, which the guard would refuse too.
+     */
+    async toUndoing(id: string, ownerId: string): Promise<boolean> {
+      const done = await rows<{ id: string }>(
+        db,
+        sql`update import_jobs j set status = 'undoing'
+             where j.id = ${id}::uuid and j.owner_id = ${ownerId}::uuid and (j.status = 'done' or (j.status = 'stopped' and j.posts_published > 0)) returning j.id`,
+      );
+      return done.length === 1;
+    },
+
+    /** 3b Task 6 (7.5 step 6): every import that is undoing, oldest end first. */
+    async undoing(): Promise<{ id: string; ownerId: string }[]> {
+      const found = await rows<{ id: string; owner_id: string }>(db, sql`select j.id, j.owner_id from import_jobs j where j.status = 'undoing' order by j.ended_at, j.id`);
+      return found.map((row) => ({ id: row.id, ownerId: row.owner_id }));
+    },
+
+    /** 3b Task 6 (7.5 step 6): no post of the import is left that is neither deleted nor disabled: undoing to undone, the end set again. */
+    async toUndone(id: string): Promise<boolean> {
+      const done = await rows<{ id: string }>(db, sql`update import_jobs j set status = 'undone', ended_at = clock_timestamp() where j.id = ${id}::uuid and j.status = 'undoing' returning j.id`);
+      return done.length === 1;
+    },
+
+    /**
+     * 3b Task 6 (4.7, 6.6): the account's purge, in the social module's transaction, after the profile is marked deleted and
+     * every post of the account tombstoned with its import columns cleared: every import row of the account, whatever its
+     * state, and its import key, which import_jobs_delete and import_keys_delete allow once the profile is deleted. A post
+     * that still named one would fail the delete (23503) and roll the purge back. The ids, whose files the caller asks for
+     * after the commit.
+     */
+    async purgeOwner(tx: DbTx, ownerId: string): Promise<string[]> {
+      const gone = await rows<{ id: string }>(tx, sql`delete from import_jobs j where j.owner_id = ${ownerId}::uuid returning j.id`);
+      await tx.execute(sql`delete from import_keys k where k.owner_id = ${ownerId}::uuid`);
+      return gone.map((row) => row.id);
+    },
+
+    /** 3b Task 6 (8.7, the orchestrator's ruling): how many posts an import published (its size on a case), or null when there is no such import. */
+    async importSize(id: string): Promise<number | null> {
+      const [row] = await rows<{ posts_published: number }>(db, sql`select j.posts_published from import_jobs j where j.id = ${id}::uuid`);
+      return row?.posts_published ?? null;
+    },
+
+    /**
+     * 3b Task 6 (8.7): an admin's end of a whole import, in the staff module's transaction, before its audit row. The
+     * import's row FOR UPDATE, then whether `postId` (the case's post) is a post of it: `not_of_import` when it is not;
+     * `wrong_state` when the import was ended by staff already or has nothing to end (undoing, undone, or ended before
+     * publishing anything); else the moves of 8.7, each one UPDATE that writes what import_jobs_guard requires of it: a
+     * running import to stopped (by_staff) with the seed cleared, its end and the staff end's four columns, then, when it
+     * published posts, to undoing; a done or stopped one with posts straight to undoing, the four columns in that move.
+     * staff_ended_at is the transaction's time, which a restore's gap of a lost end is held to (0048's gap_close). Null
+     * when there is no such import.
+     */
+    async endByStaff(tx: DbTx, input: { id: string; postId: string; caseId: string; decisionId: string; ruleId: string }): Promise<StaffEnd | "not_of_import" | "wrong_state" | null> {
+      const [job] = await rows<{ owner_id: string; status: ImportStatus; posts_published: number; staff: boolean }>(
+        tx,
+        sql`select j.owner_id, j.status::text as status, j.posts_published, j.staff_ended_at is not null as staff from import_jobs j where j.id = ${input.id}::uuid for update of j`,
+      );
+      if (!job) return null;
+      const [named] = await rows<{ id: string }>(tx, sql`select p.id from posts p where p.id = ${input.postId}::uuid and p.import_job_id = ${input.id}::uuid`);
+      if (!named) return "not_of_import";
+      if (job.staff) return "wrong_state";
+      const staff = sql`staff_ended_at = now(), staff_rule_id = ${input.ruleId}, staff_case_id = ${input.caseId}::uuid, staff_decision_id = ${input.decisionId}::uuid`;
+      const running = job.status === "preparing" || job.status === "publishing";
+      if (running) {
+        await tx.execute(sql`update import_jobs set status = 'stopped', stop_reason = 'by_staff', seed = null, ended_at = clock_timestamp(), ${staff} where id = ${input.id}::uuid`);
+        if (job.posts_published === 0) return { id: input.id, ownerId: job.owner_id, from: job.status, to: "stopped" };
+        await tx.execute(sql`update import_jobs set status = 'undoing' where id = ${input.id}::uuid`);
+        return { id: input.id, ownerId: job.owner_id, from: job.status, to: "undoing" };
+      }
+      if (job.status === "done" || (job.status === "stopped" && job.posts_published > 0)) {
+        await tx.execute(sql`update import_jobs set status = 'undoing', ${staff} where id = ${input.id}::uuid`);
+        return { id: input.id, ownerId: job.owner_id, from: job.status, to: "undoing" };
+      }
+      return "wrong_state";
+    },
+
     /** The account's import, or null for an import of anyone else or none. */
     async find(id: string, ownerId: string): Promise<ImportRow | null> {
       const [raw] = await rows<RawRow>(db, sql`select ${COLUMNS} from import_jobs j where j.id = ${id}::uuid and j.owner_id = ${ownerId}::uuid`);
       return raw ? toRow(raw) : null;
+    },
+
+    /** 3b Task 6 (11.2): every import of the account, newest first, for its data export. */
+    async exportRows(ownerId: string): Promise<ImportRow[]> {
+      const found = await rows<RawRow>(db, sql`select ${COLUMNS} from import_jobs j where j.owner_id = ${ownerId}::uuid order by j.created_at desc, j.id desc`);
+      return found.map(toRow);
     },
 
     /** The account's imports, newest first, at most `limit`. */

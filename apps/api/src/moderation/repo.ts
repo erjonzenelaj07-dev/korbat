@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { REPLY_AIM_HOURS, type ActionKind, type AppealsReviewedParams, type CaseDecidedParams, type Lane, type StaffStoredAssertion } from "@korbat/contracts";
+import { REPLY_AIM_HOURS, type ActionKind, type AppealsReviewedParams, type CaseDecidedParams, type ImportSource, type Lane, type StaffStoredAssertion } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 
 /**
@@ -855,15 +855,49 @@ export interface LivePost {
   level: "visible" | "withheld" | "removed";
   /** Gate V's answer for the case page: false while the post is frozen, so the console asks for no image. */
   imagesAllowed: boolean;
+  /**
+   * 3b (design, section 8.7): an imported post's own columns while it holds them (a tombstone's are cleared): its import,
+   * its source, the archive's day, and the day korbat published it, which is the day it was imported. Null otherwise.
+   */
+  imported: { importId: string; source: ImportSource; at: string; importedAt: string } | null;
 }
 
 export async function livePost(q: Runner, postId: string): Promise<LivePost | null> {
-  const [row] = await rows<{ author_id: string; author_handle: string; state: LivePost["state"]; level: LivePost["level"]; images_allowed: boolean }>(
+  const [row] = await rows<{
+    author_id: string;
+    author_handle: string;
+    state: LivePost["state"];
+    level: LivePost["level"];
+    images_allowed: boolean;
+    import_job_id: string | null;
+    import_source: ImportSource | null;
+    original_day: string | null;
+    created_day: string;
+  }>(
     q,
-    sql`select p.author_id, a.handle as author_handle, p.state, p.moderation_level as level, not public.post_frozen(p.id) as images_allowed
+    sql`select p.author_id, a.handle as author_handle, p.state, p.moderation_level as level, not public.post_frozen(p.id) as images_allowed,
+               p.import_job_id, p.import_source::text as import_source, to_char(p.original_created_at at time zone 'UTC', 'YYYY-MM-DD') as original_day,
+               to_char(p.created_at at time zone 'UTC', 'YYYY-MM-DD') as created_day
           from posts p join profiles a on a.id = p.author_id where p.id = ${postId}::uuid`,
   );
-  return row ? { authorId: row.author_id, authorHandle: row.author_handle, state: row.state, level: row.level, imagesAllowed: row.images_allowed } : null;
+  if (!row) return null;
+  const imported = row.import_job_id !== null && row.import_source !== null && row.original_day !== null ? { importId: row.import_job_id, source: row.import_source, at: row.original_day, importedAt: row.created_day } : null;
+  return { authorId: row.author_id, authorHandle: row.author_handle, state: row.state, level: row.level, imagesAllowed: row.images_allowed, imported };
+}
+
+/**
+ * 3b Task 6 (design, section 8.7; the orchestrator's ruling): what an admin's end of an import rests on. The decision must be
+ * one of the case's, final, restricting, and under the rule the end names; the case must be about a post. Answers that post
+ * (the caller holds it to the import), or null when anything does not fit. Read, never written.
+ */
+export async function importEndBasis(q: Runner, caseId: string, decisionId: string, ruleId: string): Promise<{ postId: string } | null> {
+  const [row] = await rows<{ target_id: string }>(
+    q,
+    sql`select c.target_id from public.decisions d join public.cases c on c.id = d.case_id
+         where d.id = ${decisionId}::uuid and d.case_id = ${caseId}::uuid and c.target_type = 'post'
+           and d.kind::text = 'final' and d.outcome::text = 'restricted' and d.rule_id = ${ruleId}`,
+  );
+  return row ? { postId: row.target_id } : null;
 }
 
 /** An account's fields as they stand, for the case that is about it. */

@@ -122,6 +122,8 @@ export const SUSPENDED_WRITES: Record<string, "refused" | "allowed"> = {
   // allowed.
   "POST /api/imports/:id/confirm": "refused",
   "POST /api/imports/:id/stop": "allowed",
+  // 3b Task 6 (design, section 8.5): the undo only deletes what the account posted, as the author's deletion does.
+  "POST /api/imports/:id/undo": "allowed",
 };
 
 /** The routes that end the session: called last, so that every other route is called with it. */
@@ -284,6 +286,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
     await migrateDb.execute(sql`
       insert into import_jobs (id, owner_id, source, status, declared_bytes, received_bytes, uploaded_at, scanned_at, scan)
       values (${readyImport}::uuid, ${ada.id}::uuid, 'mastodon', 'ready', 100, 100, now(), now(), ${JSON.stringify(scan)}::jsonb)`);
+    // 3b Task 6: an import of Ada's that is done, put there as the migrator, which her undo moves to undoing.
+    const doneImport = randomUUID();
+    await migrateDb.execute(sql`
+      insert into import_jobs (id, owner_id, source, status, declared_bytes, received_bytes, uploaded_at, scanned_at, confirmed_at, ended_at, scan, choice, stated_at)
+      values (${doneImport}::uuid, ${ada.id}::uuid, 'mastodon', 'done', 100, 100, now(), now(), now(), now(), ${JSON.stringify({ ...scan, months: [] })}::jsonb,
+              ${JSON.stringify({ from: null, to: null, replies: false, warnings: false, protected: false, images: false, long: "leave" })}::jsonb, now())`);
     const decisionId = await measure(ada.id);
     const state = MeResponse.parse(await (await ada.b.fetch("/api/me")).json()).standing?.measure?.state ?? null;
 
@@ -339,6 +347,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
         },
       ],
       "POST /api/imports/:id/stop": [{ method: "POST", path: `/api/imports/${readyImport}/stop` }],
+      // 3b Task 6: the undo of Ada's done import, taken whatever her standing.
+      "POST /api/imports/:id/undo": [{ method: "POST", path: `/api/imports/${doneImport}/undo` }],
     };
     const callsOf = (route: string): Call[] => {
       const given = calls[route];
@@ -389,6 +399,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
     expect(result.answers["POST /api/moderation/decisions/:id/reply"]).toEqual(["201"]);
     // 3b Task 5: the refused confirmation left the import ready, which a Stop does not end.
     expect(result.answers["POST /api/imports/:id/stop"]).toEqual(["409"]);
+    // 3b Task 6: the undo of a done import is taken while the suspension runs.
+    expect(result.answers["POST /api/imports/:id/undo"]).toEqual(["200"]);
     // Redress and erasure on real rows of the account's own: its released report examined again, its upload deleted.
     expect(result.answers["POST /api/moderation/items/:item/reexamine"]).toEqual(["201"]);
     expect(result.answers["DELETE /api/media/:id"]).toEqual(["204"]);
@@ -413,6 +425,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
     // 3b Task 5: the confirmation is taken (the import publishes: it holds no image), and the Stop then ends it.
     expect(result.answers["POST /api/imports/:id/confirm"]).toEqual(["200"]);
     expect(result.answers["POST /api/imports/:id/stop"]).toEqual(["200"]);
+    expect(result.answers["POST /api/imports/:id/undo"]).toEqual(["200"]);
     expect(result.answers["POST /api/moderation/decisions/:id/reply"]).toEqual(["201"]);
     const [reply] = await apiDb.execute<{ on_time: boolean }>(sql`select on_time from suspension_replies where account_id = ${result.ada.id}::uuid`);
     expect(reply?.on_time).toBe(true);

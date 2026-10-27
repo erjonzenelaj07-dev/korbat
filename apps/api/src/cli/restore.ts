@@ -241,6 +241,13 @@ export function decisionClass(params: { kind?: unknown; actions?: unknown }): Ga
   return "no_measure";
 }
 
+/**
+ * 3b Task 6 (the orchestrator's ruling): the class of a lost admin's end of an import (import_ended_by_staff), as a lost
+ * decision's is: the end took the import's posts from public view, so a restriction. Its gap names the import; an admin
+ * closes it by ending the import again from a case with the gap named (0048's gap_close), or as not needed.
+ */
+export const IMPORT_END_GAP_CLASS: GapClass = "restriction";
+
 /** The columns a correction of an order's record changes, by the member names its audit row carries. */
 const CORRECTED_COLUMNS: Record<string, string> = {
   kind: "kind",
@@ -511,6 +518,14 @@ class Importer {
     }
   }
 
+  /**
+   * 3b Task 6: import_ended_by_staff, as a lost decision: one open gap of IMPORT_END_GAP_CLASS on the import its line names,
+   * which the import's undo had removed the posts of; the restored database shows them again until an admin ends it again.
+   */
+  async importEnded(entry: TailLine): Promise<void> {
+    await this.gap(entry, IMPORT_END_GAP_CLASS, true);
+  }
+
   /** case_decided and appeals_reviewed: one open gap, of the class the lost decision's signed actions give it. */
   async decided(entry: TailLine): Promise<void> {
     await this.gap(entry, decisionClass((entry.metadata.params as Record<string, unknown>) ?? {}), true);
@@ -628,6 +643,9 @@ async function importLine(importer: Importer, entry: TailLine, withdrawnLater: R
     // measure gives it, a restriction for a withheld image and seal_interim for a seal; a person decides it again.
     case "automated_decided":
       return importer.decided(entry);
+    // 3b Task 6 (the orchestrator's ruling): an admin's lost end of a whole import is lost as a decision is.
+    case "import_ended_by_staff":
+      return importer.importEnded(entry);
     case "notification_recorded":
       return importer.notification(entry);
     case "production_recorded":

@@ -82,7 +82,7 @@ function app(checks: Record<string, () => Promise<void>>, advisoryChecks?: Recor
     social: social.forImports,
     // 3b Task 5: the media module's interface, and stand-ins for the two reads no test here reaches (no import is confirmed).
     media: media.forImports,
-    moderation: { imagesFlagged: async () => "unsent" },
+    moderation: { imagesFlagged: async () => "unsent", imagesPublished: () => undefined },
     profiles: { suspended: async () => false },
     rateLimitStore,
     requireSession: auth.requireSession,
@@ -162,6 +162,8 @@ describe("request bodies", () => {
       // 3b Task 5: the confirmation and the Stop.
       [`/api/imports/${id}/confirm`, "POST"],
       [`/api/imports/${id}/stop`, "POST"],
+      // 3b Task 6: the undo.
+      [`/api/imports/${id}/undo`, "POST"],
       // Only PUT, only /archive, only a 36-character id of the UUID's alphabet.
       [`/api/imports/${id}/archive`, "POST"],
       [`/api/imports/${id}/archive/x`, "PUT"],

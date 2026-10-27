@@ -196,6 +196,8 @@ describe("a post's chip in its view", () => {
     replyToHandle: null,
     replyToAuthorId: null,
     replyToState: null,
+    // 3b Task 6: a native post carries no import's label.
+    imported: null,
     ...extra,
   });
 

@@ -138,8 +138,19 @@ export interface UploadNoticeMessage {
   paragraphs: readonly string[];
 }
 
-/** What may be sent to an account: the receipt and the daily update of its reports, the statement of a decision about it, and (3d) the notices of a lost image, of a release and of a refused upload. */
-export type AccountMessage = NoticeReceivedMessage | AccountUpdateMessage | DecisionMessage | ImageLostMessage | ReleaseNoticeMessage | UploadNoticeMessage;
+/**
+ * 3b Task 6 (design, section 8.7): an admin ended the person's whole import under a rule, resting on a decision recorded on
+ * a case about one of its posts; the posts are being removed. The mail names the rule and says the decision can be
+ * appealed on its case; it names no post, no import's source and no staff member.
+ */
+export interface ImportEndedMessage {
+  template: "import_ended_by_staff";
+  ruleId: string;
+  decisionId: string;
+}
+
+/** What may be sent to an account: the receipt and the daily update of its reports, the statement of a decision about it, (3d) the notices of a lost image, of a release and of a refused upload, and (3b) the end of an import by staff. */
+export type AccountMessage = NoticeReceivedMessage | AccountUpdateMessage | DecisionMessage | ImageLostMessage | ReleaseNoticeMessage | UploadNoticeMessage | ImportEndedMessage;
 
 /** One contact's share of the daily update: the lines of its notice, and its receipt when the 24-hour cap folded it. */
 export interface NotifierUpdatePart {
@@ -434,6 +445,8 @@ export async function mailAccount(deps: AuthDeps, userId: string, message: Accou
       },
     });
   }
+  // 3b Task 6: nor is the end of an import by staff, which is about the account's own posts and rests on a decision.
+  if (message.template === "import_ended_by_staff") return deliver(deps, { to: user.email, template: "import_ended_by_staff", data: { rule: message.ruleId } });
   // 3d Task 7: nor are the notices of a refused upload, one paragraph per line, as the app's screen renders them.
   if (message.template === "upload_refused" || message.template === "upload_hold_lifted") {
     return deliver(deps, { to: user.email, template: message.template, data: { notice: message.paragraphs.join(LINE_BREAK) } });

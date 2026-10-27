@@ -27,13 +27,24 @@ export function startDeletion(deps: AccountDeps, session: Session, ctx: RequestC
  */
 export async function purge(deps: AccountDeps, userId: string): Promise<"purged" | "held" | "none"> {
   let images: string[] = [];
+  let imports: string[] = [];
   await deps.social.purgeProfile(userId, deps.now(), async (tx) => {
+    // 3b Task 6 (design, section 4.7): the account's import rows and its import key, after the profile is marked deleted
+    // and every post is tombstoned with its import columns cleared, so no post names one; the media rows stay the last act.
+    if (deps.imports) imports = await deps.imports.purgeOwner(tx, userId);
     images = await deps.media.purgeOwner(tx, userId);
   });
   try {
     await deps.media.requestDeletion(images);
   } catch (err) {
     deps.log.error({ err, userId, count: images.length }, "account purge: the files of the deleted images could not be requested now; the media sweeper asks again");
+  }
+  // 3b Task 6: every archive and work folder the deleted imports named, after the commit; import-drive's orphan pass
+  // deletes what a crash between the two leaves.
+  try {
+    await deps.imports?.removeFiles(imports);
+  } catch (err) {
+    deps.log.error({ err, userId, count: imports.length }, "account purge: the files of the deleted imports could not be requested now; import-drive's orphan pass deletes them");
   }
   // After the profile is marked deleted and before the account counts as purged: a failure here leaves the purge pending,
   // and its rerun, like every step's, changes nothing that is already done.

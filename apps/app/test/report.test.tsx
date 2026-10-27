@@ -202,6 +202,7 @@ describe("what leads to the form", () => {
     counts: { likes: 0, reposts: 0, replies: 0, quotes: 0 },
     media: [],
     quoteOf: null,
+    imported: null,
     ...extra,
   });
   const me = (userId: string) => ({ status: "signed-in", me: { user: { id: userId, onboarded: true }, profile: { handle: "me" } } });
@@ -246,7 +247,7 @@ describe("what leads to the form", () => {
   });
 
   test("UI Task 5: a profile has Report in its More menu, drawn open, after Mute and Block, and signed out too; never on the reader's own", () => {
-    const grace = { id: id(902), handle: "grace", displayName: "Grace", bio: "", verified: false, createdAt: "2026-10-01T10:00:00.000Z", counts: { posts: 1, followers: 0, following: 0 } };
+    const grace = { id: id(902), handle: "grace", displayName: "Grace", bio: "", verified: false, createdAt: "2026-10-01T10:00:00.000Z", counts: { posts: 1, followers: 0, following: 0 }, hasImported: false };
     session.state = { status: "signed-out" };
     expect(hrefs(html(<ProfileMenuPanel profile={grace} />))).toEqual(["/report?account=grace"]);
     session.state = me(id(901));

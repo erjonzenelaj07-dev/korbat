@@ -1,6 +1,7 @@
 import type { Logger } from "pino";
 import { OrderNoticeFacts, OrderTexts, STANDING_RULES, type Platform } from "@korbat/contracts";
 import type { AccountExport } from "../../auth";
+import type { ImportRecord } from "../../imports";
 import type { ModerationExport } from "../../moderation";
 import type { ProfileExport } from "../../social";
 import { AccountError, type AccountDeps } from "../context";
@@ -36,6 +37,8 @@ export interface ExportPlan {
   profile: ProfileExport;
   /** The decisions about the account that it was told of and its own reports, as the moderation module hands them over (3c design, section 7.11). */
   moderation: ModerationExport;
+  /** 3b Task 6 (design, section 11.2): the account's imports, newest first, as the imports module hands them over. */
+  imports: ImportRecord[];
   images: { id: string; open: OpenFile }[];
   /** The images whose file the checked open refused or could not find, filled while the images are written. */
   missingMedia: string[];
@@ -98,14 +101,16 @@ const NO_MODERATION: ModerationExport = {
  * `pageSize` is how many rows of each profile list are read at a time; tests lower it.
  */
 export async function buildExport(deps: AccountDeps, userId: string, currentSession: string, now: Date, pageSize?: number): Promise<ExportPlan> {
-  const [account, profile, images, moderation] = await Promise.all([
+  const [account, profile, images, moderation, imports] = await Promise.all([
     deps.auth.exportAccount(userId),
     deps.social.exportProfile(userId, pageSize),
     deps.media.exportImages(userId),
     // The server always hands the moderation module over; a test of the other members may leave it out.
     deps.moderation ? deps.moderation.exportFor(userId) : NO_MODERATION,
+    // 3b Task 6: and the imports module; without it the member is empty.
+    deps.imports ? deps.imports.exportFor(userId) : Promise.resolve([]),
   ]);
-  return { exportedAt: now, currentSession, account, profile, moderation, images, missingMedia: [] };
+  return { exportedAt: now, currentSession, account, profile, moderation, imports, images, missingMedia: [] };
 }
 
 /** A list member of export.json, read in pages and written one element at a time. */
@@ -197,6 +202,8 @@ async function* documentFragments(plan: ExportPlan): AsyncGenerator<string> {
         state: post.state,
         deletedAt: isoOrNull(post.deletedAt),
         media: post.media.map((image) => ({ id: image.id, file: mediaEntry(image.id), altText: image.altText, width: image.width, height: image.height })),
+        // 3b (11.2): last in the post, where the format added it; null on a native post and on a tombstone.
+        imported: post.imported === null ? null : { source: post.imported.source, originalCreatedAt: iso(post.imported.originalCreatedAt), shortened: post.imported.shortened },
       })),
     ],
     ["likes", new Paged(profile.likes, ref)],
@@ -217,9 +224,26 @@ async function* documentFragments(plan: ExportPlan): AsyncGenerator<string> {
     ["events", inMemory(account.events, (event) => ({ type: event.type, at: iso(event.at) }))],
     // Complete by now: the images were written before the JSON.
     ["missingMedia", inMemory(plan.missingMedia, (id) => id)],
-    // Last, where the format added it (3c). Each entry is written member by member in the format's order, so the bytes
+    // Where the format added it (3c). Each entry is written member by member in the format's order, so the bytes
     // do not depend on how the moderation module builds its objects, and nothing beyond the format is ever written.
     ["moderation", moderationMember(plan.moderation)],
+    // 3b Task 6 (11.2): last, the account's imports, newest first, member by member in the format's order.
+    [
+      "imports",
+      plan.imports.map((entry) => ({
+        id: entry.id,
+        source: entry.source,
+        status: entry.status,
+        createdAt: iso(entry.createdAt),
+        endedAt: isoOrNull(entry.endedAt),
+        statedAt: isoOrNull(entry.statedAt),
+        choice:
+          entry.choice === null
+            ? null
+            : { from: entry.choice.from, to: entry.choice.to, replies: entry.choice.replies, warnings: entry.choice.warnings, protected: entry.choice.protected, images: entry.choice.images, long: entry.choice.long },
+        counts: { postsPublished: entry.counts.postsPublished, postsRemoved: entry.counts.postsRemoved, imagesKept: entry.counts.imagesKept, imagesLeftOut: entry.counts.imagesLeftOut },
+      })),
+    ],
   ];
 
   yield "{\n";

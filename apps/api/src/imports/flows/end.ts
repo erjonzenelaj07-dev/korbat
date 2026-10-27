@@ -45,3 +45,19 @@ export async function stopImport(deps: ImportDeps, ownerId: string, id: string):
   if (!row) throw new ImportError("not_found");
   return importView(deps, row);
 }
+
+/**
+ * POST /api/imports/:id/undo (3b design, sections 4.6, 8.5 and 9.2; decision 22): "Remove imported posts" on a done import,
+ * or a stopped one with posts published, counted in import-act: one UPDATE to undoing, and import-drive tombstones the
+ * posts in batches through the author's own deletion path. Anything else is wrong_state, someone else's import not_found.
+ * A suspended account may undo: it only deletes what the account posted, as the author's deletion allows (8.5).
+ */
+export async function undoImport(deps: ImportDeps, ownerId: string, id: string): Promise<ImportView> {
+  await enforceImportLimit(deps, "import-act", ownerId);
+  if (!(await deps.repo.find(id, ownerId))) throw new ImportError("not_found");
+  if (!(await deps.repo.toUndoing(id, ownerId))) throw new ImportError("wrong_state");
+  deps.log.info({ id, phase: "undoing" }, "import: undo asked");
+  const row = await deps.repo.find(id, ownerId);
+  if (!row) throw new ImportError("not_found");
+  return importView(deps, row);
+}

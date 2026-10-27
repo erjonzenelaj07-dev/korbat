@@ -7,6 +7,7 @@ import type { ModerationForImports } from "../moderation";
 import { limitsFor, type ImportAction, type SocialForImports } from "../social";
 import type { ImportFiles } from "./files";
 import type { ImportPlan } from "./plan";
+import type { PublishOffset } from "./publisher";
 import type { ImportRepo } from "./repo";
 
 /**
@@ -15,7 +16,9 @@ import type { ImportRepo } from "./repo";
  * It names the three import tables in its repository alone, reaches posts only through the social module's index and
  * an account's email only through the auth module's, and reads everything the importer wrote through openWorkFile. 3b
  * Task 5: images reach the media pipeline only through the media module's index, a non-acting match's alert goes through
- * the moderation module's, and whether an account is suspended is the profile store's plain read.
+ * the moderation module's, and whether an account is suspended is the profile store's plain read. 3b Task 6: posts are
+ * written and tombstoned only by the social module's batch writers, the automated step of their images is the moderation
+ * module's, and the mail of an admin's end goes through the auth module's mailAccount.
  */
 
 /** The import codes plus the shared invalid_request, which a malformed header or parameter gets. */
@@ -129,6 +132,12 @@ export interface ImportDeps {
    * cursor without reading the work file again.
    */
   plans: Map<string, ImportPlan>;
+  /**
+   * 3b Task 6: the publisher's offsets (7.5 step 5), the byte offset in posts.jsonl at which each publishing import's
+   * post_cursor stands, as this process last left it: used only while its cursor is the row's, found again by one read
+   * after a restart (the preview's pages were cut at the confirmation).
+   */
+  offsets: Map<string, PublishOffset>;
 }
 
 /**

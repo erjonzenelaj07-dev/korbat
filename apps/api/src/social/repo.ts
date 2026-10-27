@@ -1,5 +1,5 @@
 import { and, eq, isNull, ne, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
-import { EXPLORE_V2, type ExploreFormula } from "@korbat/contracts";
+import { EXPLORE_V2, type ExploreFormula, type ImportSource } from "@korbat/contracts";
 import { blocks, bookmarks, follows, handleHistory, likes, mutes, posts, profiles, reposts, type Db, type DbTx } from "@korbat/db";
 import { handleRefusal, isUniqueViolation } from "../auth";
 import { WRITE_CLOCK, closingJudgment, liveNotSuspended, reportsRestrictedAt, suspendedAt } from "../lib/standing";
@@ -50,6 +50,11 @@ export interface PostRow {
   /** The parent's author and state, so a view can decide whether the viewer may learn the handle. */
   replyToAuthorId: string | null;
   replyToState: StoredPostState | null;
+  /**
+   * 3b (design, sections 8.4 and 9.3): an imported post's label from its own columns, the archive's date as its UTC day
+   * (never its second); null for a native post and for a tombstone, whose columns are cleared.
+   */
+  imported: { source: ImportSource; at: string; shortened: boolean } | null;
 }
 
 /** One line of a list: which post, when it sorts, and who reposted it (timelines only). */
@@ -85,6 +90,45 @@ export interface ExportedPostRow {
   quoteOfId: string | null;
   state: StoredPostState;
   deletedAt: Date | null;
+  /** 3b (design, section 11.2): an imported post's source, the date its archive gave it and whether it was shortened. */
+  imported: { source: ImportSource; originalCreatedAt: Date; shortened: boolean } | null;
+}
+
+/**
+ * 3b (design, section 6.5): the import a batch belongs to, as the imports module read it. The batch is written only while
+ * the job is still publishing at `cursor`, the post_cursor the caller read.
+ */
+export interface ImportBatchJob {
+  id: string;
+  ownerId: string;
+  source: ImportSource;
+  cursor: number;
+}
+
+/** One post of an import's batch, built by the imports module from a line the person's choice keeps (imports/plan.ts). */
+export interface ImportBatchPost {
+  /** importPostId(seed, ref): derived, so a parent's id is computed and a repeated batch inserts nothing twice. */
+  id: string;
+  /** importPostId(seed, parent) for a line of the account's own thread, else null; written top-level when that post is not there. */
+  parentId: string | null;
+  body: string;
+  /** The archive's date, ISO in UTC with whole seconds. */
+  originalCreatedAt: string;
+  shortened: boolean;
+  /** The line's key (5.4), 64 lowercase hex. */
+  key: string;
+  /** The kept images to attach, in order, each with its description (decision 20). */
+  images: { id: string; alt: string }[];
+}
+
+/** A batch's outcome: nothing written (the import moved on, or another batch wrote it), or the posts it inserted. */
+export type ImportBatchResult = { written: false } | { written: true; posts: { id: string; images: boolean }[] };
+
+/** An undo batch's outcome: the posts it found to remove, those it tombstoned, and the image rows that went with them. */
+export interface RemoveBatchResult {
+  selected: number;
+  removed: number;
+  images: string[];
 }
 
 /** Something the account did to a post (a like, a repost, a bookmark), and when. */
@@ -174,6 +218,8 @@ export interface ExploreFacts {
   authorId: string;
   reply: boolean;
   quote: boolean;
+  /** 3b (design, sections 8.5 and 10.6): an imported post, which enters no feed on its own. */
+  imported: boolean;
   visible: boolean;
   suspended: boolean;
   shown: boolean;
@@ -263,6 +309,9 @@ interface RawPost {
   reply_to_handle: string | null;
   reply_to_author_id: string | null;
   reply_to_state: StoredPostState | null;
+  import_source: ImportSource | null;
+  original_day: string | null;
+  import_shortened: boolean | null;
 }
 
 interface RawListRow {
@@ -303,6 +352,7 @@ interface RawExploreFacts {
   author_id: string;
   reply: boolean;
   quote: boolean;
+  imported: boolean;
   visible: boolean;
   suspended: boolean;
   shown: boolean;
@@ -333,6 +383,9 @@ function exportPage<R extends { key_at: string; key_id: string }, T>(raw: R[], l
 /** A list of ids as one parameter, split into a uuid array in SQL. */
 const uuidArray = (ids: string[]): SQL => sql`string_to_array(${ids.join(",")}, ',')::uuid[]`;
 
+/** 3b (design, sections 6.2 and 6.5): the five import columns as a tombstone writes them, all null at once, as posts_import_guard allows only there. */
+const CLEARED_IMPORT = { importJobId: null, importSource: null, originalCreatedAt: null, importShortened: null, importKey: null } as const;
+
 const toPost = (r: RawPost): PostRow => ({
   id: r.id,
   authorId: r.author_id,
@@ -350,6 +403,7 @@ const toPost = (r: RawPost): PostRow => ({
   replyToHandle: r.reply_to_handle,
   replyToAuthorId: r.reply_to_author_id,
   replyToState: r.reply_to_state,
+  imported: r.import_source !== null && r.original_day !== null ? { source: r.import_source, at: r.original_day, shortened: r.import_shortened === true } : null,
 });
 
 const toListRow = (r: RawListRow): ListRow => ({ postId: r.post_id, sortAt: new Date(r.sort_at), reposterId: r.reposter_id });
@@ -407,7 +461,8 @@ const beforeItem = (cursor: Cursor | undefined): SQL =>
 const POST_COLUMNS = sql`p.id, p.author_id, p.body, p.reply_to_id, p.quote_of_id, p.state, p.like_count, p.repost_count, p.reply_count, p.quote_count,
   ${iso("p.created_at")} as created_at, ${iso("p.deleted_at")} as deleted_at,
   a.handle as author_handle, a.display_name as author_display_name, (a.verified_at is not null) as author_verified,
-  rp.handle as reply_to_handle, pp.author_id as reply_to_author_id, pp.state as reply_to_state`;
+  rp.handle as reply_to_handle, pp.author_id as reply_to_author_id, pp.state as reply_to_state,
+  p.import_source::text as import_source, to_char(p.original_created_at at time zone 'UTC', 'YYYY-MM-DD') as original_day, p.import_shortened`;
 const POST_JOINS = sql`from posts p join profiles a on a.id = p.author_id left join posts pp on pp.id = p.reply_to_id left join profiles rp on rp.id = pp.author_id`;
 const PROFILE_COLUMNS = sql`id, handle, display_name, bio, (verified_at is not null) as verified, follower_count, following_count, post_count, ${iso("created_at")} as created_at, ${iso("handle_changed_at")} as handle_changed_at`;
 const PROFILE_SELECT = sql`select ${PROFILE_COLUMNS} from profiles`;
@@ -469,11 +524,12 @@ function exploreRules(asOf: Date, formula: ExploreFormula) {
    * The one candidate predicate: visible top-level posts that are not quotes, by authors who are live and not suspended
    * at the time and have not switched Explore off, whose starts_at lies in the window up to the time. The window test is
    * written in two arms so that each uses its own index: a post never given back its time by its created_at, a restored
-   * one by its explore_from (a partial index holds only those). Later rules about imports belong here.
+   * one by its explore_from (a partial index holds only those). 3b (design, sections 1.5 and 8.5; decision 8): an imported
+   * post is never a candidate; it enters no feed on its own, and is published all at once by design.
    */
   const candidates = (post?: string): SQL => sql`
     select p.id, p.author_id, coalesce(p.explore_from, p.created_at) as starts_at from posts p join profiles a on a.id = p.author_id
-    where p.reply_to_id is null and p.quote_of_id is null and p.state = 'visible'
+    where p.reply_to_id is null and p.quote_of_id is null and p.state = 'visible' and p.import_job_id is null
       and ((p.explore_from is null and p.created_at > ${since} and p.created_at <= ${at}) or (p.explore_from > ${since} and p.explore_from <= ${at}))
       and ${liveNotSuspended("a", at)} and a.show_in_explore${onePost(sql`p.id`, post)}`;
   /**
@@ -587,9 +643,11 @@ export function createSocialRepo(db: Db) {
         await lockPostsInOrder(tx, [id, own.reply_to_id, own.quote_of_id]);
         // 3f (design, section 7.10): a post disabled for an order answers its author as a post that does not exist, so its
         // own deletion changes nothing and answers not_found (posts_guard refuses the update for the API role in any case).
+        // 3b (design, sections 6.5 and 6.6): the five import columns are cleared in the statement that tombstones, so a
+        // deleted imported post keeps nothing of its source (posts_import_guard allows them to change only so).
         const [old] = await tx
           .update(posts)
-          .set({ state: "deleted_by_author", deletedAt: now, body: "" })
+          .set({ state: "deleted_by_author", deletedAt: now, body: "", ...CLEARED_IMPORT })
           .where(and(eq(posts.id, id), eq(posts.authorId, authorId), ne(posts.state, "deleted_by_author"), ne(posts.state, "disabled")))
           .returning({ replyToId: posts.replyToId, quoteOfId: posts.quoteOfId });
         if (!old) return false;
@@ -834,13 +892,15 @@ export function createSocialRepo(db: Db) {
      * Top-level posts and quotes by followed accounts and the viewer, plus their reposts; blocks and mutes
      * apply to author and reposter. Each branch applies the cursor, the filters and the limit itself, so
      * only two small sorted sets meet in the union instead of everything the followed accounts ever wrote.
+     * 3b (decisions 8 and 23): the own branch reads native posts only (posts_author_native_idx), so a followed account's
+     * imported posts never enter; a repost of one is a deliberate act of the reposter's and shows in the other branch.
      */
     async followingTimeline(viewer: string, cursor: Cursor | undefined, limit: number): Promise<ListRow[]> {
       const raw = await rows<RawListRow>(sql`
         with f as (select followee_id as id from follows where follower_id = ${viewer}::uuid union select ${viewer}::uuid),
         own as (
           select p.id as post_id, p.created_at as sort_at, null::uuid as reposter_id, p.author_id
-          from posts p where p.author_id in (select id from f) and p.reply_to_id is null and ${visibleTo(viewer)}
+          from posts p where p.author_id in (select id from f) and p.reply_to_id is null and p.import_job_id is null and ${visibleTo(viewer)}
             and ${otherWelcome(viewer, sql`p.author_id`)} and ${beforeTriple(cursor, sql`p.created_at`, sql`p.id`, sql`${NO_REPOSTER}::uuid`)}
           order by p.created_at desc, p.id desc limit ${limit}
         ),
@@ -857,24 +917,27 @@ export function createSocialRepo(db: Db) {
       return raw.map(toListRow);
     },
 
-    /** Every visible top-level post and quote, newest first; a signed-in viewer's blocks and mutes apply. */
+    /** Every visible top-level native post and quote, newest first (3b: posts_latest_idx holds no imported post); a signed-in viewer's blocks and mutes apply. */
     async latestTimeline(viewer: string | null, cursor: Cursor | undefined, limit: number): Promise<ListRow[]> {
       const raw = await rows<RawListRow>(sql`
         select ${LIST_COLUMNS} from (
           select p.id as post_id, p.created_at as sort_at, null::uuid as reposter_id, p.author_id
-          from posts p where p.reply_to_id is null and ${visibleTo(viewer)}
+          from posts p where p.reply_to_id is null and p.import_job_id is null and ${visibleTo(viewer)}
         ) i
         where ${itemNotBlocked(viewer)} and ${itemNotMuted(viewer)} and ${beforeItem(cursor)}
         order by i.sort_at desc, i.post_id desc limit ${limit}`);
       return raw.map(toListRow);
     },
 
-    /** An account's top-level posts, quotes and reposts. The caller has already checked the viewer may see the account. */
+    /**
+     * An account's top-level posts, quotes and reposts. The caller has already checked the viewer may see the account. 3b:
+     * its own posts are native ones only (the Imported tab lists the others); a repost of an imported post still shows.
+     */
     async profilePosts(profileId: string, viewer: string | null, cursor: Cursor | undefined, limit: number): Promise<ListRow[]> {
       const raw = await rows<RawListRow>(sql`
         with i as (
           select p.id as post_id, p.created_at as sort_at, null::uuid as reposter_id, p.author_id
-          from posts p where p.author_id = ${profileId}::uuid and p.reply_to_id is null and ${visibleTo(viewer)}
+          from posts p where p.author_id = ${profileId}::uuid and p.reply_to_id is null and p.import_job_id is null and ${visibleTo(viewer)}
           union all
           select r.post_id, r.created_at, r.user_id, p.author_id
           from reposts r join posts p on p.id = r.post_id where r.user_id = ${profileId}::uuid and p.state = 'visible'
@@ -885,12 +948,34 @@ export function createSocialRepo(db: Db) {
       return raw.map(toListRow);
     },
 
+    /** An account's Replies tab: its native replies (3b: an imported thread's replies show on their post's page only). */
     async profileReplies(profileId: string, viewer: string | null, cursor: Cursor | undefined, limit: number): Promise<ListRow[]> {
       const raw = await rows<RawListRow>(sql`
         select p.id as post_id, ${iso("p.created_at")} as sort_at, null::uuid as reposter_id from posts p
-        where p.author_id = ${profileId}::uuid and p.reply_to_id is not null and ${visibleTo(viewer)} and ${before(cursor, sql`p.created_at`, sql`p.id`)}
+        where p.author_id = ${profileId}::uuid and p.reply_to_id is not null and p.import_job_id is null and ${visibleTo(viewer)} and ${before(cursor, sql`p.created_at`, sql`p.id`)}
         order by p.created_at desc, p.id desc limit ${limit}`);
       return raw.map(toListRow);
+    },
+
+    /**
+     * 3b (design, sections 8.6, 9.2 and 10.6; decision 8): an account's Imported tab: its imported top-level posts, newest
+     * first by the archive's date (posts_imported_idx), the page's key that date and the id. The visibility rule and the
+     * blocks apply as on the Posts tab; the caller has already checked the viewer may see the account.
+     */
+    async profileImported(profileId: string, viewer: string | null, cursor: Cursor | undefined, limit: number): Promise<ListRow[]> {
+      const raw = await rows<RawListRow>(sql`
+        select p.id as post_id, ${iso("p.original_created_at")} as sort_at, null::uuid as reposter_id from posts p
+        where p.author_id = ${profileId}::uuid and p.import_job_id is not null and p.reply_to_id is null and ${visibleTo(viewer)} and ${authorNotBlocked(viewer)}
+          and ${before(cursor, sql`p.original_created_at`, sql`p.id`)}
+        order by p.original_created_at desc, p.id desc limit ${limit}`);
+      return raw.map(toListRow);
+    },
+
+    /** 3b (9.3, 10.6): whether the account has a visible imported top-level post, so its profile shows the Imported tab to every reader. */
+    async hasImported(profileId: string): Promise<boolean> {
+      const [row] = await rows<{ found: boolean }>(sql`
+        select exists (select 1 from posts p where p.author_id = ${profileId}::uuid and p.import_job_id is not null and p.reply_to_id is null and p.state = 'visible') as found`);
+      return row?.found === true;
     },
 
     /** The viewer's likes, newest like first; posts they may no longer see are omitted. */
@@ -1016,7 +1101,7 @@ export function createSocialRepo(db: Db) {
       const rules = exploreRules(now, formula);
       const [r] = await rows<RawExploreFacts>(sql`
         with run as (select generation, as_of, formula from explore_runs order by generation desc limit 1)
-        select p.author_id, p.reply_to_id is not null as reply, p.quote_of_id is not null as quote, p.state = 'visible' as visible,
+        select p.author_id, p.reply_to_id is not null as reply, p.quote_of_id is not null as quote, p.import_job_id is not null as imported, p.state = 'visible' as visible,
           ${suspendedAt("a", READ_CLOCK)} as suspended, a.show_in_explore as shown, coalesce(p.explore_from, p.created_at) <= ${rules.since} as outside_window,
           run.generation, ${iso("run.as_of")} as as_of, run.formula, p.created_at > run.as_of as newer, coalesce(p.restored_at > run.as_of, false) as restored,
           exists (select 1 from explore_items i where i.generation = run.generation and i.post_id = p.id) as holds_post
@@ -1027,6 +1112,7 @@ export function createSocialRepo(db: Db) {
         authorId: r.author_id,
         reply: r.reply,
         quote: r.quote,
+        imported: r.imported,
         visible: r.visible,
         suspended: r.suspended,
         shown: r.shown,
@@ -1132,8 +1218,22 @@ export function createSocialRepo(db: Db) {
      * post disabled for an order is left out, with its images, and no line says so; after a reinstatement it is back.
      */
     async exportPosts(id: string, after: ExportKey | null, limit: number): Promise<ExportPage<ExportedPostRow>> {
-      const raw = await rows<{ id: string; body: string; created_at: string; reply_to_id: string | null; quote_of_id: string | null; state: StoredPostState; deleted_at: string | null; key_at: string; key_id: string }>(sql`
-        select id, body, ${iso("created_at")} as created_at, reply_to_id, quote_of_id, state, ${iso("deleted_at")} as deleted_at, ${isoMicro("created_at")} as key_at, id as key_id
+      const raw = await rows<{
+        id: string;
+        body: string;
+        created_at: string;
+        reply_to_id: string | null;
+        quote_of_id: string | null;
+        state: StoredPostState;
+        deleted_at: string | null;
+        import_source: ImportSource | null;
+        original_created_at: string | null;
+        import_shortened: boolean | null;
+        key_at: string;
+        key_id: string;
+      }>(sql`
+        select id, body, ${iso("created_at")} as created_at, reply_to_id, quote_of_id, state, ${iso("deleted_at")} as deleted_at,
+               import_source::text as import_source, ${iso("original_created_at")} as original_created_at, import_shortened, ${isoMicro("created_at")} as key_at, id as key_id
         from posts where author_id = ${id}::uuid and state::text <> 'disabled' and ${exportAfter(after, sql`created_at`, sql`id`)} order by created_at, id limit ${limit}`);
       return exportPage(raw, limit, (row) => ({
         id: row.id,
@@ -1143,6 +1243,11 @@ export function createSocialRepo(db: Db) {
         quoteOfId: row.quote_of_id,
         state: row.state,
         deletedAt: row.deleted_at ? new Date(row.deleted_at) : null,
+        // 3b (11.2): the import's facts on the post; a tombstone's columns are cleared, so it has none.
+        imported:
+          row.import_source !== null && row.original_created_at !== null
+            ? { source: row.import_source, originalCreatedAt: new Date(row.original_created_at), shortened: row.import_shortened === true }
+            : null,
       }));
     },
 
@@ -1347,6 +1452,141 @@ export function createSocialRepo(db: Db) {
       return new Set(found.map((row) => row.key));
     },
 
+    // ------------------------------------------------------------ imports (3b design, section 6.5)
+
+    /**
+     * One batch of an import's posts, in one transaction, in 6.5's order. The author's row FOR NO KEY UPDATE with 3e's
+     * predicate (lockActing: a suspended author's batch is refused account_suspended, and the import waits); the job's row
+     * FOR UPDATE, which must still be publishing at the cursor the caller read (else nothing is written); the posts of the
+     * batch that are there already by id or by key are passed over (a key another import of the account published since
+     * the line was read; a repeated batch); every parent outside the batch, taken with lockPostsInOrder as createPost and
+     * deletePost take theirs, and a thread line whose parent is neither earlier in the batch nor a post of this import (left
+     * out, skipped, or deleted meanwhile, its import columns cleared) is written as a post of its own; one insert of the
+     * rest, each created_at the batch's `now` plus its place in the batch in milliseconds (the module's precision, so a
+     * thread's replies keep their order in `replies` and its keyset cursor round-trips), on conflict doing nothing, so only
+     * the rows RETURNING gave count; the parents' reply counts and the author's post count, one statement each; the images
+     * attached through `attach` (the media module's, 6.3's rules); the cursor moved past `lines` and the posts counted; and
+     * the closing judgment last. posts_import_guard holds every row to its job, source, dates and parent.
+     */
+    async publishImportedBatch(
+      job: ImportBatchJob,
+      batch: { lines: number; posts: readonly ImportBatchPost[] },
+      now: Date,
+      attach: (tx: DbTx, input: { postId: string; ownerId: string; items: readonly { id: string; alt: string }[] }) => Promise<void>,
+    ): Promise<ImportBatchResult> {
+      return db.transaction(async (tx) => {
+        await lockActing(tx, job.ownerId, "no key update");
+        const held = (await tx.execute(
+          sql`select j.id from import_jobs j where j.id = ${job.id}::uuid and j.owner_id = ${job.ownerId}::uuid and j.status = 'publishing' and j.post_cursor = ${job.cursor}::int for update of j`,
+        )) as unknown as { id: string }[];
+        if (held.length === 0) return { written: false };
+        let posts = [...batch.posts];
+        if (posts.length > 0) {
+          const present = (await tx.execute(sql`
+            select p.id, encode(p.import_key, 'hex') as key from posts p
+             where p.author_id = ${job.ownerId}::uuid
+               and (p.id = any(${uuidArray(posts.map((post) => post.id))}) or p.import_key = any(select decode(k, 'hex') from unnest(string_to_array(${posts.map((post) => post.key).join(",")}, ',')) k))`)) as unknown as { id: string; key: string | null }[];
+          const ids = new Set(present.map((row) => row.id));
+          const keys = new Set(present.flatMap((row) => (row.key === null ? [] : [row.key])));
+          posts = posts.filter((post) => !ids.has(post.id) && !keys.has(post.key));
+        }
+        const own = new Set(posts.map((post) => post.id));
+        const outside = [...new Set(posts.flatMap((post) => (post.parentId !== null && !own.has(post.parentId) ? [post.parentId] : [])))];
+        await lockPostsInOrder(tx, outside);
+        const standing =
+          outside.length === 0
+            ? new Set<string>()
+            : new Set(((await tx.execute(sql`select p.id from posts p where p.id = any(${uuidArray(outside)}) and p.import_job_id = ${job.id}::uuid`)) as unknown as { id: string }[]).map((row) => row.id));
+        const earlier = new Set<string>();
+        const rows = posts.map((post, place) => {
+          const parent = post.parentId !== null && (earlier.has(post.parentId) || standing.has(post.parentId)) ? post.parentId : null;
+          earlier.add(post.id);
+          return sql`(${post.id}::uuid, ${job.ownerId}::uuid, ${post.body}, ${parent}::uuid, ${new Date(now.getTime() + place).toISOString()}::timestamptz, ${job.id}::uuid,
+                      ${job.source}::import_source, ${post.originalCreatedAt}::timestamptz, ${post.shortened}, decode(${post.key}, 'hex'))`;
+        });
+        const inserted =
+          rows.length === 0
+            ? []
+            : ((await tx.execute(sql`
+                insert into posts (id, author_id, body, reply_to_id, created_at, import_job_id, import_source, original_created_at, import_shortened, import_key)
+                values ${sql.join(rows, sql`, `)}
+                on conflict do nothing
+                returning id, reply_to_id`)) as unknown as { id: string; reply_to_id: string | null }[]);
+        const replies = new Map<string, number>();
+        for (const row of inserted) if (row.reply_to_id !== null) replies.set(row.reply_to_id, (replies.get(row.reply_to_id) ?? 0) + 1);
+        if (replies.size > 0) {
+          await tx.execute(sql`
+            update posts set reply_count = posts.reply_count + c.n
+              from (values ${sql.join([...replies].map(([id, n]) => sql`(${id}::uuid, ${n}::int)`), sql`, `)}) c(id, n)
+             where posts.id = c.id`);
+        }
+        const topLevel = inserted.filter((row) => row.reply_to_id === null).length;
+        if (topLevel > 0) await tx.execute(sql`update profiles set post_count = post_count + ${topLevel}::int where id = ${job.ownerId}::uuid`);
+        const byId = new Map(posts.map((post) => [post.id, post]));
+        for (const row of inserted) {
+          const images = byId.get(row.id)?.images ?? [];
+          if (images.length > 0) await attach(tx, { postId: row.id, ownerId: job.ownerId, items: images });
+        }
+        await tx.execute(sql`update import_jobs set post_cursor = post_cursor + ${batch.lines}::int, posts_published = posts_published + ${inserted.length}::int where id = ${job.id}::uuid`);
+        await judgeActing(tx, job.ownerId);
+        return { written: true, posts: inserted.map((row) => ({ id: row.id, images: (byId.get(row.id)?.images.length ?? 0) > 0 })) };
+      });
+    },
+
+    /**
+     * One batch of an import's undo (decision 22), in one transaction, through the author's own deletion path: the author's
+     * row FOR NO KEY UPDATE (no predicate: a suspended author may still remove what it posted, as deletePost allows), the
+     * job's row while it is undoing; at most `limit` of its posts that are neither deleted nor disabled, by id, and every
+     * post they reply to, taken with lockPostsInOrder; the tombstones (deleted_by_author, the body blanked, the five import
+     * columns null, a post that changed meanwhile passed over); the counters, one statement each; `detach` for each
+     * tombstoned post inside the transaction, whose keep trigger leaves every image a case holds or a frozen post owns; and
+     * posts_removed. An empty selection is the caller's sign to move the import to undone. The files of the image rows
+     * that went are the caller's to ask for, after the commit.
+     */
+    async removeImportedBatch(job: { id: string; ownerId: string }, now: Date, limit: number, detach: (tx: DbTx, postId: string) => Promise<string[]>): Promise<RemoveBatchResult> {
+      return db.transaction(async (tx) => {
+        await tx.execute(sql`select 1 from profiles where id = ${job.ownerId}::uuid for no key update`);
+        const held = (await tx.execute(sql`select j.id from import_jobs j where j.id = ${job.id}::uuid and j.status = 'undoing' for no key update of j`)) as unknown as { id: string }[];
+        if (held.length === 0) return { selected: 0, removed: 0, images: [] };
+        const batch = (await tx.execute(sql`
+          select p.id, p.reply_to_id from posts p
+           where p.import_job_id = ${job.id}::uuid and p.state <> 'deleted_by_author' and p.moderation_level <> 'disabled'
+           order by p.id limit ${limit}::int`)) as unknown as { id: string; reply_to_id: string | null }[];
+        if (batch.length === 0) return { selected: 0, removed: 0, images: [] };
+        await lockPostsInOrder(tx, [...batch.map((row) => row.id), ...batch.map((row) => row.reply_to_id)]);
+        const gone = (await tx.execute(sql`
+          update posts set state = 'deleted_by_author', deleted_at = ${now.toISOString()}::timestamptz, body = '',
+                 import_job_id = null, import_source = null, original_created_at = null, import_shortened = null, import_key = null
+           where id = any(${uuidArray(batch.map((row) => row.id))}) and import_job_id = ${job.id}::uuid and state <> 'deleted_by_author' and moderation_level <> 'disabled'
+          returning id, reply_to_id, quote_of_id`)) as unknown as { id: string; reply_to_id: string | null; quote_of_id: string | null }[];
+        const tally = (ids: (string | null)[]) => {
+          const counts = new Map<string, number>();
+          for (const id of ids) if (id !== null) counts.set(id, (counts.get(id) ?? 0) + 1);
+          return [...counts];
+        };
+        const replies = tally(gone.map((row) => row.reply_to_id));
+        if (replies.length > 0) {
+          await tx.execute(sql`
+            update posts set reply_count = greatest(0, posts.reply_count - c.n)
+              from (values ${sql.join(replies.map(([id, n]) => sql`(${id}::uuid, ${n}::int)`), sql`, `)}) c(id, n)
+             where posts.id = c.id`);
+        }
+        const quotes = tally(gone.map((row) => row.quote_of_id));
+        if (quotes.length > 0) {
+          await tx.execute(sql`
+            update posts set quote_count = greatest(0, posts.quote_count - c.n)
+              from (values ${sql.join(quotes.map(([id, n]) => sql`(${id}::uuid, ${n}::int)`), sql`, `)}) c(id, n)
+             where posts.id = c.id`);
+        }
+        const topLevel = gone.filter((row) => row.reply_to_id === null).length;
+        if (topLevel > 0) await tx.execute(sql`update profiles set post_count = greatest(0, post_count - ${topLevel}::int) where id = ${job.ownerId}::uuid`);
+        const images: string[] = [];
+        for (const row of gone) images.push(...(await detach(tx, row.id)));
+        await tx.execute(sql`update import_jobs set posts_removed = posts_removed + ${gone.length}::int where id = ${job.id}::uuid`);
+        return { selected: batch.length, removed: gone.length, images };
+      });
+    },
+
     // ------------------------------------------------------------ deletion
 
     /**
@@ -1411,11 +1651,14 @@ export function createSocialRepo(db: Db) {
           .set({ displayName: "Deleted account", bio: "", avatarPath: null, verifiedAt: null, followerCount: 0, followingCount: 0, postCount: 0, deletedAt: now })
           .where(and(eq(profiles.id, id), isNull(profiles.deletedAt)));
         // The tombstones. The rows are this transaction's already, and no post of the account can appear meanwhile: writing
-        // one takes a shared lock on the profile row, which this transaction holds for update.
-        await tx
-          .update(posts)
-          .set({ state: "deleted_by_author", deletedAt: now, body: "" })
-          .where(and(eq(posts.authorId, id), ne(posts.state, "deleted_by_author")));
+        // one takes a shared lock on the profile row, which this transaction holds for update. 3b (design, sections 4.7 and
+        // 6.6): the five import columns are cleared in the same statement, a disabled post's too (the profile is marked
+        // deleted above), and on any tombstone that still carries them, which keeps its deletion time; then no post names
+        // an import of the account, whose rows the caller's `within` deletes.
+        await tx.execute(sql`
+          update posts set state = 'deleted_by_author', deleted_at = case when state = 'deleted_by_author' then deleted_at else ${now.toISOString()}::timestamptz end, body = '',
+                 import_job_id = null, import_source = null, original_created_at = null, import_shortened = null, import_key = null
+           where author_id = ${id}::uuid and (state <> 'deleted_by_author' or import_job_id is not null)`);
         // The account's own engagement, with the counters of the posts it was on; bookmarks count nothing.
         await tx.execute(sql`
           with gone as (delete from likes where user_id = ${id}::uuid returning post_id)

@@ -32,6 +32,16 @@ export async function profileReplies(deps: SocialDeps, viewer: ViewerId, handle:
   return { items: await postViews(deps, viewer, rows), nextCursor: pageCursor(rows, query.limit) };
 }
 
+/**
+ * 3b (design, sections 9.2 and 10.6): an account's Imported tab, its imported top-level posts newest first by the archive's
+ * date, public as the Posts tab is. Each carries its label.
+ */
+export async function profileImported(deps: SocialDeps, viewer: ViewerId, handle: string, query: Pagination): Promise<PostPage> {
+  const target = await visibleProfile(deps, viewer, handle);
+  const rows = await deps.repo.profileImported(target.id, viewer, cursorOf(query), query.limit);
+  return { items: await postViews(deps, viewer, rows), nextCursor: pageCursor(rows, query.limit) };
+}
+
 /** The viewer's own likes, newest like first. */
 export async function likedPosts(deps: SocialDeps, viewer: string, query: Pagination): Promise<PostPage> {
   const rows = await deps.repo.likedPosts(viewer, cursorOf(query), query.limit);
