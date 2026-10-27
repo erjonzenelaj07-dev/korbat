@@ -298,7 +298,9 @@ const MonthTable = z.array(z.object({ month: Month, groups: z.array(z.tuple([Mar
 /**
  * What the intake stores in import_jobs.scan (6.1, 7.5 step 2). `fromRef` is the lowest ref that may be published (a
  * new account's newest lines only); `samples` the three newest lines' refs and byte offsets; `pages` every pageLines-th
- * line's byte offset. The move out of ready keeps the counts and fromRef and empties the rest.
+ * line's byte offset. The move out of ready keeps the counts and fromRef and empties the rest. 3b Task 5 (the
+ * orchestrator's ruling): the confirmation adds `chosen`, the posts and images the person's choice holds, counted from
+ * the month table and the picks as the app counts them before the table is cut; the progress's totals read it.
  */
 export const ImportScanFacts = z.object({
   ...scanCounts,
@@ -308,6 +310,7 @@ export const ImportScanFacts = z.object({
   fromRef: Ref,
   samples: z.array(z.object({ ref: Ref, offset: Offset })).max(IMPORT_RULES.samples),
   pages: z.array(Offset).max(IMPORT_RULES.maxPages),
+  chosen: z.object({ posts: Count.max(IMPORT_RULES.maxPosts), images: Count.max(IMPORT_RULES.maxImages) }).optional(),
 });
 export type ImportScanFacts = z.infer<typeof ImportScanFacts>;
 
@@ -374,7 +377,19 @@ export const ImportView = z.object({
   samples: z.array(z.object({ at: Day, text: z.string() })).max(IMPORT_RULES.samples),
   choice: ImportChoice.nullable(),
   picks: MonthTable,
-  progress: z.object({ imagesTotal: Count, imagesSettled: Count, postsTotal: Count, postsPublished: Count, postsRemoved: Count, postsLeft: Count }),
+  /**
+   * 3b Task 5 (the orchestrator's ruling): `imagesLeftOut` holds the images the preparation left out, by reason (the job's
+   * images_left_out_by), whose counts sum to the settled images that were not kept, for the result's notice.
+   */
+  progress: z.object({
+    imagesTotal: Count,
+    imagesSettled: Count,
+    postsTotal: Count,
+    postsPublished: Count,
+    postsRemoved: Count,
+    postsLeft: Count,
+    imagesLeftOut: z.partialRecord(z.enum(IMPORT_IMAGE_SKIPS), Count),
+  }),
   paused: z.boolean(),
   refusalId: z.uuid().nullable(),
   refusedAt: Day.nullable(),

@@ -47,9 +47,12 @@ export async function sweep(deps: MediaDeps, now: Date, options: { reconcile: bo
     if (await finalize(deps, id)) report.finalized++;
   }
 
-  // 2. Uploads the worker never answered, because it was down or the file killed it three times.
+  // 2. Uploads the worker never answered, because it was down or the file killed it three times. 3b Task 5: never an
+  //    imported image of an import whose row exists, which the import settles itself after IMPORT_RULES.checkHours (its
+  //    feeder puts at most two in the worker's way, and a busy worker is no failure of the image).
   const stale = await deps.repo.failStale(new Date(now.getTime() - PROCESSING_TIMEOUT_MS));
-  // 3. Uploads nobody posted.
+  // 3. Uploads nobody posted. 3b Task 5: never an imported image of an import whose row exists, which waits for its post
+  //    however long the preparation takes, or goes with the import's leftovers (import-drive, media.forImports).
   const expired = await deps.repo.deleteUnattachedBefore(new Date(now.getTime() - UNATTACHED_TTL_MS));
   report.timedOut = stale.length;
   report.expired = expired.length;

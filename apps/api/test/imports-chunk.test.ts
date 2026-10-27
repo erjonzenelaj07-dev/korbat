@@ -85,6 +85,8 @@ function harness(options: { declared: number; source?: ImportSource; status?: Im
     imagesLeftOut: 0,
     postsRemoved: 0,
     images: false,
+    // 3b Task 5 (migration 0047): the images the preparation left out, by reason; an upload has none.
+    imagesLeftOutBy: {},
   };
   // What the statements of repo.ts do to the one row: each move names the state and the size it leaves.
   const repo = {

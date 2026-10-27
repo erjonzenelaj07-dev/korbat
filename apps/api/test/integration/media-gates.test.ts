@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { sql } from "drizzle-orm";
 import { strFromU8, unzipSync } from "fflate";
@@ -48,6 +49,7 @@ import {
   openCase,
   postFrozen,
   report,
+  rowCounts,
   staffProfile,
   suspectItemOn,
   uuids,
@@ -132,6 +134,14 @@ const METHODS: Record<keyof MediaRepo, Role> = {
   // 3d Task 8: the retention job's two statements on this module's tables (the steps tools_off and edge_purges).
   forgetScores: { is: "neither", why: "sets a rating null while the R1 check is off; deletes no image row and gives nothing of an image to anyone" },
   forgetPurges: { is: "neither", why: "deletes the edge's outbox rows done long ago; deletes no image row and answers only how many" },
+  // 3b Task 5 (design, sections 6.5 and 7.4): an import's rows on no post deleted (a deleter, run below), and the feeder's
+  // reads of ids and states, none of which answers a file, a size or anything of an image.
+  deleteImportLeftovers: { is: "deleter" },
+  importRows: { is: "neither", why: "answers an import's rows on no post with their state, check and time for the feeder; never a file or anything of an image" },
+  importsWithLeftovers: { is: "neither", why: "answers the ids of imports that still have rows on no post, for import-drive's cleanup; never an image" },
+  importedProcessing: { is: "neither", why: "answers the ids of imported uploads still processing, which are on no post, for the feeder's count" },
+  importedAmong: { is: "neither", why: "says which of these upload ids are imported images', for the feeder's wait behind people's own uploads" },
+  importRefusal: { is: "neither", why: "answers the id of the refusal of an import's image, for the import's link to its notice; never an image" },
 };
 const methodsThatAre = (role: Role["is"]) => (Object.keys(METHODS) as (keyof MediaRepo)[]).filter((name) => METHODS[name].is === role).sort();
 
@@ -156,6 +166,14 @@ const DELETERS = {
   purgeOwner: (f: Frozen) => f.repo.purgeOwner(f.tx, f.ownerId),
   // Every upload on no post that is older than tomorrow: every one there is.
   deleteUnattachedBefore: (f: Frozen) => f.repo.deleteUnattachedBefore(new Date(Date.now() + DAY)),
+  // 3b Task 5: the leftovers of an import, asked for the post's very rows by id; a frozen post's rows are on a post, and
+  // the keep trigger would keep them besides. No import names them, so every import a row of theirs could name is asked.
+  deleteImportLeftovers: async (f: Frozen) => {
+    const jobs = await f.tx.execute<{ id: string | null }>(sql`select distinct import_job_id as id from post_media where id = any(${uuids(f.mediaIds)})`);
+    const gone: string[] = [];
+    for (const job of [...jobs.map((row) => row.id ?? randomUUID()), randomUUID()]) gone.push(...(await f.repo.deleteImportLeftovers(f.tx, job, f.mediaIds)), ...(await f.repo.deleteImportLeftovers(f.tx, job)));
+    return gone;
+  },
   deleteRow: async (f: Frozen) => {
     for (const id of f.mediaIds) await f.repo.deleteRow(id);
     return [] as string[];
@@ -188,6 +206,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
   let admin: TestStaff;
   let counts: Record<string, number>;
   let authCounts: Record<string, number>;
+  /** 3b Task 5: the import tables, which this file never writes, hold what they held before it. */
+  const IMPORT_TABLES = ["import_jobs", "import_picks", "import_keys"];
+  const importCounts = async () => {
+    const all = await rowCounts(apiDb, IMPORT_TABLES);
+    return Object.fromEntries(IMPORT_TABLES.map((table) => [table, all[table]]));
+  };
+  let importsBefore: Record<string, number | undefined>;
 
   beforeAll(async () => {
     const config = loadConfig();
@@ -200,6 +225,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
     admin = await newTestStaff(authDb, migrateDb, repo, "admin");
     counts = await moderationCounts(apiDb);
     authCounts = await authCaseCounts(migrateDb);
+    importsBefore = await importCounts();
   }, 60_000);
   afterAll(async () => {
     await Promise.all([closeDb(apiDb), closeDb(authDb), closeDb(migrateDb)]);
@@ -298,7 +324,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
 
     test("every deleter has a run against a frozen post, and every method that does neither says why", () => {
       expect(Object.keys(DELETERS).sort()).toEqual(methodsThatAre("deleter"));
-      expect(methodsThatAre("deleter")).toEqual(["deleteRow", "deleteUnattached", "deleteUnattachedBefore", "detachAll", "dropDisposable", "purgeOwner"]);
+      expect(methodsThatAre("deleter")).toEqual(["deleteImportLeftovers", "deleteRow", "deleteUnattached", "deleteUnattachedBefore", "detachAll", "dropDisposable", "purgeOwner"]);
       // The readers are run through what calls them: serve (fileAccess), the lists (forPosts), the export's files
       // (readyImages and isExportable), the status (find) and the staff's image (staffAccess).
       expect(methodsThatAre("reader")).toEqual(["fileAccess", "find", "forPosts", "isExportable", "readyImages", "staffAccess"]);
@@ -857,5 +883,6 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
   test("this file left no moderation row behind: the moderation tables and the four auth tables of moderation cases hold what they held before it", async () => {
     expect(await moderationCounts(apiDb)).toEqual(counts);
     expect(await authCaseCounts(migrateDb)).toEqual(authCounts);
+    expect(await importCounts()).toEqual(importsBefore);
   });
 });

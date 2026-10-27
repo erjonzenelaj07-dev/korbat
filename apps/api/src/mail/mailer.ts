@@ -107,7 +107,10 @@ export type TemplateName =
   // for a person, a cap or a limit refused a program's measure, a request for a person waited longer than its target.
   | "automated_objection"
   | "automation_capped"
-  | "automated_waiting";
+  | "automated_waiting"
+  // 3b Task 5: imported images whose match does not act were left out of their import, a staff alert whose mail is its
+  // push's sentence.
+  | "import_image_flagged";
 
 /** Every template but the one whose data is a structure: its data are flat strings. */
 export type FlatTemplateName = Exclude<TemplateName, "notice_update">;

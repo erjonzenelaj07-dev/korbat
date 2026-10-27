@@ -226,7 +226,10 @@ export type StaffAlertKind =
   | "hold_ended_unreported"
   // 3d review M13: a day's value whose keeper's mail never went out, the transparency job's own row in the next day's
   // first round.
-  | "head_unmailed";
+  | "head_unmailed"
+  // 3b Task 5: imported images whose match does not act were left out of their import, which staffAlert writes after the
+  // feeder's settling commit.
+  | "import_image_flagged";
 export interface StaffAlertMessage {
   template: StaffAlertKind;
   facts: AlertFacts;
@@ -266,6 +269,7 @@ function staffData(message: StaffMessage, now: Date): Record<string, string> {
     case "matcher_down":
     case "hold_ended_unreported":
     case "head_unmailed":
+    case "import_image_flagged":
       return { ...Object.fromEntries(Object.entries(message.facts).map(([name, value]) => [name, String(value)])), now: now.toISOString() };
     case "moderation_urgent":
       return {

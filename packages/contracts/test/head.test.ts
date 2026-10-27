@@ -40,7 +40,8 @@ describe("head_unwitnessed and head_missed (W.7): the transparency job's two ale
 
   test("they follow edge_purge_failed in the list, a push and a sentence to every staff account, with the one fact day", () => {
     // 3d Task 6's three kinds follow them (automation.test.ts).
-    expect(ALERT_KIND_LIST.slice(-9, -6)).toEqual(["edge_purge_failed", "head_unwitnessed", "head_missed"]);
+    // 3b Task 5's import_image_flagged follows head_unmailed, last.
+    expect(ALERT_KIND_LIST.slice(-10, -7)).toEqual(["edge_purge_failed", "head_unwitnessed", "head_missed"]);
     for (const kind of ["head_unwitnessed", "head_missed"] as const) {
       expect(ALERT_KINDS[kind], kind).toEqual({ priority: 3, scope: "all", legs: ["push", "mail"], mail: "sentence", facts: ["day"] });
       expect(SENTENCE_MAIL_KINDS, kind).toContain(kind);
@@ -68,8 +69,8 @@ describe("head_unwitnessed and head_missed (W.7): the transparency job's two ale
     expect(a.replace(/[0-9]/g, "")).toBe(b.replace(/[0-9]/g, ""));
   });
 
-  test("review M13: head_unmailed, the last kind of the list, a day's value whose keeper's mail never went: a push and a sentence to every staff account with the one fact day", () => {
-    expect(ALERT_KIND_LIST.at(-1)).toBe("head_unmailed");
+  test("review M13: head_unmailed, the last kind of 3d's list (3b Task 5's follows it), a day's value whose keeper's mail never went: a push and a sentence to every staff account with the one fact day", () => {
+    expect(ALERT_KIND_LIST.at(-2)).toBe("head_unmailed");
     expect(ALERT_KINDS.head_unmailed).toEqual({ priority: 3, scope: "all", legs: ["push", "mail"], mail: "sentence", facts: ["day"] });
     expect(SENTENCE_MAIL_KINDS).toContain("head_unmailed");
     expect(alertPlaceholders("head_unmailed")).toEqual(["day"]);

@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   IMPORT_ACTIVE_STATES,
   IMPORT_FAILURES,
+  IMPORT_IMAGE_SKIPS,
   IMPORT_MARKS,
   IMPORT_RULES,
   IMPORT_SOURCE_KINDS,
@@ -224,9 +225,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
         await tx.execute(sql`
           insert into import_jobs (id, owner_id, source, status, declared_bytes, received_bytes, created_at, uploaded_at, scanned_at, confirmed_at, ended_at, failure,
                                    stop_reason, staff_ended_at, staff_rule_id, refused_at_original, refused_words, scan, choice, stated_at, seed, post_cursor, image_cursor,
-                                   posts_published, images_kept, images_left_out, posts_removed)
+                                   posts_published, images_kept, images_left_out, posts_removed, images_left_out_by)
           values (${id}::uuid, ${owner.id}::uuid, 'mastodon', 'done', 5000, 5000, '2001-01-01T00:00:00Z', now(), now(), now(), now(), 'unreadable',
-                  'by_staff', now(), 'R6', '2019-03-03', 'first words', ${json(FULL_SCAN)}, ${json(CHOICE)}, now(), ${seed()}, 7, 7, 7, 7, 7, 7)`);
+                  'by_staff', now(), 'R6', '2019-03-03', 'first words', ${json(FULL_SCAN)}, ${json(CHOICE)}, now(), ${seed()}, 7, 7, 7, 7, 7, 7, ${json({ flagged: 7 })})`);
         const [row] = await tx.execute<Record<string, unknown>>(sql`select *, created_at >= now() as fresh from import_jobs where id = ${id}::uuid`);
         expect({ ...row, created_at: null }).toEqual({
           id,
@@ -258,6 +259,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
           posts_removed: 0,
           // 3b Task 4 (migration 0046): whether the import brings images is the creating statement's, kept as sent.
           images: false,
+          // 3b Task 5 (migration 0047): no image left out yet, whatever the insert sent.
+          images_left_out_by: {},
           fresh: true,
         });
         const other = await profile(tx);
@@ -432,10 +435,36 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
         const publishing = await jobIn(tx, "publishing");
         for (const column of ["post_cursor", "image_cursor", "posts_published", "images_kept", "images_left_out", "posts_removed"]) {
           const name = sql.identifier(column);
-          expect(await step(tx, sql`update import_jobs set ${name} = 5 where id = ${publishing.id}::uuid`), column).toBeNull();
-          expect(await upd(publishing.id, sql`${name} = 4`), column).toEqual(REFUSED);
-          expect(await upd(publishing.id, sql`${name} = 6`), column).toBeNull();
+          // 3b Task 5 (0047): images_left_out moves with its reasons, whose counts sum to it.
+          const by = (count: number) => (column === "images_left_out" ? sql`, images_left_out_by = ${json({ failed: count })}` : sql``);
+          expect(await step(tx, sql`update import_jobs set ${name} = 5${by(5)} where id = ${publishing.id}::uuid`), column).toBeNull();
+          expect(await upd(publishing.id, sql`${name} = 4${by(4)}`), column).toEqual(REFUSED);
+          expect(await upd(publishing.id, sql`${name} = 6${by(6)}`), column).toBeNull();
         }
+      });
+    });
+
+    test("3b Task 5 (0047): the images left out by reason are a CHECKed object of IMPORT_IMAGE_SKIPS, each count a whole number that only grows, their sum always images_left_out", async () => {
+      await asApi(async (tx) => {
+        const upd = (id: string, set: SQL) => attempt(tx, sql`update import_jobs set ${set} where id = ${id}::uuid`);
+        const preparing = await jobIn(tx, "preparing");
+        expect(await step(tx, sql`update import_jobs set images_left_out = 3, images_left_out_by = ${json({ flagged: 1, not_checked: 2 })} where id = ${preparing.id}::uuid`)).toBeNull();
+        // The sum stays images_left_out: neither moves alone.
+        expect(await upd(preparing.id, sql`images_left_out = 4`)).toEqual(REFUSED);
+        expect(await upd(preparing.id, sql`images_left_out_by = ${json({ flagged: 2, not_checked: 2 })}`)).toEqual(REFUSED);
+        expect(await upd(preparing.id, sql`images_left_out = 4, images_left_out_by = ${json({ flagged: 2, not_checked: 2 })}`)).toBeNull();
+        expect(await upd(preparing.id, sql`images_left_out = 4, images_left_out_by = ${json({ flagged: 1, not_checked: 2, failed: 1 })}`)).toBeNull();
+        // A reason's count never goes down, and a reason it held never goes.
+        expect(await upd(preparing.id, sql`images_left_out = 4, images_left_out_by = ${json({ flagged: 0, not_checked: 4 })}`)).toEqual(REFUSED);
+        expect(await upd(preparing.id, sql`images_left_out = 4, images_left_out_by = ${json({ not_checked: 4 })}`)).toEqual(REFUSED);
+        // Whole numbers only.
+        expect(await upd(preparing.id, sql`images_left_out = 4, images_left_out_by = ${json({ flagged: 1.5, not_checked: 2.5 })}`)).toEqual(REFUSED);
+        expect(await upd(preparing.id, sql`images_left_out = 4, images_left_out_by = ${json({ flagged: "2", not_checked: 2 })}`)).toEqual(REFUSED);
+        // Only the reasons of the closed list, as an object within its bytes.
+        expect(await upd(preparing.id, sql`images_left_out = 4, images_left_out_by = ${json({ flagged: 1, not_checked: 2, bored: 1 })}`)).toMatchObject(check("import_jobs_left_out_by"));
+        expect(await upd(preparing.id, sql`images_left_out_by = '[]'::jsonb`)).toMatchObject(check("import_jobs_left_out_by"));
+        const jobRowNow = await jobRow(tx, preparing.id);
+        expect({ left: jobRowNow.images_left_out, by: jobRowNow.images_left_out_by }).toEqual({ left: 3, by: { flagged: 1, not_checked: 2 } });
       });
     });
 
@@ -805,6 +834,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
         "images_kept",
         "images_left_out",
         "posts_removed",
+        // 3b Task 5 (0047), under import_jobs_guard's two rules of its own.
+        "images_left_out_by",
       ]);
       expect(await updatableColumns("korbat_api", "import_picks")).toEqual(["left_out", "alts"]);
       expect(await updatableColumns("korbat_api", "import_keys")).toEqual([]);
@@ -844,6 +875,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
       expect(numbers(await checkDefinition("import_picks", "import_picks_marks"))).toEqual([0, 2 ** IMPORT_MARKS.length - 1]);
       expect(numbers(await checkDefinition("import_picks", "import_picks_described"))).toEqual([0, MEDIA_MAX_PER_POST]);
       expect(numbers(await checkDefinition("import_keys", "import_keys_key"))).toEqual([IMPORT_RULES.keyBytes]);
+      // 3b Task 5 (0047): the reasons an image is left out by, and the object's bytes.
+      expect(listed(await checkDefinition("import_jobs", "import_jobs_left_out_by"))).toEqual(["object", ...IMPORT_IMAGE_SKIPS]);
+      expect(numbers(await checkDefinition("import_jobs", "import_jobs_left_out_by"))).toEqual([1024]);
       const [enums] = await apiDb.execute<{ sources: string[]; states: string[] }>(
         sql`select enum_range(null::public.import_source)::text[] as sources, enum_range(null::public.import_status)::text[] as states`,
       );

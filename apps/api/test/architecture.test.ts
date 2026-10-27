@@ -199,7 +199,9 @@ function mentions(files: SourceFile[], name: string): Record<string, number> {
  * failed before it could be put on a post, or a file that has no row: the files module writes the request; the upload's
  * removal, the sweeper, the author's deletion (after its commit), the account's purge (after its commit) and the
  * disposal's caller (after its commit) ask for it through the module's interfaces; and the one retry of what the purge
- * and the disposal owe asks for it only for a row that is gone.
+ * and the disposal owe asks for it only for a row that is gone. 3b Task 5: the imports module's interface asks for the
+ * files of an import's rows on no post after the commit that deleted them (media.forImports.releaseFiles), and the
+ * imports module itself names it nowhere.
  */
 const REQUEST_DELETION = {
   "account/flows/deletion.ts": 1,
@@ -207,7 +209,8 @@ const REQUEST_DELETION = {
   "media/context.ts": 2,
   "media/files.ts": 1,
   "media/flows/remove.ts": 1,
-  "media/index.ts": 5,
+  // 3b Task 5: one more, mediaForImports' releaseFiles.
+  "media/index.ts": 6,
   // The retry of owed deletions, which asks only for ids whose row it found gone.
   "media/owed.ts": 1,
   "media/sweeper.ts": 2,

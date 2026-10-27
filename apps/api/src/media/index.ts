@@ -16,10 +16,11 @@ import { createEdgeJob } from "./edge";
 import { edgeAdapterFrom, type EdgeAdapter } from "./edge-adapter";
 import { createMediaFiles, storedImageName, type StoredFile } from "./files";
 import { finalize } from "./flows/status";
+import { receiveImported, type ImportedReceipt } from "./flows/upload";
 import { createMatchRetryJob, matchRetryRound } from "./match";
 import { matchAdapterFrom, type MatchAdapter } from "./match-adapter";
 import { createMatchRepo } from "./match-repo";
-import { createMediaRepo } from "./repo";
+import { createMediaRepo, type ImportImageRow } from "./repo";
 import { mediaFileRoutes, mediaRoutes } from "./routes";
 import type { JobLock } from "../lib/jobs";
 import { createSweeper, sweep } from "./sweeper";
@@ -34,7 +35,8 @@ export type { MatchAdapter, MatchAnswer, MatchRequest, TestMatchAdapter, UploadH
 export type { MatchRetryReport } from "./match";
 export type { OwnRefusal, RefusalRow } from "./match-repo";
 export type { StoredFile } from "./files";
-export type { CaseReach, HeldImage, HoldPair } from "./repo";
+export type { CaseReach, HeldImage, HoldPair, ImportImageRow } from "./repo";
+export type { ImportedReceipt } from "./flows/upload";
 export type { SweepReport } from "./sweeper";
 // 3d Task 3: the edge's purge adapter, which the wiring builds from the configuration (EDGE_PURGE and its settings).
 export { edgeAdapterFrom } from "./edge-adapter";
@@ -320,6 +322,85 @@ export function mediaForAccount(deps: MediaDeps): MediaForAccount {
   };
 }
 
+/**
+ * What the imports module needs from this one (3b design, sections 6.5, 7.4, 8.1 and 8.2): the feeder's three conditions,
+ * one image's way in through this module's own receive path, the settling of the import's images, the deletion of its
+ * rows on no post and of their files, and the refusal its view links to. The imports module names neither post_media,
+ * media_hashes, upload_refusals nor the request to delete a file: it reaches each through here.
+ */
+export interface MediaForImports {
+  /** The comparison with known material is on (MEDIA_MATCH): images are imported only then (decision 15). */
+  readonly matching: boolean;
+  /** An upload that is no imported image's waits in incoming/ for the worker (7.4 step 1): a person's own goes first. */
+  ownUploadWaiting(): Promise<boolean>;
+  /** The imported images on the site that are processing without a result yet (7.4 step 2). */
+  importedInFlight(): Promise<number>;
+  /** Whether the volumes have the free space any upload needs (MEDIA_MIN_FREE_BYTES). */
+  hasRoom(): Promise<boolean>;
+  /** One image of the import in, from its work file (receiveImported). The caller closes the file's handle. */
+  receive(input: Parameters<typeof receiveImported>[1]): Promise<ImportedReceipt>;
+  /**
+   * The import's rows on no post after its images still processing were finalized here (the sweeper's own step, so a
+   * verdict the worker wrote is read within the round, with the check of known material and a refusal's notice).
+   */
+  settleRows(jobId: string): Promise<ImportImageRow[]>;
+  /**
+   * The import's rows on no post as they stand, finalizing nothing: Task 6's attach takes the kept ones (status ready,
+   * check clear) for the posts of their lines.
+   */
+  importRows(jobId: string): Promise<ImportImageRow[]>;
+  /**
+   * Deletes the import's rows on no post, or these of them, in the caller's transaction (the keep trigger leaves a held
+   * one), and notes there that their files are owed a request, as the account's purge does; answers the ids that went.
+   */
+  deleteImportLeftovers(tx: DbTx, jobId: string, ids?: readonly string[]): Promise<string[]>;
+  /** After that transaction's commit: their uploads removed, their files' deletion asked of the worker, the notes settled. */
+  releaseFiles(ids: readonly string[]): Promise<void>;
+  /** The imports that still have rows on no post that no hold keeps. */
+  importsWithLeftovers(): Promise<string[]>;
+  /** The refusal of one of the import's images, the earliest; null when none. */
+  refusalOf(jobId: string): Promise<string | null>;
+}
+
+/** The imports module's interface over this module's dependencies, as createMedia hands it out; the integration tests build it the same way. */
+export function mediaForImports(deps: MediaDeps): MediaForImports {
+  return {
+    matching: deps.match.mode !== "off",
+    async ownUploadWaiting() {
+      const waiting = await deps.files.waitingUploads();
+      const imported = await deps.repo.importedAmong(waiting);
+      return waiting.some((id) => !imported.has(id));
+    },
+    async importedInFlight() {
+      let count = 0;
+      for (const id of await deps.repo.importedProcessing()) if (!(await deps.files.hasResult(id))) count++;
+      return count;
+    },
+    hasRoom: async () => (await deps.files.freeBytes()) >= deps.minFreeBytes,
+    receive: (input) => receiveImported(deps, input),
+    async settleRows(jobId) {
+      const before = await deps.repo.importRows(jobId);
+      const capped = await deps.matches.capped(before.filter((row) => row.status === "processing").map((row) => row.id));
+      // A capped upload waits for match-retry, which asks the source again; finalizing it here would ask every round.
+      for (const row of before) if (row.status === "processing" && !capped.has(row.id)) await finalize(deps, row.id);
+      return deps.repo.importRows(jobId);
+    },
+    importRows: (jobId) => deps.repo.importRows(jobId),
+    async deleteImportLeftovers(tx, jobId, ids) {
+      const gone = await deps.repo.deleteImportLeftovers(tx, jobId, ids);
+      await deps.files.oweDeletion(gone);
+      return gone;
+    },
+    async releaseFiles(ids) {
+      for (const id of ids) await deps.files.discardUpload(id);
+      await deps.files.requestDeletion(ids);
+      await deps.files.settleOwed(ids);
+    },
+    importsWithLeftovers: () => deps.repo.importsWithLeftovers(),
+    refusalOf: (jobId) => deps.repo.importRefusal(jobId),
+  };
+}
+
 export interface CreateMediaOptions {
   /** The korbat_api pool. The module never sees the auth pool. */
   apiDb: Db;
@@ -371,6 +452,7 @@ export function createMedia(options: CreateMediaOptions) {
   };
   const forAccount = mediaForAccount(deps);
   const forCases = mediaForCases(deps);
+  const forImports = mediaForImports(deps);
   const edge = options.edge ?? edgeAdapterFrom({ EDGE_PURGE: "off", APP_SITE: "open" });
   return {
     deps,
@@ -380,6 +462,8 @@ export function createMedia(options: CreateMediaOptions) {
     forAccount,
     /** The interface the moderation module uses: an intake's holds, what a case reaches, the staff's image, the disposal. */
     forCases,
+    /** 3b Task 5: the interface the imports module uses. */
+    forImports,
     /** Creates the uploads volume's directories. Call once before serving. */
     prepare: () => deps.files.prepare(),
     routes: mediaRoutes(deps, options.requireSession),

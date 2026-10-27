@@ -76,6 +76,8 @@ export const TICK_MAILED_KINDS: readonly StaffAlertKind[] = [
   "hold_ended_unreported",
   // 3d review M13: head_unmailed, which the transparency job writes as its own row, at most once in 24 hours.
   "head_unmailed",
+  // 3b Task 5: import_image_flagged, which staffAlert writes after the import feeder's settling commit.
+  "import_image_flagged",
 ];
 
 /** A list of the contracts' words as a PostgreSQL array, for `= any(...)`: no word holds a comma or a quote. */

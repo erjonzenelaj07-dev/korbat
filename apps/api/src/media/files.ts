@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { Readable } from "node:stream";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, rename, rm, stat, statfs, type FileHandle } from "node:fs/promises";
 import path from "node:path";
@@ -189,6 +190,33 @@ export function createMediaFiles(options: MediaFilesOptions) {
       const received = await receiveInto(id, body, maxBytes, accept, true);
       return { bytes: received.bytes, hashes: received.hashes! };
     },
+
+    /**
+     * 3b Task 5 (design, sections 7.4 and 8.1): receive, with the bytes read from an image of import-work that the imports
+     * module opened through openWorkFile: the same sniff, the same cap counted as the bytes arrive, and the three hashes
+     * while the comparison is on, into the same tmp/<id>.part, and nothing but that descriptor is read. The caller keeps
+     * the handle and closes it. A part a crash left under the same id is the caller's to discard first ("wx" refuses one).
+     */
+    async receiveWorkFile(id: string, file: { handle: FileHandle; size: number }, maxBytes: number, accept: (head: Uint8Array) => void, hash: boolean): Promise<{ bytes: number; hashes: ReceivedHashes | null }> {
+      const body = Readable.toWeb(file.handle.createReadStream({ start: 0, autoClose: false })) as ReadableStream<Uint8Array>;
+      return receiveInto(id, body, maxBytes, accept, hash);
+    },
+
+    /** 3b Task 5: removes tmp/<id>.part alone, never a complete upload in incoming/, which may be in the worker's hands. */
+    discardPart: (id: string): Promise<void> => rm(uploads.part(id), { force: true }),
+
+    /**
+     * 3b Task 5 (design, section 7.4 step 1): the uploads in incoming/ that have no result in the store yet, the ones the
+     * worker has still to take or is taking; and whether one id has a result.
+     */
+    async waitingUploads(): Promise<string[]> {
+      const waiting: string[] = [];
+      for (const id of (await namesIn(uploads.incoming)).filter(isMediaId)) {
+        if (!(await lstat(store.result(id)).then(() => true, () => false))) waiting.push(id);
+      }
+      return waiting;
+    },
+    hasResult: (id: string): Promise<boolean> => lstat(store.result(id)).then(() => true, () => false),
 
     /** The upload becomes visible to the worker. A rename inside one volume is atomic. */
     commit: (id: string): Promise<void> => rename(uploads.part(id), uploads.upload(id)),

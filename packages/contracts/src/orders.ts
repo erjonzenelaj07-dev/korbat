@@ -206,6 +206,9 @@ export const ALERT_KIND_LIST = [
   // 3d review M13: a day's value whose keeper's mail never went out (the transparency job's own row in the next day's first
   // round, under F's daily rule, while HEAD_KEEPER_MAIL is set).
   "head_unmailed",
+  // 3b Task 5 (the orchestrator's ruling on 3b design, section 8.1): imported images whose match does not act were left
+  // out of their import and never published (staffAlert after the settling commit, at most once an hour an import).
+  "import_image_flagged",
 ] as const;
 export type AlertKind = (typeof ALERT_KIND_LIST)[number];
 
@@ -277,6 +280,8 @@ export const ALERT_KINDS: Record<AlertKind, AlertKindEntry> = {
   // The time after which the upload is deleted is a time fact, so it ends in At (W.7's `until`).
   hold_ended_unreported: sentenceKind(3, "all", ["at", "deletesAt"]),
   head_unmailed: sentenceKind(3, "all", ["day"]),
+  // 3b Task 5: when, and how many images of one import the settling round left out as flagged.
+  import_image_flagged: sentenceKind(3, "all", ["at", "count"]),
 };
 
 /** The kinds the watcher publishes: every kind with a push leg. */
@@ -523,6 +528,13 @@ export const ALERT_TEXTS: Record<AlertKind, AlertText> = {
     title: "The keeper did not get a daily value",
     sentence: one("The audit log's value of {day} was published, and its mail to the keeper never went out."),
     todo: "The operator checks the mail relay and HEAD_KEEPER_MAIL (staff.js automation-status prints the last mail's outcome). The keeper copies that day's value from /transparency and notes that its mail did not come.",
+  },
+  // 3b Task 5 (3b design, section 8.1): counts and a time only, never an image, an id, an import or a handle. An importer
+  // chose none of thousands of images one by one, so a match that does not act publishes nothing, unlike a native upload.
+  import_image_flagged: {
+    title: "Imported images matched known material",
+    sentence: one("{count} images being imported matched known material at {at}, in a way no program may act on. They were left out of the import and are not published."),
+    todo: "Nothing touches the account and the person is not told of the match. The match records stay, as for any upload never posted. If this repeats, tell the operator: the source's list or the way to it may be faulty.",
   },
 };
 

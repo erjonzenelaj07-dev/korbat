@@ -111,6 +111,28 @@ const columns = {
   moderationState: postMedia.moderationState,
 };
 
+/**
+ * 3b Task 5: thrown inside insertProcessing's transaction when an import's claim found the import no longer preparing at
+ * its cursor (a stop, a time limit or an admin's end committed first): nothing of the image is written.
+ */
+export class ImportMovedOn extends Error {
+  constructor() {
+    super("import: the import moved on before its image was written");
+    this.name = "ImportMovedOn";
+  }
+}
+
+/** 3b Task 5: one image row of an import that is on no post, as the feeder settles it (3b design, section 7.4 step 5). */
+export interface ImportImageRow {
+  id: string;
+  status: MediaRow["status"];
+  /** The check of known material: null when the row has no hashes (it was fed while the comparison was off). */
+  check: "pending" | "clear" | "matched" | "unchecked" | "capped" | null;
+  /** An upload refusal names the row: the matcher's acting match refused and held it (8.2). */
+  refused: boolean;
+  createdAt: Date;
+}
+
 /** The code a trigger raised (SQLSTATE P0001), or null: drizzle wraps the driver's error as a cause. */
 function raisedCode(err: unknown): string | null {
   let current: unknown = err;
@@ -135,12 +157,15 @@ export function createMediaRepo(db: Db) {
       return rows[0]?.createdAt ?? null;
     },
 
-    /** Uploads of this account that are not on a post yet and did not fail. */
+    /**
+     * Uploads of this account that are not on a post yet and did not fail. 3b Task 5 (design, section 7.4): never an
+     * imported image, which no route of the person's uploaded, so an import of thousands never fills the 20 a person holds.
+     */
     async pendingCount(ownerId: string): Promise<number> {
       const rows = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(postMedia)
-        .where(and(eq(postMedia.ownerId, ownerId), isNull(postMedia.postId), inArray(postMedia.status, ["processing", "ready"]), NOT_REFUSED));
+        .where(and(eq(postMedia.ownerId, ownerId), isNull(postMedia.postId), inArray(postMedia.status, ["processing", "ready"]), eq(postMedia.imported, false), NOT_REFUSED));
       return rows[0]?.count ?? 0;
     },
 
@@ -151,13 +176,23 @@ export function createMediaRepo(db: Db) {
      * that only locks the row, which leaves its judgment as it was before the wait, so the transaction ends with the
      * closing judgment of the owner (3e's review): a deleted or suspended owner then rolls the insert back, answered
      * account_suspended as the statement answers both.
+     *
+     * 3b Task 5 (design, sections 6.5 and 7.4): with `importJob`, the row is an imported image of that import, written with
+     * `imported` true and the job's id in the same statement. The import's `claim` runs first in the transaction: it takes
+     * the owner's row FOR KEY SHARE, then the job's row FOR NO KEY UPDATE, and moves the import's image cursor only while the
+     * import is still preparing at the cursor the feeder read; when it answers false, ImportMovedOn rolls everything back,
+     * so a stop that committed first leaves no new row. The statement below then judges the owner by the one predicate as
+     * for any upload (the row it locks is held already), post_media_import_insert checks the job again, and the closing
+     * judgment ends the transaction as for any upload.
      */
-    async insertProcessing(input: { id: string; ownerId: string; now: Date; hashes?: ReceivedHashes | undefined }): Promise<void> {
+    async insertProcessing(input: { id: string; ownerId: string; now: Date; hashes?: ReceivedHashes | undefined; importJob?: { id: string; claim: (tx: DbTx) => Promise<boolean> } }): Promise<void> {
       await db.transaction(async (tx) => {
+        if (input.importJob !== undefined && !(await input.importJob.claim(tx))) throw new ImportMovedOn();
+        const imported = input.importJob !== undefined;
         const inserted = await tx.execute(sql`
           with ok as (select p.id from profiles p where p.id = ${input.ownerId}::uuid and ${liveNotSuspended("p", WRITE_CLOCK)} for key share of p)
-          insert into post_media (id, owner_id, status, created_at)
-          select ${input.id}::uuid, ok.id, 'processing', ${input.now.toISOString()}::timestamptz from ok
+          insert into post_media (id, owner_id, status, created_at, imported, import_job_id)
+          select ${input.id}::uuid, ok.id, 'processing', ${input.now.toISOString()}::timestamptz, ${imported}, ${input.importJob?.id ?? null}::uuid from ok
           returning id`);
         if (inserted.length === 0) throw new MediaError("account_suspended", 403);
         // 3d Task 7 (design, section 7.8 step 1): with the comparison on, the hashes and the pending check are written in
@@ -428,7 +463,9 @@ export function createMediaRepo(db: Db) {
 
     /**
      * Fails uploads the worker has not answered since `before`, and says which. 3d Task 7 (design, section 7.8 step 3): a
-     * capped upload is exempt while it is younger than AUTOMATION_RULES.matchRetryHours; after that it fails as any.
+     * capped upload is exempt while it is younger than AUTOMATION_RULES.matchRetryHours; after that it fails as any. 3b
+     * Task 5 (design, section 7.4): an imported image of an import whose row still exists is the import's to settle, after
+     * IMPORT_RULES.checkHours, and is left alone here.
      */
     async failStale(before: Date): Promise<string[]> {
       const rows = await db
@@ -438,6 +475,7 @@ export function createMediaRepo(db: Db) {
           and(
             eq(postMedia.status, "processing"),
             lt(postMedia.createdAt, before),
+            isNull(postMedia.importJobId),
             sql`not exists (select 1 from public.media_hashes h where h.media_id = ${postMedia.id} and h.check_state = 'capped'
                                 and ${postMedia.createdAt} > now() - make_interval(hours => ${AUTOMATION_RULES.matchRetryHours}::int))`,
           ),
@@ -446,10 +484,87 @@ export function createMediaRepo(db: Db) {
       return rows.map((row) => row.id);
     },
 
-    /** Removes uploads made before `before` that were never put on a post, whatever their state, and says which. */
+    /**
+     * Removes uploads made before `before` that were never put on a post, whatever their state, and says which. 3b Task 5
+     * (design, section 7.4): an imported image of an import whose row still exists waits for its post or for the import's
+     * own cleanup (deleteImportLeftovers), however long the preparation takes.
+     */
     async deleteUnattachedBefore(before: Date): Promise<string[]> {
-      const rows = await db.delete(postMedia).where(and(isNull(postMedia.postId), lt(postMedia.createdAt, before))).returning({ id: postMedia.id });
+      const rows = await db.delete(postMedia).where(and(isNull(postMedia.postId), lt(postMedia.createdAt, before), isNull(postMedia.importJobId))).returning({ id: postMedia.id });
       return rows.map((row) => row.id);
+    },
+
+    // ------------------------------------------------------------ 3b Task 5: what the imports module needs (design, 6.5, 7.4)
+
+    /**
+     * An import's image rows that are on no post, deleted in the caller's transaction: the images the feeder left out as
+     * they settle, a refusal's other rows (8.2), and the leftovers of an import that has ended (7.4). In id order under row
+     * locks and with no filter of its own, as every delete here: the keep trigger leaves a row a hold retains (a refused
+     * upload, held for good by upload_refusals_hold) and RETURNING omits it, so only the files of rows that are gone are
+     * asked for. With `ids`, only those of the import's rows.
+     */
+    async deleteImportLeftovers(tx: DbTx, jobId: string, ids?: readonly string[]): Promise<string[]> {
+      if (ids !== undefined && ids.length === 0) return [];
+      const only = ids === undefined ? sql`` : sql` and id = any(${uuidArray(ids)})`;
+      const rows = (await tx.execute(
+        sql`delete from post_media where id in (select id from post_media where import_job_id = ${jobId}::uuid and post_id is null${only} order by id for update) returning id`,
+      )) as unknown as { id: string }[];
+      return rows.map((row) => row.id);
+    },
+
+    /**
+     * An import's image rows on no post, each with what the feeder settles it by (7.4 step 5): its state, its check of known
+     * material, whether a refusal names it, and when it was written. In id order; it locks nothing and answers no file, no
+     * size and nothing of an image. Task 6's attach reads the kept ones from here: ready, clear, on no post.
+     */
+    async importRows(jobId: string): Promise<ImportImageRow[]> {
+      const rows = (await db.execute(sql`
+        select m.id, m.status, h.check_state, exists (select 1 from public.upload_refusals u where u.media_id = m.id) as refused, m.created_at
+          from post_media m left join public.media_hashes h on h.media_id = m.id
+         where m.import_job_id = ${jobId}::uuid and m.post_id is null
+         order by m.id`)) as unknown as { id: string; status: MediaRow["status"]; check_state: ImportImageRow["check"]; refused: boolean; created_at: Date | string }[];
+      return rows.map((row) => ({ id: row.id, status: row.status, check: row.check_state, refused: row.refused, createdAt: new Date(row.created_at) }));
+    },
+
+    /**
+     * The imports that have image rows on no post that no hold retains (post_media_import_unattached_idx, migration 0047):
+     * import-drive deletes them for every import that has left preparing and publishing (7.4). A refused row is not
+     * answered while its hold stands, so a stopped import's refused image is not asked about every round.
+     */
+    async importsWithLeftovers(): Promise<string[]> {
+      const rows = (await db.execute(sql`
+        select distinct m.import_job_id as id from post_media m
+         where m.import_job_id is not null and m.post_id is null and (m.hold_until is null or m.hold_until <= now())`)) as unknown as { id: string }[];
+      return rows.map((row) => row.id);
+    },
+
+    /** The imported images on the site that are still processing; the feeder counts those without a result (7.4 step 2). */
+    async importedProcessing(): Promise<string[]> {
+      const rows = await db
+        .select({ id: postMedia.id })
+        .from(postMedia)
+        .where(and(eq(postMedia.status, "processing"), eq(postMedia.imported, true)))
+        .orderBy(postMedia.createdAt);
+      return rows.map((row) => row.id);
+    },
+
+    /** Which of these ids are imported images' (7.4 step 1: an upload in incoming/ that is no imported image's waits). */
+    async importedAmong(ids: readonly string[]): Promise<Set<string>> {
+      if (ids.length === 0) return new Set();
+      const rows = await db.select({ id: postMedia.id }).from(postMedia).where(and(inArray(postMedia.id, [...ids]), eq(postMedia.imported, true)));
+      return new Set(rows.map((row) => row.id));
+    },
+
+    /**
+     * The refusal of an image of this import (8.2), the earliest when two images in flight were refused, for the import's
+     * view and its link to the notice; null when none names one. A refused row keeps its import while the import's row
+     * exists: its hold keeps the row, and only the job row's deletion sets its import_job_id null.
+     */
+    async importRefusal(jobId: string): Promise<string | null> {
+      const [row] = (await db.execute(sql`
+        select u.id from public.upload_refusals u join post_media m on m.id = u.media_id
+         where m.import_job_id = ${jobId}::uuid order by u.refused_at, u.id limit 1`)) as unknown as { id: string }[];
+      return row?.id ?? null;
     },
 
     /**

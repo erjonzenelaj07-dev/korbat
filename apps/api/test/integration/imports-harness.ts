@@ -15,16 +15,22 @@ import { MemoryKv } from "../../src/auth/kv";
 import { loadConfig, type Config } from "../../src/config";
 import { createImports, importSettingsFrom, type ImportSettings } from "../../src/imports";
 import { MemoryMailer } from "../../src/mail/memory";
+import { createMedia, matchAdapterFrom, type MatchAdapter } from "../../src/media";
 import { MemoryStore } from "../../src/middleware/rate-limit";
+import { createModeration } from "../../src/moderation";
 import { createProfileStore } from "../../src/profiles/store";
-import { createSocial } from "../../src/social";
+import { createSocial, socialForModeration } from "../../src/social";
 import { Browser } from "./http-client";
+import { fakeWorker } from "./media-harness";
 import { removeFixtures, rowCounts } from "./moderation-fixtures";
 
 /**
  * The imports module through the real app (3b design, section 12.3): sign-up over HTTP, cookie sessions with CSRF, the
  * auth, social and imports modules wired as the server wires them, the two import volumes in a temporary folder, and
  * packages/import-protocol's writeScanOutput standing in for the importer, as fakeWorker stands in for the image worker.
+ * 3b Task 5: the media module over two volumes of its own, with the test matcher unless a test gives another (the media
+ * tests' closed site), and fakeWorker on its store; the moderation module as the server builds it, handed to the media
+ * module as its handler of refusals; and the profile store, which the confirmation asks about a suspension.
  */
 
 /** The tables a file of these tests must leave as it found them. */
@@ -66,6 +72,8 @@ export interface HarnessOptions {
   settings?: Partial<ImportSettings>;
   /** The importer's heartbeat written at the start; fresh unless false. */
   heartbeat?: boolean;
+  /** 3b Task 5: the comparison with known material; the test matcher, as on a closed site, unless given. */
+  match?: MatchAdapter;
 }
 
 export async function importsHarness(options: HarnessOptions = {}) {
@@ -89,6 +97,26 @@ export async function importsHarness(options: HarnessOptions = {}) {
     turnstile: { verify: async () => true },
     breachChecker: { isBreached: async () => false },
   });
+  const match = options.match ?? matchAdapterFrom({ MEDIA_MATCH: "test", APP_SITE: "closed" });
+  const media = createMedia({
+    apiDb,
+    uploadsDir: path.join(root, "uploads"),
+    storeDir: path.join(root, "store"),
+    formats: config.MEDIA_FORMATS,
+    minFreeBytes: 0,
+    logger,
+    requireSession: auth.requireSession,
+    resolveSession: auth.resolveSession,
+    rateLimitStore,
+    enforceUploadLimit: async () => undefined,
+    match,
+  });
+  // The store volume, which the image worker owns; the stand-in writes its results and files there.
+  mkdirSync(path.join(root, "store"), { recursive: true });
+  await media.prepare();
+  const worker = fakeWorker(media.deps.files.store);
+  const moderation = createModeration({ apiDb, auth: auth.forModeration, social: socialForModeration(apiDb), media: media.forCases, requireSession: auth.requireSession, rateLimitStore, config, logger });
+  media.onMatch(moderation.matched);
   const social = createSocial({ apiDb, rateLimitStore, logger, requireSession: auth.requireSession, requireFreshAuth: auth.requireFreshAuth() });
   const settings: ImportSettings = { ...importSettingsFrom(config), ...options.settings };
   const imports = createImports({
@@ -98,6 +126,9 @@ export async function importsHarness(options: HarnessOptions = {}) {
     settings,
     auth: auth.forImports,
     social: social.forImports,
+    media: media.forImports,
+    moderation: moderation.forImports,
+    profiles: createProfileStore(apiDb),
     rateLimitStore,
     requireSession: auth.requireSession,
     logger,
@@ -189,6 +220,8 @@ export async function importsHarness(options: HarnessOptions = {}) {
 
   async function close(): Promise<void> {
     try {
+      // The notices and alerts a refusal or a flag started are sent before the pools close.
+      await moderation.settle();
       await removeFixtures(migrateDb, made.splice(0));
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -200,7 +233,7 @@ export async function importsHarness(options: HarnessOptions = {}) {
     free = bytes;
   };
 
-  return { config, apiDb, migrateDb, app, imports, settings, root, work, archives, made, beat, setFree, signUp, age, create, created, chunk, upload, ready, row, cleanup, close };
+  return { config, apiDb, migrateDb, app, imports, media, moderation, worker, mailer, rateLimitStore, settings, root, work, archives, made, beat, setFree, signUp, age, create, created, chunk, upload, ready, row, cleanup, close };
 }
 
 export type ImportsHarness = Awaited<ReturnType<typeof importsHarness>>;

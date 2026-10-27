@@ -202,6 +202,22 @@ export interface ModerationForSocial {
   imagesPublished(postId: string): void;
 }
 
+/**
+ * What the imports module needs from this one (3b design, section 8.1; Task 5): the staff alert for imported images whose
+ * match does not act, which an import leaves out and never publishes. Task 6 adds imagesPublished for imported posts.
+ */
+export interface ModerationForImports {
+  /**
+   * After the commit that left `count` images of import `importId` out as flagged: the alert import_image_flagged to every
+   * staff account, its facts the time and the count alone, at most once an hour an import (IMPORT_FLAGGED_WINDOW_MS); a
+   * later occasion within the hour is throttled, as automation_capped's are. Never throws.
+   */
+  imagesFlagged(input: { importId: string; count: number; at: Date }): Promise<"sent" | "throttled" | "unsent">;
+}
+
+/** The throttle of import_image_flagged: one alert an hour an import. */
+export const IMPORT_FLAGGED_WINDOW_MS = 60 * 60_000;
+
 /** What the account module needs from this one (3c design, sections 5, 7.10 and 7.11): the purge's forgetting, and the export's member; 3e adds the take-down of terminated accounts. */
 export interface ModerationForAccount {
   /**
@@ -304,6 +320,16 @@ export function createModeration(options: CreateModerationOptions) {
     authorFacts: (viewer, postIds) => authorFacts(deps, viewer, postIds),
     imagesPublished: (postId) => imagesPublished(deps, postId),
   };
+  const forImports: ModerationForImports = {
+    async imagesFlagged({ importId, count, at }) {
+      try {
+        return await staffAlert(deps, `import-image-flagged:${importId}`, IMPORT_FLAGGED_WINDOW_MS, { template: "import_image_flagged", facts: { at: at.toISOString(), count } });
+      } catch (err) {
+        deps.log.error({ err, count }, "moderation: the staff accounts were not alerted to imported images left out as flagged");
+        return "unsent";
+      }
+    },
+  };
   const forAccount: ModerationForAccount = {
     forgetAccount: async (userId) => {
       await forgetReporter(deps.apiDb, userId);
@@ -324,6 +350,8 @@ export function createModeration(options: CreateModerationOptions) {
     forSocial,
     /** The interface the account module's purge and export use. */
     forAccount,
+    /** 3b Task 5: the interface the imports module uses. */
+    forImports,
     /**
      * 3d Task 7 (design, section 5): the handler the wiring hands the media module (media.onMatch), which it calls after
      * the commit of a refusal, of a match on a posted image, and of an upload over the limit on refusals.

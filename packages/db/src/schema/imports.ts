@@ -79,6 +79,12 @@ export const importJobs = pgTable(
      * API role inserts it and holds no UPDATE of it, so it never changes; the preview's media route reads it from here.
      */
     images: boolean("images").notNull().default(false),
+    /**
+     * 3b Task 5 (the orchestrator's ruling; migration 0047): the images the preparation left out, as counts by reason of
+     * IMPORT_IMAGE_SKIPS (missing_file, unsupported, too_large, failed, flagged, not_checked), whose sum is always
+     * images_left_out, so the result can say why. Forced to an empty object at insert; each count only grows.
+     */
+    imagesLeftOutBy: jsonb("images_left_out_by").notNull().default(sql`'{}'::jsonb`),
   },
   (t) => [
     // IMPORT_RULES.maxBytes.
@@ -106,6 +112,13 @@ export const importJobs = pgTable(
     check("import_jobs_stated", sql`(${t.choice} is null) = (${t.statedAt} is null)`),
     // IMPORT_RULES.seedBytes.
     check("import_jobs_seed", sql`octet_length(${t.seed}) = 32`),
+    // IMPORT_IMAGE_SKIPS: an object whose names are reasons of the list (the jsonb less those keys is empty), in at most
+    // 1,024 bytes of its text form. That each count is a whole number that only grows, summing to images_left_out, is
+    // import_jobs_guard's (0047).
+    check(
+      "import_jobs_left_out_by",
+      sql`jsonb_typeof(${t.imagesLeftOutBy}) = 'object' and octet_length(${t.imagesLeftOutBy}::text) <= 1024 and (${t.imagesLeftOutBy} - array['video', 'sensitive', 'unsupported', 'too_large', 'missing_file', 'bluesky_no_files', 'images_off', 'not_chosen', 'no_description', 'over_image_cap', 'failed', 'not_checked', 'flagged']) = '{}'::jsonb`,
+    ),
     check(
       "import_jobs_counts",
       sql`${t.postCursor} >= 0 and ${t.imageCursor} >= 0 and ${t.postsPublished} >= 0 and ${t.imagesKept} >= 0 and ${t.imagesLeftOut} >= 0 and ${t.postsRemoved} >= 0`,

@@ -156,8 +156,8 @@ describe("the two alerts of known material (W.7)", () => {
   const now = new Date("2026-10-19T12:00:00.000Z");
 
   test("they follow automated_waiting at the end of the list, each a push and a sentence to every staff account, with counts and times only", () => {
-    // 3d review M13: head_unmailed follows them, last.
-    expect(ALERT_KIND_LIST.slice(-3, -1)).toEqual(["matcher_down", "hold_ended_unreported"]);
+    // 3d review M13: head_unmailed follows them, then 3b Task 5's import_image_flagged, last.
+    expect(ALERT_KIND_LIST.slice(-4, -2)).toEqual(["matcher_down", "hold_ended_unreported"]);
     expect(ALERT_KINDS.matcher_down).toEqual({ priority: 3, scope: "all", legs: ["push", "mail"], mail: "sentence", facts: ["since", "count", "refusalsCapped"] });
     expect(ALERT_KINDS.hold_ended_unreported).toEqual({ priority: 3, scope: "all", legs: ["push", "mail"], mail: "sentence", facts: ["at", "deletesAt"] });
     for (const kind of ["matcher_down", "hold_ended_unreported"] as const) {

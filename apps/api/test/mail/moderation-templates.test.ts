@@ -25,7 +25,7 @@ function linkless(r: { text: string; html: string }) {
 }
 
 describe("the closed union of templates", () => {
-  test("holds the templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3, the three of its Task 4, the two of its Task 5, the five staff mails of 3f's Task 1, the three of its Task 2, the six of its Task 3, the two of its Task 6 and the two of its Task 5 that its review joined", () => {
+  test("holds the templates: the 25 before moderation cases, the nine of 3c, the two of 3e's Task 3, the three of its Task 4, the two of its Task 5, the five staff mails of 3f's Task 1, the three of its Task 2, the six of its Task 3, the two of its Task 6 and the two of its Task 5 that its review joined, and 3b Task 5's", () => {
     // Every name is written out: a template added or dropped changes this list.
     const names = [
       "sign_in_code", "sign_up_code", "reauth_code", "new_device", "account_locked", "mfa_enabled", "mfa_disabled", "password_changed", "recovery_codes_regenerated", "sessions_revoked_all",
@@ -54,11 +54,13 @@ describe("the closed union of templates", () => {
       "upload_refused", "upload_hold_lifted", "matcher_down", "hold_ended_unreported",
       // 3d review M13: a day's value whose keeper's mail never went out.
       "head_unmailed",
+      // 3b Task 5: imported images whose match does not act were left out.
+      "import_image_flagged",
     ] as const satisfies readonly TemplateName[];
-    expect(new Set(names).size).toBe(77);
+    expect(new Set(names).size).toBe(78);
     // Each name is a template the union holds, and the union holds no other: the assignment below would not compile.
     const all: Record<TemplateName, true> = Object.fromEntries(names.map((name) => [name, true])) as Record<(typeof names)[number], true>;
-    expect(Object.keys(all)).toHaveLength(77);
+    expect(Object.keys(all)).toHaveLength(78);
   });
 });
 
@@ -709,6 +711,18 @@ describe("3d Task 5: the transparency job's two alerts and the keeper's mail (W.
     ]);
     linkless(unmailed);
     expect(TICK_MAILED_KINDS).toContain("head_unmailed");
+  });
+
+  test("3b Task 5: import_image_flagged, its push's sentence with the line of what to do, counts and a time only, mailed by the tick from its row", () => {
+    const flagged = renderTemplate("import_image_flagged", { at: NOW, count: "2", now: NOW });
+    expect(flagged.subject).toBe("korbat: Imported images matched known material");
+    const [sentence, todo, last] = paragraphs(flagged.text);
+    expect(sentence).toMatch(/^2 images being imported matched known material at .+, in a way no program may act on[.] They were left out of the import and are not published[.]$/);
+    expect(todo).toBe("Nothing touches the account and the person is not told of the match. The match records stay, as for any upload never posted. If this repeats, tell the operator: the source's list or the way to it may be faulty.");
+    expect(last).toBe(LAST_STAFF);
+    expect(paragraphs(flagged.text)).toHaveLength(3);
+    linkless(flagged);
+    expect(TICK_MAILED_KINDS).toContain("import_image_flagged");
   });
 
   test("head_published: to the keeper alone, the day in the subject, the value, the place, the hash and whether a timestamp is stored, pinned", () => {

@@ -401,7 +401,8 @@ describe("images 2b", () => {
     // 3b (Task 2, 0044_imported_posts): an image's import link names a running import only on an imported image.
     expect(cfg.checks.map((c) => c.name).sort()).toEqual(["post_media_alt_len", "post_media_attached_is_complete", "post_media_import_link", "post_media_ready_has_dims"]);
     // 3b: the import's images by their job, which the foreign key's set null and the import's own cleanup read.
-    expect(cfg.indexes.map((i) => i.config.name).sort()).toEqual(["post_media_import_job_idx", "post_media_owner_created_idx", "post_media_post_position_idx", "post_media_status_created_idx"]);
+    // 3b Task 5 (0047): the imports whose images are still on no post, which import-drive's cleanup asks every round.
+    expect(cfg.indexes.map((i) => i.config.name).sort()).toEqual(["post_media_import_job_idx", "post_media_import_unattached_idx", "post_media_owner_created_idx", "post_media_post_position_idx", "post_media_status_created_idx"]);
     expect(cfg.indexes.find((i) => i.config.name === "post_media_post_position_idx")?.config.unique).toBe(true);
   });
 });
@@ -1447,9 +1448,10 @@ describe("the contact point and the alert channel 3f", () => {
     expect(checks("alert_outbox")).toEqual(["alert_outbox_facts", "alert_outbox_kind", "alert_outbox_priority", "alert_outbox_scope", "alert_outbox_step"]);
     expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain("'contact_mail', 'contact_mail_escalated', 'order_due'");
     // 3d adds its kinds after 3c's and 3e's six (3d design, section 6, "The alerts"): Task 1's two, then Task 2's two,
-    // then Task 3's one, then Task 5's two, then Task 6's three, then Task 7's two, then the review's one (M13).
+    // then Task 3's one, then Task 5's two, then Task 6's three, then Task 7's two, then the review's one (M13); then 3b
+    // Task 5's import_image_flagged, last.
     expect(checkSql("alert_outbox", "alert_outbox_kind")).toContain(
-      "'moderation_reveal', 'moderation_csam_lifted', 'quarantine_due', 'quarantine_lost', 'release_undestroyed', 'seal_released', 'edge_purge_failed', 'head_unwitnessed', 'head_missed', 'automated_objection', 'automation_capped', 'automated_waiting', 'matcher_down', 'hold_ended_unreported', 'head_unmailed')",
+      "'moderation_reveal', 'moderation_csam_lifted', 'quarantine_due', 'quarantine_lost', 'release_undestroyed', 'seal_released', 'edge_purge_failed', 'head_unwitnessed', 'head_missed', 'automated_objection', 'automation_capped', 'automated_waiting', 'matcher_down', 'hold_ended_unreported', 'head_unmailed', 'import_image_flagged')",
     );
     expect(checkSql("alert_outbox", "alert_outbox_priority")).toBe(`"alert_outbox"."priority" in (3, 5)`);
     expect(checkSql("alert_outbox", "alert_outbox_scope")).toBe(`"alert_outbox"."scope" in ('on_call', 'all')`);
@@ -1751,6 +1753,8 @@ describe("import from other platforms 3b", () => {
       ["posts_removed", "integer", true],
       // 3b Task 4 (migration 0046): whether the import brings images, decided at its creation and never changed.
       ["images", "boolean", true],
+      // 3b Task 5 (migration 0047): the images the preparation left out, by reason.
+      ["images_left_out_by", "jsonb", true],
     ]);
     expect(column("import_jobs", "images")?.default).toBe(false);
     // The API makes the id (it names the import's folders): no default. The insert trigger forces the rest.
@@ -1771,6 +1775,7 @@ describe("import from other platforms 3b", () => {
       "import_jobs_declared_bytes",
       "import_jobs_failed",
       "import_jobs_failure",
+      "import_jobs_left_out_by",
       "import_jobs_received_bytes",
       "import_jobs_refused",
       "import_jobs_refused_words",
@@ -1799,6 +1804,10 @@ describe("import from other platforms 3b", () => {
     expect(checkSql("import_jobs", "import_jobs_choice")).toBe(`jsonb_typeof("import_jobs"."choice") = 'object' and octet_length("import_jobs"."choice"::text) <= 1024`);
     expect(checkSql("import_jobs", "import_jobs_stated")).toBe(`("import_jobs"."choice" is null) = ("import_jobs"."stated_at" is null)`);
     expect(checkSql("import_jobs", "import_jobs_seed")).toBe(`octet_length("import_jobs"."seed") = 32`);
+    // 3b Task 5 (0047): an object of IMPORT_IMAGE_SKIPS' reasons in at most 1,024 bytes.
+    expect(checkSql("import_jobs", "import_jobs_left_out_by")).toBe(
+      `jsonb_typeof("import_jobs"."images_left_out_by") = 'object' and octet_length("import_jobs"."images_left_out_by"::text) <= 1024 and ("import_jobs"."images_left_out_by" - array['video', 'sensitive', 'unsupported', 'too_large', 'missing_file', 'bluesky_no_files', 'images_off', 'not_chosen', 'no_description', 'over_image_cap', 'failed', 'not_checked', 'flagged']) = '{}'::jsonb`,
+    );
     expect(checkSql("import_jobs", "import_jobs_counts")).toBe(
       `"import_jobs"."post_cursor" >= 0 and "import_jobs"."image_cursor" >= 0 and "import_jobs"."posts_published" >= 0 and "import_jobs"."images_kept" >= 0 and "import_jobs"."images_left_out" >= 0 and "import_jobs"."posts_removed" >= 0`,
     );
@@ -1902,5 +1911,9 @@ describe("import from other platforms 3b", () => {
     expect(foreignKeys("post_media").filter(([columns]) => columns === "import_job_id")).toEqual([["import_job_id", "import_jobs", "set null"]]);
     expect(checkSql("post_media", "post_media_import_link")).toBe(`"post_media"."import_job_id" is null or "post_media"."imported"`);
     expect(indexes("post_media").filter(([name]) => name === "post_media_import_job_idx")).toEqual([["post_media_import_job_idx", ["import_job_id", "id"], false, "import_job_id is not null"]]);
+    // 3b Task 5 (0047): the rows on their way to a post, by import.
+    expect(indexes("post_media").filter(([name]) => name === "post_media_import_unattached_idx")).toEqual([
+      ["post_media_import_unattached_idx", ["import_job_id"], false, "import_job_id is not null and post_id is null"],
+    ]);
   });
 });

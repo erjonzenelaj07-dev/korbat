@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
+  ALERT_KINDS,
+  ALERT_KIND_LIST,
   ConfirmImportRequest,
   CreateImportRequest,
   IMPORT_ACTIVE_STATES,
@@ -27,7 +29,10 @@ import {
   POST_MAX_LENGTH,
   PostText,
   normalizePostBody,
+  SENTENCE_MAIL_KINDS,
+  alertPlaceholders,
   postLength,
+  renderAlert,
 } from "../src/index";
 
 /**
@@ -430,6 +435,14 @@ describe("ImportScanFacts (9.3)", () => {
     expect(ImportScanFacts.safeParse({ ...facts, pages: Array.from({ length: 1_001 }, (_, page) => page * 100) }).success).toBe(false);
     expect(ImportScanFacts.safeParse({ ...facts, fromRef: 50_000 }).success).toBe(false);
   });
+
+  test("3b Task 5: the confirmation's chosen totals, a member the intake does not write, within the caps", () => {
+    expect(ImportScanFacts.parse(facts).chosen).toBeUndefined();
+    expect(ImportScanFacts.parse({ ...facts, chosen: { posts: 3, images: 2 } }).chosen).toEqual({ posts: 3, images: 2 });
+    expect(ImportScanFacts.safeParse({ ...facts, chosen: { posts: 50_001, images: 0 } }).success).toBe(false);
+    expect(ImportScanFacts.safeParse({ ...facts, chosen: { posts: 1, images: 5_001 } }).success).toBe(false);
+    expect(ImportScanFacts.safeParse({ ...facts, chosen: { posts: 1 } }).success).toBe(false);
+  });
 });
 
 describe("ImportChoice (9.3): strict, months as YYYY-MM or null", () => {
@@ -477,7 +490,7 @@ describe("requests", () => {
 });
 
 describe("views", () => {
-  const progress = { imagesTotal: 0, imagesSettled: 0, postsTotal: 3, postsPublished: 0, postsRemoved: 0, postsLeft: 3 };
+  const progress = { imagesTotal: 0, imagesSettled: 0, postsTotal: 3, postsPublished: 0, postsRemoved: 0, postsLeft: 3, imagesLeftOut: {} };
   const view = {
     id: ID,
     source: "mastodon",
@@ -513,6 +526,15 @@ describe("views", () => {
     expect(ImportView.safeParse({ ...view, stopReason: "bored" }).success).toBe(false);
   });
 
+  test("3b Task 5: the progress carries the images left out by reason, each a reason of IMPORT_IMAGE_SKIPS", () => {
+    const leftOut = { flagged: 1, not_checked: 2, missing_file: 1 };
+    expect(ImportView.parse({ ...view, progress: { ...progress, imagesLeftOut: leftOut } }).progress.imagesLeftOut).toEqual(leftOut);
+    expect(ImportView.safeParse({ ...view, progress: { ...progress, imagesLeftOut: { bored: 1 } } }).success).toBe(false);
+    expect(ImportView.safeParse({ ...view, progress: { ...progress, imagesLeftOut: { flagged: -1 } } }).success).toBe(false);
+    const { imagesLeftOut: _omitted, ...without } = progress;
+    expect(ImportView.safeParse({ ...view, progress: without }).success).toBe(false);
+  });
+
   test("ImportLineView: the archive's day, never its second", () => {
     const lineView = { ref: 0, at: "2019-03-03", kind: "post", marks: 0, text: "Hello", media: [{ file: "0-0.jpg", alt: null }], leftOut: false, alts: [null] };
     expect(ImportLineView.parse(lineView)).toEqual(lineView);
@@ -523,5 +545,28 @@ describe("views", () => {
   test("ImportPickView: the pick and the picks' counts by month and marks", () => {
     const pick = { ref: 4, leftOut: true, alts: [], picks: [{ month: "2019-03", groups: [[1, 1, 0, 0]] }] };
     expect(ImportPickView.parse(pick)).toEqual(pick);
+  });
+});
+
+describe("import_image_flagged (3b Task 5, the orchestrator's ruling on section 8.1)", () => {
+  const now = new Date("2026-10-26T12:00:00.000Z");
+
+  test("the last kind of the list: a push and a sentence to every staff account, its facts a time and a count", () => {
+    expect(ALERT_KIND_LIST.at(-1)).toBe("import_image_flagged");
+    expect(ALERT_KINDS.import_image_flagged).toEqual({ priority: 3, scope: "all", legs: ["push", "mail"], mail: "sentence", facts: ["at", "count"] });
+    expect(SENTENCE_MAIL_KINDS).toContain("import_image_flagged");
+    expect(alertPlaceholders("import_image_flagged").sort()).toEqual(["at", "count"]);
+  });
+
+  test("its words name no image, no import and no account; only the count and the time change between two alerts", () => {
+    const a = renderAlert("import_image_flagged", { at: "2026-10-26T10:05:00.000Z", count: 2 }, now);
+    const b = renderAlert("import_image_flagged", { at: "2026-10-26T11:07:00.000Z", count: 5 }, now);
+    expect(a).toEqual({
+      title: "Imported images matched known material",
+      sentence: "2 images being imported matched known material at 10:05 UTC, in a way no program may act on. They were left out of the import and are not published.",
+      todo: "Nothing touches the account and the person is not told of the match. The match records stay, as for any upload never posted. If this repeats, tell the operator: the source's list or the way to it may be faulty.",
+    });
+    expect(a.sentence.replace(/[0-9]/g, "")).toBe(b.sentence.replace(/[0-9]/g, ""));
+    expect(() => renderAlert("import_image_flagged", { at: "2026-10-26T10:05:00.000Z", count: 1, id: 3 }, now)).toThrow();
   });
 });

@@ -118,6 +118,10 @@ export const SUSPENDED_WRITES: Record<string, "refused" | "allowed"> = {
   "PUT /api/imports/:id/archive": "allowed",
   "PUT /api/imports/:id/lines/:ref": "allowed",
   "POST /api/imports/:id/cancel": "allowed",
+  // 3b Task 5 (design, section 8.5): a confirmation starts the import's writes and is refused; a Stop only ends, and is
+  // allowed.
+  "POST /api/imports/:id/confirm": "refused",
+  "POST /api/imports/:id/stop": "allowed",
 };
 
 /** The routes that end the session: called last, so that every other route is called with it. */
@@ -202,6 +206,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
       settings: importSettingsFrom(config),
       auth: auth.forImports,
       social: social.forImports,
+      // 3b Task 5: the media and moderation modules' interfaces, and the profile store, which the confirmation asks.
+      media: media.forImports,
+      moderation: moderation.forImports,
+      profiles: createProfileStore(apiDb),
       rateLimitStore,
       requireSession: auth.requireSession,
       logger,
@@ -269,6 +277,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
     await decideForTest(apiDb, reported.id, "visible");
     const [item] = await apiDb.execute<{ id: string }>(sql`select i.id from intake_items i join intakes n on n.id = i.intake_id where n.reporter_id = ${ada.id}::uuid`);
     await releaseForTest(migrateDb, [item!.id]);
+    // 3b Task 5: an import of Ada's that is ready, put there as the migrator (Ada is three days old, too young to create
+    // one): its scan offers one post of March 2019 and no image, so a confirmation would be taken but for the measure.
+    const readyImport = randomUUID();
+    const scan = { posts: 1, images: 0, skipped: {}, imagesSkipped: {}, cleaned: 0, warnings: 0, sourceLinks: 0, protectedPosts: 0, readInPart: false, months: [{ month: "2019-03", groups: [[0, 1, 0, 0]] }], first: "2019-03", last: "2019-03", fromRef: 0, samples: [], pages: [] };
+    await migrateDb.execute(sql`
+      insert into import_jobs (id, owner_id, source, status, declared_bytes, received_bytes, uploaded_at, scanned_at, scan)
+      values (${readyImport}::uuid, ${ada.id}::uuid, 'mastodon', 'ready', 100, 100, now(), now(), ${JSON.stringify(scan)}::jsonb)`);
     const decisionId = await measure(ada.id);
     const state = MeResponse.parse(await (await ada.b.fetch("/api/me")).json()).standing?.measure?.state ?? null;
 
@@ -313,6 +328,17 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
       // 3b Task 4: a creation that would be taken but for the account: three days old, so the suspension answers before the
       // age does (4.2's order), and the announced suspension's pass answers import_too_soon.
       "POST /api/imports": [{ method: "POST", path: "/api/imports", json: { source: "mastodon", bytes: 1000 } }],
+      // 3b Task 5: a valid confirmation of Ada's ready import, refused while the measure runs and taken (publishing, since it
+      // holds no image) in the announced pass; then a Stop of it, wrong_state while it is still ready and taken once it
+      // publishes, never account_suspended.
+      "POST /api/imports/:id/confirm": [
+        {
+          method: "POST",
+          path: `/api/imports/${readyImport}/confirm`,
+          json: { choice: { from: null, to: null, replies: false, warnings: false, protected: false, images: false, long: "leave" }, statement: true },
+        },
+      ],
+      "POST /api/imports/:id/stop": [{ method: "POST", path: `/api/imports/${readyImport}/stop` }],
     };
     const callsOf = (route: string): Call[] => {
       const given = calls[route];
@@ -361,6 +387,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
     expect(result.state).toBe("running");
     // The reply to a suspension taken at once is late, and taken.
     expect(result.answers["POST /api/moderation/decisions/:id/reply"]).toEqual(["201"]);
+    // 3b Task 5: the refused confirmation left the import ready, which a Stop does not end.
+    expect(result.answers["POST /api/imports/:id/stop"]).toEqual(["409"]);
     // Redress and erasure on real rows of the account's own: its released report examined again, its upload deleted.
     expect(result.answers["POST /api/moderation/items/:item/reexamine"]).toEqual(["201"]);
     expect(result.answers["DELETE /api/media/:id"]).toEqual(["204"]);
@@ -382,6 +410,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
     expect(result.state).toBe("unfixed");
     const refused = Object.entries(result.answers).filter(([, got]) => got.includes("refused"));
     expect(refused).toEqual([]);
+    // 3b Task 5: the confirmation is taken (the import publishes: it holds no image), and the Stop then ends it.
+    expect(result.answers["POST /api/imports/:id/confirm"]).toEqual(["200"]);
+    expect(result.answers["POST /api/imports/:id/stop"]).toEqual(["200"]);
     expect(result.answers["POST /api/moderation/decisions/:id/reply"]).toEqual(["201"]);
     const [reply] = await apiDb.execute<{ on_time: boolean }>(sql`select on_time from suspension_replies where account_id = ${result.ada.id}::uuid`);
     expect(reply?.on_time).toBe(true);

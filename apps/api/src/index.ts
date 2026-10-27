@@ -27,13 +27,16 @@ const redis = new Redis(config.REDIS_URL, { maxRetriesPerRequest: 2 });
 redis.on("error", (err) => logger.error({ err }, "redis error"));
 const rateLimitStore = new RedisStore(redis);
 
+// The profile store on the API's pool: the auth module writes profiles through it, and (3b Task 5) the imports module reads
+// whether an account's suspension runs from it.
+const profiles = createProfileStore(apiDb);
 const auth = createAuth({
   config,
   logger,
   authDb,
   redis,
   mailer: smtpMailer(config.SMTP_URL, config.MAIL_FROM, { requireTls: config.NODE_ENV === "production" }),
-  profiles: createProfileStore(apiDb),
+  profiles,
   // Null when VERIFY_PROVIDER is off: the badge routes then answer badge_unavailable and the app hides the section.
   verify: verificationProviderFrom(config),
 });
@@ -129,7 +132,9 @@ const stopPurge = account.startPurge(jobLock);
 // 3b: import from other platforms. The module owns the three import tables, writes import-archives and reads import-work
 // (the importer's output) only through openWorkFile; it asks the auth module whether an address is verified and the
 // social module which posts an account already imported. Its job, import-drive, reads finished scans, runs the intake,
-// applies the time limits and clears what a crash left, a round every five seconds.
+// applies the time limits and clears what a crash left, a round every five seconds. 3b Task 5: it feeds imported images
+// to the media module's pipeline through that module's interface, alerts staff to a non-acting match through the
+// moderation module's, and reads whether an account is suspended, for a confirmation, from the profile store.
 const imports = createImports({
   apiDb,
   archivesDir: config.IMPORT_ARCHIVES_DIR,
@@ -137,6 +142,9 @@ const imports = createImports({
   settings: importSettingsFrom(config),
   auth: auth.forImports,
   social: social.forImports,
+  media: media.forImports,
+  moderation: moderation.forImports,
+  profiles,
   rateLimitStore,
   requireSession: auth.requireSession,
   logger,

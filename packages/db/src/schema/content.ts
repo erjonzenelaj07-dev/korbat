@@ -201,6 +201,12 @@ export const postMedia = pgTable(
      * unattached rows in id order (media.deleteImportLeftovers), would scan post_media without it.
      */
     index("post_media_import_job_idx").on(t.importJobId, t.id).where(sql`import_job_id is not null`),
+    /**
+     * 3b Task 5: the imports whose images are still on no post. import-drive asks it every round, for every import that
+     * has ended, so that a stop's or a time limit's leftovers go (7.4); the index holds only rows on their way, never the
+     * many attached ones, so the question costs nothing however many images were ever imported.
+     */
+    index("post_media_import_unattached_idx").on(t.importJobId).where(sql`import_job_id is not null and post_id is null`),
     fullAccess("post_media_api_all", apiRole),
   ],
 ).enableRLS();

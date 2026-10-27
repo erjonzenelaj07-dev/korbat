@@ -6,11 +6,13 @@ import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
 import { IMPORT_RULES, type ImportSource } from "@korbat/contracts";
 import type { Db } from "@korbat/db";
-import type { AuthForImports } from "../auth";
+import type { AuthForImports, ProfileStore } from "../auth";
 import type { Config } from "../config";
 import type { AppEnv } from "../env";
 import type { JobLock } from "../lib/jobs";
+import type { MediaForImports } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
+import type { ModerationForImports } from "../moderation";
 import type { SocialForImports } from "../social";
 import type { ImportDeps, ImportSettings } from "./context";
 import { createDriveJob, driveRound, type DriveOptions } from "./drive";
@@ -21,6 +23,7 @@ import { importRoutes } from "./routes";
 export { ImportError } from "./context";
 export type { ImportDeps, ImportErrorKind, ImportSettings } from "./context";
 export type { DriveReport } from "./drive";
+export type { FeedReport } from "./feeder";
 export type { ImportList } from "./routes";
 
 /** The owner's settings of section 7.7, as config.ts read and checked them. */
@@ -46,6 +49,12 @@ export interface CreateImportsOptions {
   auth: AuthForImports;
   /** The social module's interface: which lines the account already imported (7.5 step 2). */
   social: SocialForImports;
+  /** 3b Task 5: the media module's interface, through which imported images enter its pipeline (7.4, 8.2). */
+  media: MediaForImports;
+  /** 3b Task 5: the moderation module's interface, which alerts staff to images left out as flagged (8.1). */
+  moderation: ModerationForImports;
+  /** 3b Task 5: the profile store, whose read of a running suspension refuses a confirmation (8.5). */
+  profiles: Pick<ProfileStore, "suspended">;
   /** The store every limit counts in. */
   rateLimitStore: RateLimitStore;
   /** The auth module's requireSession: an onboarded account with CSRF and Origin checked. */
@@ -64,12 +73,16 @@ export function createImports(options: CreateImportsOptions) {
     files: createImportFiles({ archivesDir: options.archivesDir, workDir: options.workDir, log: options.logger, freeBytes: options.freeBytes, workDevice: options.workDevice }),
     auth: options.auth,
     social: options.social,
+    media: options.media,
+    moderation: options.moderation,
+    profiles: options.profiles,
     limits: options.rateLimitStore,
     settings: options.settings,
     log: options.logger,
     now: options.now ?? (() => new Date()),
     chunkBytes: options.chunkBytes ?? IMPORT_RULES.chunkBytes,
     inFlight: new Set(),
+    plans: new Map(),
   };
   return {
     deps,

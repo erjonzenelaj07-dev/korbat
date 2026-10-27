@@ -1,5 +1,5 @@
 import { sql, type SQL } from "drizzle-orm";
-import { IMPORT_RULES, type ImportFailure, type ImportScanFacts, type ImportSource, type ImportStatus } from "@korbat/contracts";
+import { IMPORT_RULES, type ImportChoice, type ImportFailure, type ImportImageSkip, type ImportScanFacts, type ImportSource, type ImportStatus } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import { WRITE_CLOCK, closingJudgment, liveNotSuspended } from "../lib/standing";
 import { ImportError } from "./context";
@@ -21,7 +21,7 @@ const ENDED = sql`('done', 'stopped', 'undoing', 'undone', 'failed', 'cancelled'
 const COLUMNS = sql`j.id, j.owner_id, j.source::text as source, j.status::text as status, j.declared_bytes::float8 as declared_bytes,
   j.received_bytes::float8 as received_bytes, j.created_at, j.uploaded_at, j.scanned_at, j.confirmed_at, j.ended_at, j.failure,
   j.stop_reason, j.staff_rule_id, to_char(j.refused_at_original, 'YYYY-MM-DD') as refused_at_original, j.refused_words, j.scan,
-  j.choice, j.posts_published, j.images_kept, j.images_left_out, j.posts_removed, j.images`;
+  j.choice, j.posts_published, j.images_kept, j.images_left_out, j.posts_removed, j.images, j.images_left_out_by`;
 
 /**
  * The move out of ready (whichever it is) keeps the counts and fromRef and leaves the month table, the samples, the pages
@@ -29,6 +29,13 @@ const COLUMNS = sql`j.id, j.owner_id, j.source::text as source, j.status::text a
  */
 const CUT_SCAN = sql`jsonb_set(j.scan || jsonb_build_object('months', '[]'::jsonb, 'samples', '[]'::jsonb, 'pages', '[]'::jsonb),
   '{skipped}', coalesce(j.scan -> 'skipped', '{}'::jsonb) - 'not_public')`;
+
+/**
+ * 3b Task 5: images_left_out_by with these counts added, reason by reason (`add` a jsonb object of counts); the guard of
+ * 0047 holds every count to growing and their sum to images_left_out, which the same statement raises by as many.
+ */
+const ADD_BY = (add: SQL): SQL => sql`j.images_left_out_by || (select coalesce(jsonb_object_agg(a.key, coalesce((j.images_left_out_by ->> a.key)::int, 0) + a.value::int), '{}'::jsonb)
+  from jsonb_each_text(${add}) a)`;
 
 /** A fixed key of pg_advisory_xact_lock: every creation takes it, so the site's count of active uploads is read and kept by one at a time (4.2 step 3). */
 const SITE_LOCK = sql`hashtext('korbat:import_jobs:site_active')`;
@@ -59,6 +66,23 @@ export interface ImportRow {
   postsRemoved: number;
   /** Whether the import brings images, decided at its creation (migration 0046). */
   images: boolean;
+  /** 3b Task 5 (migration 0047): the images the preparation left out, by reason. */
+  imagesLeftOutBy: Partial<Record<ImportImageSkip, number>>;
+}
+
+/** 3b Task 5: the import the feeder feeds (7.4), as it reads it. */
+export interface PreparingImport {
+  id: string;
+  ownerId: string;
+  /** The 32 bytes the image ids are derived from (6.5). */
+  seed: Buffer;
+  /** ImportChoice and ImportScanFacts as the confirmation wrote them; the feeder parses them. */
+  choice: unknown;
+  scan: unknown;
+  images: boolean;
+  createdAt: Date;
+  imageCursor: number;
+  imagesKept: number;
 }
 
 interface RawRow {
@@ -85,6 +109,7 @@ interface RawRow {
   images_left_out: number;
   posts_removed: number;
   images: boolean;
+  images_left_out_by: Partial<Record<ImportImageSkip, number>> | null;
 }
 
 const time = (value: Date | string | null): Date | null => (value === null ? null : new Date(value));
@@ -114,6 +139,7 @@ function toRow(raw: RawRow): ImportRow {
     imagesLeftOut: raw.images_left_out,
     postsRemoved: raw.posts_removed,
     images: raw.images,
+    imagesLeftOutBy: raw.images_left_out_by ?? {},
   };
 }
 
@@ -239,6 +265,161 @@ export function createImportRepo(db: Db) {
         if (pgError(err)?.constraint === "import_jobs_one_active") throw new ImportError("import_active");
         throw err;
       }
+    },
+
+    /** A transaction on the module's pool, for a step that writes in the media module's tables too (7.4's leftovers). */
+    transaction: <T>(fn: (tx: DbTx) => Promise<T>): Promise<T> => db.transaction(fn),
+
+    /**
+     * The confirmation (4.5 step 1, 9.2): ready to preparing or publishing in one UPDATE that writes the state, the choice,
+     * the statement's time, confirmed_at, the seed (6.1, set together, once, as import_jobs_guard requires) and the scan
+     * cut down as CUT_SCAN cuts it, with the chosen totals added as its member `chosen` (the orchestrator's ruling). False
+     * when the import left ready meanwhile.
+     */
+    async confirm(input: { id: string; ownerId: string; status: "preparing" | "publishing"; choice: ImportChoice; seed: Buffer; chosen: { posts: number; images: number } }): Promise<boolean> {
+      const done = await rows<{ id: string }>(
+        db,
+        sql`update import_jobs j set status = ${input.status}::import_status, choice = ${JSON.stringify(input.choice)}::jsonb, stated_at = clock_timestamp(),
+                   confirmed_at = clock_timestamp(), seed = ${input.seed}::bytea, scan = ${CUT_SCAN} || jsonb_build_object('chosen', ${JSON.stringify(input.chosen)}::jsonb)
+             where j.id = ${input.id}::uuid and j.owner_id = ${input.ownerId}::uuid and j.status = 'ready' returning j.id`,
+      );
+      return done.length === 1;
+    },
+
+    /**
+     * The person's Stop (4.6, 9.2): preparing or publishing to stopped (by_author) in one UPDATE, the seed cleared and the
+     * end set, as the guard requires of the move. False when the import is in neither state. Published posts stay; the
+     * drive deletes the prepared images that are on no post (7.4) and the importer the work folder.
+     */
+    async stop(id: string, ownerId: string): Promise<boolean> {
+      const done = await rows<{ id: string }>(
+        db,
+        sql`update import_jobs j set status = 'stopped', stop_reason = 'by_author', seed = null, ended_at = clock_timestamp()
+             where j.id = ${id}::uuid and j.owner_id = ${ownerId}::uuid and j.status in ('preparing', 'publishing') returning j.id`,
+      );
+      return done.length === 1;
+    },
+
+    /** The import in preparing confirmed longest ago, which the feeder feeds alone (7.4), with its seed; null when none prepares. */
+    async preparing(): Promise<PreparingImport | null> {
+      const [found] = await rows<{
+        id: string;
+        owner_id: string;
+        seed: string | null;
+        choice: unknown;
+        scan: unknown;
+        images: boolean;
+        created_at: Date | string;
+        image_cursor: number;
+        images_kept: number;
+      }>(
+        db,
+        sql`select j.id, j.owner_id, encode(j.seed, 'hex') as seed, j.choice, j.scan, j.images, j.created_at, j.image_cursor, j.images_kept
+              from import_jobs j where j.status = 'preparing' order by j.confirmed_at, j.id limit 1`,
+      );
+      if (!found || found.seed === null) return null;
+      return {
+        id: found.id,
+        ownerId: found.owner_id,
+        seed: Buffer.from(found.seed, "hex"),
+        choice: found.choice,
+        scan: found.scan,
+        images: found.images,
+        createdAt: new Date(found.created_at),
+        imageCursor: found.image_cursor,
+        imagesKept: found.images_kept,
+      };
+    },
+
+    /**
+     * The feeder's claim on one image (7.4 step 4), inside the media module's transaction that writes the image's row, in
+     * 3e's lock order: the owner's profile row FOR KEY SHARE (the row the insert's predicate then judges, already held),
+     * then the job's row by an UPDATE that moves image_cursor from `from` (FOR NO KEY UPDATE), only while the import is
+     * still preparing and its owner's. False when it is not: the caller rolls back and writes nothing.
+     */
+    async claimImage(tx: DbTx, jobId: string, ownerId: string, from: number): Promise<boolean> {
+      await tx.execute(sql`select 1 from profiles p where p.id = ${ownerId}::uuid for key share of p`);
+      const done = await rows<{ id: string }>(
+        tx,
+        sql`update import_jobs j set image_cursor = j.image_cursor + 1
+             where j.id = ${jobId}::uuid and j.owner_id = ${ownerId}::uuid and j.status = 'preparing' and j.image_cursor = ${from}::int returning j.id`,
+      );
+      return done.length === 1;
+    },
+
+    /**
+     * Images the feeder leaves out before any row is written (7.4 step 4: a file openWorkFile refuses is missing_file, one
+     * the sniff refuses unsupported, one over the cap too_large; with the comparison off, not_checked): the cursor moves
+     * past `count` of them from `from`, and images_left_out and the reason's count grow by as many, in one statement, only
+     * while the import is still preparing at that cursor. With `reason` null the cursor alone moves: an image whose row
+     * was written before. False when the import moved on.
+     */
+    async skipImages(jobId: string, from: number, count: number, reason: ImportImageSkip | null): Promise<boolean> {
+      const added = reason === null ? 0 : count;
+      const by = reason === null ? sql`j.images_left_out_by` : sql`${ADD_BY(sql`${JSON.stringify({ [reason]: count })}::jsonb`)}`;
+      const done = await rows<{ id: string }>(
+        db,
+        sql`update import_jobs j set image_cursor = j.image_cursor + ${count}::int, images_left_out = j.images_left_out + ${added}::int, images_left_out_by = ${by}
+             where j.id = ${jobId}::uuid and j.status = 'preparing' and j.image_cursor = ${from}::int returning j.id`,
+      );
+      return done.length === 1;
+    },
+
+    /**
+     * The settling of the feeder's images (7.4 step 5), in one transaction: the job's row FOR NO KEY UPDATE while it is
+     * still preparing (else nothing is written and null answers), then `remove` deletes the rows left out through the media
+     * module (in its id order, after the job's row, as the feeder's insert takes them), and the rows that went are counted
+     * by their reason into images_left_out and images_left_out_by, with images_kept raised to `kept`, the import's ready and
+     * clear rows. A row that did not go (a hold keeps it) is not counted and is settled again in a later round.
+     */
+    async settle(jobId: string, kept: number, leftOut: ReadonlyMap<string, ImportImageSkip>, remove: (tx: DbTx, ids: readonly string[]) => Promise<string[]>): Promise<string[] | null> {
+      return db.transaction(async (tx) => {
+        const [job] = await rows<{ id: string }>(tx, sql`select j.id from import_jobs j where j.id = ${jobId}::uuid and j.status = 'preparing' for no key update of j`);
+        if (!job) return null;
+        const gone = leftOut.size === 0 ? [] : await remove(tx, [...leftOut.keys()]);
+        const by: Partial<Record<ImportImageSkip, number>> = {};
+        for (const id of gone) {
+          const reason = leftOut.get(id)!;
+          by[reason] = (by[reason] ?? 0) + 1;
+        }
+        await tx.execute(sql`update import_jobs j set images_kept = greatest(j.images_kept, ${kept}::int), images_left_out = j.images_left_out + ${gone.length}::int,
+                                images_left_out_by = ${ADD_BY(sql`${JSON.stringify(by)}::jsonb`)}
+                              where j.id = ${jobId}::uuid`);
+        return gone;
+      });
+    },
+
+    /**
+     * Every image settled (7.5 step 4): preparing to publishing, once the cursor is at the plan's end, with images_kept set to
+     * the kept rows (a count that only grows). False when the import moved on or is not at that cursor.
+     */
+    async toPublishing(jobId: string, cursor: number, kept: number): Promise<boolean> {
+      const done = await rows<{ id: string }>(
+        db,
+        sql`update import_jobs j set status = 'publishing', images_kept = greatest(j.images_kept, ${kept}::int)
+             where j.id = ${jobId}::uuid and j.status = 'preparing' and j.image_cursor = ${cursor}::int returning j.id`,
+      );
+      return done.length === 1;
+    },
+
+    /**
+     * A refusal stops the import (8.2 step 1), in one transaction: preparing to stopped (refused_image) with the refused
+     * image's post's day and first words when its line could be read again, the seed cleared and the end set; then
+     * `remove` deletes its rows on no post through the media module (the refused row stays, held for good by its refusal,
+     * which the keep trigger leaves). The ids that went, whose files the caller asks for after the commit; null when the
+     * import was no longer preparing and nothing was written.
+     */
+    async stopRefused(jobId: string, refused: { day: string; words: string } | null, remove: (tx: DbTx) => Promise<string[]>): Promise<string[] | null> {
+      return db.transaction(async (tx) => {
+        const done = await rows<{ id: string }>(
+          tx,
+          sql`update import_jobs j set status = 'stopped', stop_reason = 'refused_image', seed = null, ended_at = clock_timestamp(),
+                     refused_at_original = ${refused?.day ?? null}::date, refused_words = ${refused?.words ?? null}
+               where j.id = ${jobId}::uuid and j.status = 'preparing' returning j.id`,
+        );
+        if (done.length === 0) return null;
+        return remove(tx);
+      });
     },
 
     /** The account's import, or null for an import of anyone else or none. */

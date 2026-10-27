@@ -330,6 +330,13 @@
       "when": 1793031565035,
       "tag": "0046_import_pick_facts",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1793043571182,
+      "tag": "0047_import_images",
+      "breakpoints": true
     }
   ]
 }

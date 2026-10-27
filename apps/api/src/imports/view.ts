@@ -1,4 +1,4 @@
-import { IMPORT_RULES, ImportChoice, ImportScanFacts, type ImportView } from "@korbat/contracts";
+import { IMPORT_IMAGE_SKIPS, IMPORT_RULES, ImportChoice, ImportScanFacts, type ImportImageSkip, type ImportView } from "@korbat/contracts";
 import { parsePostLine, readLineAt } from "@korbat/import-protocol";
 import type { ImportDeps } from "./context";
 import type { ImportRow, PickRow } from "./repo";
@@ -74,6 +74,12 @@ export async function importView(deps: ImportDeps, row: ImportRow): Promise<Impo
   // Picks exist from the preview until the import has ended; their counts are read while the choice can still use them.
   const picks = ["ready", "preparing", "publishing"].includes(row.status) ? pickCounts(await deps.repo.picks(row.id)) : [];
   const { samples: _samples, pages: _pages, ...facts } = scan ?? { samples: [], pages: [] };
+  // 3b Task 5: the images left out by reason, as the job counts them (migration 0047), each a reason of the closed list.
+  const imagesLeftOut: Partial<Record<ImportImageSkip, number>> = {};
+  for (const reason of IMPORT_IMAGE_SKIPS) {
+    const count = row.imagesLeftOutBy[reason];
+    if (typeof count === "number" && count > 0) imagesLeftOut[reason] = count;
+  }
   return {
     id: row.id,
     source: row.source,
@@ -90,19 +96,21 @@ export async function importView(deps: ImportDeps, row: ImportRow): Promise<Impo
     samples: row.status === "ready" && scan !== null ? await samples(deps, row, scan) : [],
     choice: choice.success ? choice.data : null,
     picks,
-    // Tasks 5 and 6 count the images and posts a confirmed choice holds; until then these are the row's own counts.
+    // 3b Task 5: the totals the confirmation counted and kept in the scan (the orchestrator's ruling); Task 6 counts the
+    // posts left to publish.
     progress: {
-      imagesTotal: 0,
+      imagesTotal: scan?.chosen?.images ?? 0,
       imagesSettled: row.imagesKept + row.imagesLeftOut,
-      postsTotal: 0,
+      postsTotal: scan?.chosen?.posts ?? 0,
       postsPublished: row.postsPublished,
       postsRemoved: row.postsRemoved,
       postsLeft: 0,
+      imagesLeftOut,
     },
     // Task 6 reads whether the author is suspended through the standing module (8.5).
     paused: false,
-    // Task 5 names the refusal of a refused image (8.2).
-    refusalId: null,
+    // 8.2: the refusal of the image that stopped the import, read through the media module, for the link to its notice.
+    refusalId: row.stopReason === "refused_image" ? await deps.media.refusalOf(row.id) : null,
     refusedAt: row.refusedAtOriginal,
     refusedWords: row.refusedWords,
     undoable: row.status === "done" || (row.status === "stopped" && row.postsPublished > 0),

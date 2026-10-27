@@ -1,6 +1,7 @@
 import { IMPORT_RULES, type ImportFailure } from "@korbat/contracts";
 import { createJob, type JobLock } from "../lib/jobs";
 import type { ImportDeps } from "./context";
+import { feedRound } from "./feeder";
 import { endFiles } from "./flows/end";
 import { runIntake, type IntakeCaps } from "./intake";
 
@@ -8,8 +9,9 @@ import { runIntake, type IntakeCaps } from "./intake";
  * The job import-drive (3b design, section 7.5): every five seconds, under the shared job lock, one round that moves the
  * imports along. A round is a plain function of the clock, so tests run it with any time, and each step is safe to
  * repeat. Task 4 builds steps 1 to 3 (scans done, the intake, the time limits of 4.8, each one statement), 7 (retention)
- * and 8 (orphans, every tenth round); feeding, publishing and undoing are Tasks 5 and 6's. A round never holds a lock
- * across rounds, and a failure of one import's step is logged and passes on to the next.
+ * and 8 (orphans, every tenth round); Task 5 step 4 (feeding, feeder.ts) and the leftovers of 7.4; publishing and undoing
+ * are Task 6's. A round never holds a lock across rounds, and a failure of one import's step is logged and passes on to
+ * the next.
  */
 
 export interface DriveReport {
@@ -21,6 +23,15 @@ export interface DriveReport {
   timedOutScans: number;
   expiredPreviews: number;
   stoppedLate: number;
+  /** Step 4 (Task 5): images fed, left out before a row, settled as left out and among them flagged; a refusal's stop; the move to publishing. */
+  fed: number;
+  skipped: number;
+  leftOut: number;
+  flagged: number;
+  refused: number;
+  publishing: number;
+  /** 7.4: rows on no post of imports that have ended, deleted. */
+  leftovers: number;
   /** Step 7. */
   picksDeleted: number;
   rowsDeleted: number;
@@ -105,6 +116,46 @@ async function timeLimits(deps: ImportDeps, now: Date, report: DriveReport): Pro
   }
 }
 
+/** Step 4: the feeder of 7.4 for the import in preparing confirmed longest ago. */
+async function feeding(deps: ImportDeps, now: Date, report: DriveReport): Promise<void> {
+  try {
+    const fed = await feedRound(deps, now);
+    if (fed === null) return;
+    report.fed = fed.fed;
+    report.skipped = fed.skipped;
+    report.leftOut = fed.leftOut;
+    report.flagged = fed.flagged;
+    report.refused = fed.refused ? 1 : 0;
+    report.publishing = fed.published ? 1 : 0;
+  } catch (err) {
+    deps.log.error({ err }, "import: the feeder's round failed; the next round tries again");
+  }
+}
+
+/**
+ * 7.4: every import that has left preparing and publishing (stopped by its author, a refusal, a time limit or an admin,
+ * done, undone) and still has image rows on no post, each round and not once on the move: the rows go in a transaction
+ * of their own through the media module, which notes their files as owed, and their files are asked for after the
+ * commit. A row a refusal holds stays (the keep trigger), and is not asked about while its hold stands.
+ */
+async function leftovers(deps: ImportDeps, report: DriveReport): Promise<void> {
+  const ids = await deps.media.importsWithLeftovers();
+  if (ids.length === 0) return;
+  const statuses = await deps.repo.statuses(ids);
+  for (const id of ids) {
+    const status = statuses.get(id);
+    if (status === undefined || status === "preparing" || status === "publishing") continue;
+    try {
+      const gone = await deps.repo.transaction((tx) => deps.media.deleteImportLeftovers(tx, id));
+      await deps.media.releaseFiles(gone);
+      report.leftovers += gone.length;
+    } catch (err) {
+      deps.log.error({ id, err }, "import: an ended import's images could not be deleted; the next round tries again");
+    }
+  }
+  if (report.leftovers > 0) deps.log.info({ leftovers: report.leftovers }, "import-drive: images of ended imports deleted");
+}
+
 /**
  * Step 8: what a crash between a commit and a file operation left behind, once older than an hour. An archive folder or
  * a queue marker goes unless its import is still uploading or scanning; a work folder is asked for unless its import
@@ -144,9 +195,30 @@ async function orphans(deps: ImportDeps, now: Date, report: DriveReport): Promis
 
 /** One round at `now`. */
 export async function driveRound(deps: ImportDeps, now: Date, options: DriveOptions): Promise<DriveReport> {
-  const report: DriveReport = { ready: 0, failed: 0, expiredUploads: 0, timedOutScans: 0, expiredPreviews: 0, stoppedLate: 0, picksDeleted: 0, rowsDeleted: 0, orphanArchives: 0, orphanWork: 0, withdrawn: 0 };
+  const report: DriveReport = {
+    ready: 0,
+    failed: 0,
+    expiredUploads: 0,
+    timedOutScans: 0,
+    expiredPreviews: 0,
+    stoppedLate: 0,
+    fed: 0,
+    skipped: 0,
+    leftOut: 0,
+    flagged: 0,
+    refused: 0,
+    publishing: 0,
+    leftovers: 0,
+    picksDeleted: 0,
+    rowsDeleted: 0,
+    orphanArchives: 0,
+    orphanWork: 0,
+    withdrawn: 0,
+  };
   await scansDone(deps, now, report, options.caps);
   await timeLimits(deps, now, report);
+  await feeding(deps, now, report);
+  await leftovers(deps, report);
   const kept = await deps.repo.retention(now);
   report.picksDeleted = kept.picks;
   report.rowsDeleted = kept.rows;

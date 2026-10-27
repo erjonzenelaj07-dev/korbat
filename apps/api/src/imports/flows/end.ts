@@ -27,3 +27,21 @@ export async function cancelImport(deps: ImportDeps, ownerId: string, id: string
   if (!row) throw new ImportError("not_found");
   return importView(deps, row);
 }
+
+/**
+ * POST /api/imports/:id/stop (3b design, sections 4.6 and 9.2): the person's Stop while the import prepares or publishes,
+ * counted in import-act, at once and in one UPDATE (stopped, by_author, the seed cleared, ended_at). Published posts stay;
+ * the images prepared and on no post go in import-drive's next round (7.4, the leftovers), and the work folder is asked
+ * for here, so what was not published goes unopened. A suspended account may stop: it only ends (8.5).
+ */
+export async function stopImport(deps: ImportDeps, ownerId: string, id: string): Promise<ImportView> {
+  await enforceImportLimit(deps, "import-act", ownerId);
+  if (!(await deps.repo.find(id, ownerId))) throw new ImportError("not_found");
+  if (!(await deps.repo.stop(id, ownerId))) throw new ImportError("wrong_state");
+  deps.plans.delete(id);
+  await endFiles(deps, id);
+  deps.log.info({ id, phase: "stopped", reason: "by_author" }, "import: stopped");
+  const row = await deps.repo.find(id, ownerId);
+  if (!row) throw new ImportError("not_found");
+  return importView(deps, row);
+}

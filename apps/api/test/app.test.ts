@@ -80,6 +80,10 @@ function app(checks: Record<string, () => Promise<void>>, advisoryChecks?: Recor
     settings: importSettingsFrom(config),
     auth: auth.forImports,
     social: social.forImports,
+    // 3b Task 5: the media module's interface, and stand-ins for the two reads no test here reaches (no import is confirmed).
+    media: media.forImports,
+    moderation: { imagesFlagged: async () => "unsent" },
+    profiles: { suspended: async () => false },
     rateLimitStore,
     requireSession: auth.requireSession,
     logger,
@@ -155,6 +159,9 @@ describe("request bodies", () => {
       ["/api/imports", "POST"],
       [`/api/imports/${id}/lines/0`, "PUT"],
       [`/api/imports/${id}/cancel`, "POST"],
+      // 3b Task 5: the confirmation and the Stop.
+      [`/api/imports/${id}/confirm`, "POST"],
+      [`/api/imports/${id}/stop`, "POST"],
       // Only PUT, only /archive, only a 36-character id of the UUID's alphabet.
       [`/api/imports/${id}/archive`, "POST"],
       [`/api/imports/${id}/archive/x`, "PUT"],

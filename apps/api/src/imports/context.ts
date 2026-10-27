@@ -1,16 +1,21 @@
 import type { ImportErrorCode, ImportSource } from "@korbat/contracts";
 import type { Logger } from "pino";
-import type { AuthForImports } from "../auth";
+import type { AuthForImports, ProfileStore } from "../auth";
+import type { MediaForImports } from "../media";
 import type { RateLimitStore } from "../middleware/rate-limit";
+import type { ModerationForImports } from "../moderation";
 import { limitsFor, type ImportAction, type SocialForImports } from "../social";
 import type { ImportFiles } from "./files";
+import type { ImportPlan } from "./plan";
 import type { ImportRepo } from "./repo";
 
 /**
  * The imports module (3b design, section 9.1): an archive's upload in chunks, its scan by the importer service, the
  * preview and the person's picks, and the job import-drive that moves every import along the states of section 4.1.
  * It names the three import tables in its repository alone, reaches posts only through the social module's index and
- * an account's email only through the auth module's, and reads everything the importer wrote through openWorkFile.
+ * an account's email only through the auth module's, and reads everything the importer wrote through openWorkFile. 3b
+ * Task 5: images reach the media pipeline only through the media module's index, a non-acting match's alert goes through
+ * the moderation module's, and whether an account is suspended is the profile store's plain read.
  */
 
 /** The import codes plus the shared invalid_request, which a malformed header or parameter gets. */
@@ -90,7 +95,7 @@ export interface ImportSettings {
   sources: readonly ImportSource[];
   /** IMPORT_MAX_ACTIVE: imports in uploading or scanning on the site at once. */
   maxActive: number;
-  /** IMPORT_IMAGES_PER_HOUR: the feeder's pace (Task 5). */
+  /** IMPORT_IMAGES_PER_HOUR: the feeder's pace, counted in the limit store under import-images-site (7.4). */
   imagesPerHour: number;
   /** IMPORT_MIN_FREE_BYTES: kept free on import-archives beyond a new import's size and the most a scan may write. */
   minFreeBytes: number;
@@ -101,6 +106,12 @@ export interface ImportDeps {
   files: ImportFiles;
   auth: AuthForImports;
   social: SocialForImports;
+  /** 3b Task 5: the media module's interface: the feeder's conditions, an image's way in, its rows, their deletion (7.4, 8.2). */
+  media: MediaForImports;
+  /** 3b Task 5: the moderation module's interface: the alert for images left out as flagged (8.1). */
+  moderation: ModerationForImports;
+  /** 3b Task 5: the profile store's read of whether an account's suspension runs, which refuses a confirmation (8.5). */
+  profiles: Pick<ProfileStore, "suspended">;
   limits: RateLimitStore;
   settings: ImportSettings;
   log: Logger;
@@ -112,6 +123,12 @@ export interface ImportDeps {
    * for nothing and is answered wrong_offset, so two writers never append to one file. The API runs as one instance.
    */
   inFlight: Set<string>;
+  /**
+   * 3b Task 5: the feeder's plans (7.4), one for each import that prepares, built once a process from posts.jsonl and kept
+   * until the import leaves preparing: the preview's pages are gone once it is confirmed, and the plan finds image N of the
+   * cursor without reading the work file again.
+   */
+  plans: Map<string, ImportPlan>;
 }
 
 /**
