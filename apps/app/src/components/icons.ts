@@ -48,6 +48,8 @@ export const ICONS = {
   external: "ExternalLink",
   info: "Info",
   retry: "RotateCw",
+  /** 3b (design, section 10.1): Settings' Import posts and the provenance label of an imported post. */
+  import: "Import",
 } as const;
 
 export type IconName = keyof typeof ICONS;

@@ -1,5 +1,10 @@
+import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  IMPORT_RULES,
+  ImportPickView,
+  ImportView,
+  type ImportLineView,
   AuthorCasesPage,
   AuthorNoticesPage,
   DecisionView,
@@ -178,8 +183,8 @@ function profile(author: Author, signedIn: boolean) {
       verified: author.verified,
       createdAt: ago(60 * 24 * 90),
       counts: { posts: 42, followers: 128, following: 64 },
-      // 3b Task 6: no account of the walk has imported posts; Task 7 gives one an Imported tab.
-      hasImported: false,
+      // 3b Task 7: Grace has imported posts, so her profile shows the Imported tab to every reader (10.6).
+      hasImported: author.id === GRACE.id,
       // The reader follows nobody yet, so the follow step starts from Follow.
       ...(signedIn && !self ? { viewer: { following: false, followedBy: false, blocked: false, muted: false } } : {}),
     },
@@ -303,6 +308,278 @@ function hiddenImagePost(signedIn: boolean): PostView {
   });
 }
 
+/**
+ * 3b Task 7 (design, section 10.8): the imports the walk opens, one in each state, by their ids. IMPORT_READY holds a scan
+ * with every reason, three samples with "@ada" in their words and a page of lines; IMPORT_SCANNING turns ready when a step
+ * sets `scanReady`; IMPORT_RESUME is an upload stopped at its first chunk; a new import (POST /api/imports) takes the
+ * id IMPORT_NEW and its chunks at the stored offset with their SHA-256, as the API does (7.3).
+ */
+export const IMPORT_RESUME = id(801);
+export const IMPORT_SCANNING = id(802);
+export const IMPORT_READY = id(803);
+export const IMPORT_PREPARING = id(804);
+export const IMPORT_PUBLISHING = id(805);
+export const IMPORT_DONE = id(806);
+export const IMPORT_REFUSED = id(807);
+export const IMPORT_BY_STAFF = id(808);
+export const IMPORT_UNDOING = id(809);
+export const IMPORT_UNDONE = id(810);
+export const IMPORT_FAILED = id(811);
+export const IMPORT_CANCELLED = id(812);
+export const IMPORT_EXPIRED = id(813);
+export const IMPORT_NEW = id(820);
+/** The size of the walk's generated archives: 20 MB, three chunks of IMPORT_RULES.chunkBytes and the rest. */
+export const ARCHIVE_BYTES = 20_000_000;
+/** The refusal and the case decision of the imports that were stopped. */
+export const IMPORT_REFUSAL_ID = id(830);
+export const IMPORT_DECISION_ID = id(831);
+/** Grace's imported posts on her Imported tab: one with "@ada" in its words, one shortened on import. */
+export const IMPORTED_POST_ID = id(450);
+export const IMPORTED_SHORTENED_ID = id(451);
+
+type ImportStatusName = ImportView["status"];
+const PROGRESS = { imagesTotal: 0, imagesSettled: 0, postsTotal: 0, postsPublished: 0, postsRemoved: 0, postsLeft: 0, imagesLeftOut: {} };
+
+/** The ready import's scan: every reason of 9.3 that the importer and the intake count, posts in three months, replies, long posts and warnings. */
+const READY_SCAN = {
+  posts: 70,
+  images: 6,
+  skipped: {
+    repost: 120,
+    not_public: 40,
+    older_version: 3,
+    poll: 2,
+    adult_label: 1,
+    too_long_to_read: 1,
+    date_out_of_range: 1,
+    item_too_large: 1,
+    unreadable: 1,
+    empty: 2,
+    already_imported: 5,
+    over_post_cap: 1,
+    over_item_cap: 1,
+    new_account_cap: 4,
+  },
+  imagesSkipped: { video: 4, sensitive: 2, unsupported: 1, too_large: 1, missing_file: 1, over_image_cap: 1 },
+  cleaned: 2,
+  warnings: 3,
+  sourceLinks: 4,
+  protectedPosts: 0,
+  readInPart: true,
+  months: [
+    { month: "2019-03", groups: [[0, 30, 4, 1], [1, 5, 0, 0], [2, 2, 0, 0], [4, 3, 0, 0]] as [number, number, number, number][] },
+    { month: "2019-04", groups: [[0, 20, 2, 0]] as [number, number, number, number][] },
+    { month: "2021-05", groups: [[0, 10, 0, 0]] as [number, number, number, number][] },
+  ],
+  first: "2019-03",
+  last: "2021-05",
+  fromRef: 0,
+};
+
+/** The ready import's page of lines, in the archive's order: posts, a reply, a long post, one with an image to describe. */
+const READY_LINES: ImportLineView[] = [
+  { ref: 0, at: "2019-03-03", kind: "post", marks: 0, text: "Morning, @ada: the ferries run late again.", media: [{ file: "0-0.webp", alt: null }], leftOut: false, alts: [] },
+  { ref: 1, at: "2019-03-04", kind: "reply", marks: 1, text: "@grace_h thanks, the harbour was quiet today.", media: [], leftOut: false, alts: [] },
+  { ref: 2, at: "2019-03-09", kind: "post", marks: 0, text: "A map of the old market, from a box of maps from the sixties.", media: [{ file: "2-0.webp", alt: "A hand-drawn map of the old market" }], leftOut: false, alts: [] },
+  { ref: 3, at: "2019-03-21", kind: "post", marks: 2, text: "A long post about the essay. ".repeat(40).trim(), media: [], leftOut: false, alts: [] },
+  { ref: 4, at: "2019-04-02", kind: "thread", marks: 0, text: "Second part of the thread on Babbage's engines.", media: [], leftOut: false, alts: [] },
+  { ref: 5, at: "2021-05-30", kind: "post", marks: 0, text: "Rain all afternoon; the photo archive is sorted by year now.", media: [], leftOut: false, alts: [] },
+];
+
+/** One import of the walk, in its state, as GET /api/imports/:id answers it. */
+function importOf(importId: string, status: ImportStatusName, extra: Partial<z.input<typeof ImportView>> = {}): ImportView {
+  return parse(
+    ImportView,
+    {
+      id: importId,
+      source: "mastodon",
+      status,
+      createdAt: ago(60 * 3),
+      endedAt: null,
+      declaredBytes: ARCHIVE_BYTES,
+      receivedBytes: status === "uploading" ? 0 : ARCHIVE_BYTES,
+      chunkBytes: IMPORT_RULES.chunkBytes,
+      failure: null,
+      stopReason: null,
+      endedByStaff: null,
+      staffDecisionId: null,
+      scan: null,
+      samples: [],
+      choice: null,
+      picks: [],
+      progress: PROGRESS,
+      paused: false,
+      refusalId: null,
+      refusedAt: null,
+      refusedWords: null,
+      undoable: false,
+      ...extra,
+    } as z.input<typeof ImportView>,
+    `import ${status}`,
+  );
+}
+
+const CHOSEN = { from: null, to: null, replies: false, warnings: false, protected: false, images: false, long: "leave" as const };
+
+/** Every import of the walk but the new one, by id. */
+function importsOfTheWalk(scanReady: boolean): Map<string, ImportView> {
+  const published = { ...PROGRESS, postsTotal: 1240, postsPublished: 1240 };
+  const ready = (importId: string) =>
+    importOf(importId, "ready", {
+      scan: READY_SCAN,
+      samples: [
+        { at: "2021-05-30", text: "Rain all afternoon; the photo archive is sorted by year now." },
+        { at: "2019-04-02", text: "Second part of the thread on Babbage's engines." },
+        { at: "2019-03-03", text: "Morning, @ada: the ferries run late again." },
+      ],
+    });
+  return new Map<string, ImportView>([
+    [IMPORT_RESUME, importOf(IMPORT_RESUME, "uploading", { receivedBytes: IMPORT_RULES.chunkBytes })],
+    [IMPORT_SCANNING, scanReady ? ready(IMPORT_SCANNING) : importOf(IMPORT_SCANNING, "scanning")],
+    [IMPORT_READY, ready(IMPORT_READY)],
+    [IMPORT_PREPARING, importOf(IMPORT_PREPARING, "preparing", { choice: { ...CHOSEN, images: true }, progress: { ...PROGRESS, imagesTotal: 1200, imagesSettled: 340, postsTotal: 1240 } })],
+    [IMPORT_PUBLISHING, importOf(IMPORT_PUBLISHING, "publishing", { choice: CHOSEN, progress: { ...PROGRESS, postsTotal: 1240, postsPublished: 800, postsLeft: 440 } })],
+    [IMPORT_DONE, importOf(IMPORT_DONE, "done", { choice: CHOSEN, endedAt: ago(30), progress: { ...published, imagesLeftOut: { not_checked: 2, flagged: 1 } }, undoable: true })],
+    [IMPORT_REFUSED, importOf(IMPORT_REFUSED, "stopped", { stopReason: "refused_image", endedAt: ago(30), refusalId: IMPORT_REFUSAL_ID, refusedAt: "2019-03-03", refusedWords: "Morning at the harbour, with the ferries" })],
+    [IMPORT_BY_STAFF, importOf(IMPORT_BY_STAFF, "stopped", { stopReason: "by_staff", endedAt: ago(30), endedByStaff: "R6", staffDecisionId: IMPORT_DECISION_ID, progress: { ...PROGRESS, postsTotal: 1240, postsPublished: 300 }, undoable: true })],
+    [IMPORT_UNDOING, importOf(IMPORT_UNDOING, "undoing", { endedAt: ago(30), progress: { ...published, postsRemoved: 400 } })],
+    [IMPORT_UNDONE, importOf(IMPORT_UNDONE, "undone", { endedAt: ago(20), progress: { ...published, postsRemoved: 1240 } })],
+    [IMPORT_FAILED, importOf(IMPORT_FAILED, "failed", { failure: "tar_gz", endedAt: ago(100), receivedBytes: IMPORT_RULES.chunkBytes })],
+    [IMPORT_CANCELLED, importOf(IMPORT_CANCELLED, "cancelled", { endedAt: ago(100) })],
+    [IMPORT_EXPIRED, importOf(IMPORT_EXPIRED, "expired", { endedAt: ago(100) })],
+  ]);
+}
+
+/** The picks' counts of the walk's picks, by month and marks, as the API's pickCounts gives them (9.3). */
+function pickTable(picks: Map<number, { leftOut: boolean; alts: (string | null)[] }>): ImportView["picks"] {
+  const months = new Map<string, Map<number, [number, number, number]>>();
+  for (const [ref, pick] of picks) {
+    const line = READY_LINES.find((entry) => entry.ref === ref);
+    if (!line) continue;
+    const month = line.at.slice(0, 7);
+    const groups = months.get(month) ?? new Map<number, [number, number, number]>();
+    months.set(month, groups);
+    const group = groups.get(line.marks) ?? [0, 0, 0];
+    groups.set(line.marks, group);
+    if (pick.leftOut) {
+      group[0] += 1;
+      group[1] += line.media.filter((media) => media.alt !== null).length;
+    } else group[2] += pick.alts.filter((alt) => alt !== null).length;
+  }
+  return [...months.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([month, groups]) => ({
+      month,
+      groups: [...groups.entries()].filter(([, [out, described, given]]) => out + described + given > 0).map(([marks, [out, described, given]]) => [marks, out, described, given] as [number, number, number, number]),
+    }))
+    .filter(({ groups }) => groups.length > 0);
+}
+
+/** Grace's imported posts (10.6), newest archive date first: one with "@ada" in its words, one shortened on import. */
+function importedPosts(signedIn: boolean): PostView[] {
+  const walk = "Notes from a long walk along the canal and the old docks. ".repeat(16).trim();
+  return [
+    post(43, signedIn, { id: IMPORTED_POST_ID, author: GRACE, body: "Thanks @ada for the harbour photographs; more at https://example.org/harbour", createdAt: ago(60 * 2), imported: { source: "x", at: "2019-03-03", shortened: false } }),
+    post(44, signedIn, { id: IMPORTED_SHORTENED_ID, author: GRACE, body: `${walk}${String.fromCharCode(0x2026)}`, createdAt: ago(60 * 2), imported: { source: "mastodon", at: "2018-11-20", shortened: true } }),
+  ];
+}
+
+/** An import's routes (9.2) as the walk needs them, over the state the steps set. */
+interface ImportFixtureState {
+  scanReady: boolean;
+  /** The new import's view, once POST /api/imports made it. */
+  created: ImportView | null;
+  /** Its archive as the chunks arrived, and every chunk request: offset, length, hash, and whether it was kept. */
+  archive: Buffer;
+  chunks: { offset: number; length: number; sha256: string; answer: number }[];
+  /**
+   * The offsets whose first try the fixture refuses (chunk_mismatch), and those whose connection is lost until the app reads
+   * the import: the first try's chunk is kept and its answer lost, and every try at that offset is dropped, the browser's
+   * own retry of a PUT on a reused connection included, until GET /api/imports/:id arrives.
+   */
+  refuseOnce: Set<number>;
+  dropUntilRead: Set<number>;
+  picks: Map<number, { leftOut: boolean; alts: (string | null)[] }>;
+}
+
+export const newImportState = (): ImportFixtureState => ({ scanReady: false, created: null, archive: Buffer.alloc(0), chunks: [], refuseOnce: new Set(), dropUntilRead: new Set(), picks: new Map() });
+
+const IMPORT_PATH = /^\/api\/imports\/([0-9a-f-]{36})(?:\/(archive|lines|cancel|stop|undo|confirm|media\/[0-9a-z.-]+|lines\/[0-9]+))?$/;
+
+/** The answer to an import route, or null when the path is no import's. `drop` answers a lost connection. */
+function importAnswer(imports: ImportFixtureState, method: string, path: string, query: URLSearchParams, headers: IncomingMessage["headers"], body: Buffer): Answer | "drop" | null {
+  const walk = importsOfTheWalk(imports.scanReady);
+  const withPicks = (view: ImportView): ImportView => (view.status === "ready" ? { ...view, picks: pickTable(imports.picks) } : view);
+  if (path === "/api/imports" && method === "GET") {
+    const list = [walk.get(IMPORT_READY)!, walk.get(IMPORT_DONE)!, walk.get(IMPORT_UNDONE)!];
+    return { status: 200, json: { imports: list.map(withPicks), sources: ["x", "mastodon"] } };
+  }
+  if (path === "/api/imports" && method === "POST") {
+    const asked = JSON.parse(body.toString("utf8") || "{}") as { source?: "x" | "mastodon"; bytes?: number };
+    imports.created = importOf(IMPORT_NEW, "uploading", { source: asked.source ?? "mastodon", declaredBytes: asked.bytes ?? ARCHIVE_BYTES, createdAt: new Date().toISOString() });
+    imports.archive = Buffer.alloc(0);
+    return { status: 201, json: imports.created };
+  }
+  const match = IMPORT_PATH.exec(path);
+  if (!match) return null;
+  const importId = match[1]!;
+  const part = match[2];
+  const view = importId === IMPORT_NEW ? imports.created : (walk.get(importId) ?? null);
+  if (view === null) return { status: 404, json: { error: { code: "not_found", message: "That no longer exists." } } };
+  if (part === undefined && method === "GET") {
+    // The app read the import after a chunk was lost: the connection is back. A read before (the screen opening) changes nothing.
+    if (importId === IMPORT_NEW && imports.chunks.some((chunk) => chunk.answer === 0)) imports.dropUntilRead.clear();
+    return { status: 200, json: withPicks(view) };
+  }
+  if (part === "archive" && method === "PUT" && importId === IMPORT_NEW && imports.created !== null) {
+    const offset = Number(headers["import-offset"]);
+    const sha256 = String(headers["import-chunk-sha256"] ?? "");
+    const stored = imports.archive.length;
+    const record = (answer: number) => imports.chunks.push({ offset, length: body.length, sha256, answer });
+    if (imports.dropUntilRead.has(offset)) {
+      // The first try arrives and is kept, but its answer is lost on the way; any further try is lost too, until the app
+      // reads the import, which it must do before it sends more.
+      if (offset === stored) {
+        imports.archive = Buffer.concat([imports.archive, body]);
+        imports.created = { ...imports.created, receivedBytes: imports.archive.length };
+      }
+      record(0);
+      return "drop";
+    }
+    if (offset !== stored) {
+      record(409);
+      return { status: 409, json: { error: { code: "wrong_offset", message: "Not at that place.", details: { receivedBytes: stored } } } };
+    }
+    if (imports.refuseOnce.delete(offset) || createHash("sha256").update(body).digest("hex") !== sha256) {
+      record(400);
+      return { status: 400, json: { error: { code: "chunk_mismatch", message: "The chunk did not arrive whole." } } };
+    }
+    imports.archive = Buffer.concat([imports.archive, body]);
+    const done = imports.archive.length >= imports.created.declaredBytes;
+    imports.created = { ...imports.created, receivedBytes: imports.archive.length, status: done ? "scanning" : "uploading" };
+    record(200);
+    return { status: 200, json: { receivedBytes: imports.archive.length } };
+  }
+  if (part === "lines" && method === "GET" && view.status === "ready") {
+    const lines = READY_LINES.map((line) => ({ ...line, ...(imports.picks.get(line.ref) ?? {}) }));
+    return { status: 200, json: { lines: query.get("page") === "0" ? lines : [], pages: 1 } };
+  }
+  if (part?.startsWith("lines/") && method === "PUT" && view.status === "ready") {
+    const ref = Number(part.slice("lines/".length));
+    const asked = JSON.parse(body.toString("utf8") || "{}") as { leftOut?: boolean; alts?: (string | null)[] };
+    const pick = { leftOut: asked.leftOut === true, alts: asked.alts ?? [] };
+    imports.picks.set(ref, pick);
+    return { status: 200, json: parse(ImportPickView, { ref, leftOut: pick.leftOut, alts: pick.alts, picks: pickTable(imports.picks) }, "pick") };
+  }
+  if (part?.startsWith("media/") && method === "GET" && view.status === "ready") return { status: 200, raw: FIXTURE_WEBP, type: "image/webp" };
+  // The actions answer the import as it would stand, without changing what the other steps read.
+  if (part === "cancel" && method === "POST") return { status: 200, json: { ...view, status: "cancelled", endedAt: new Date().toISOString() } };
+  if (part === "stop" && method === "POST") return { status: 200, json: { ...view, status: "stopped", stopReason: "by_author", endedAt: new Date().toISOString(), undoable: view.progress.postsPublished > 0 } };
+  if (part === "undo" && method === "POST") return { status: 200, json: { ...view, status: "undoing", undoable: false } };
+  if (part === "confirm" && method === "POST") return { status: 200, json: { ...view, status: "publishing", samples: [], progress: { ...PROGRESS, postsTotal: 60 } } };
+  return null;
+}
+
 export interface FixtureState {
   /** Whether /api/me answers the account or 401. */
   signedIn: boolean;
@@ -323,6 +600,8 @@ export interface FixtureState {
   timelineDelayMs: number;
   /** The posts the reader wrote in the walk (UI Task 6), newest first: on top of the timelines, each with its own thread. */
   written: PostView[];
+  /** 3b Task 7: the imports' switches, the new import's archive and chunks, and the ready import's picks. */
+  imports: ImportFixtureState;
 }
 
 export interface FixtureApi {
@@ -346,7 +625,7 @@ const OTHERS = 2;
 const FLAGS = { like: "liked", repost: "reposted", bookmark: "bookmarked" } as const;
 
 export function createFixtureApi(): FixtureApi {
-  const state: FixtureState = { signedIn: false, problems: [], requests: [], refuse: new Set(), delayMs: 0, newPosts: 0, timelineDelayMs: 0, written: [] };
+  const state: FixtureState = { signedIn: false, problems: [], requests: [], refuse: new Set(), delayMs: 0, newPosts: 0, timelineDelayMs: 0, written: [], imports: newImportState() };
   /** The written posts that are not replies, as timeline rows: the API puts the reader's own posts on top of both feeds. */
   const writtenRows = (): TimelineItem[] => state.written.filter((view) => view.replyTo === null).map((view) => ({ kind: "post" as const, post: view }));
   /** The written replies to one post, oldest first, as the replies route lists them. */
@@ -384,7 +663,7 @@ export function createFixtureApi(): FixtureApi {
     if (exploring && numberOf(exploring[1]!) % 3 === 0) {
       return ok(parse(ExploreStatus, { status: exploring[1] === id(103) ? "listed" : "pending", computedAt: ago(5) }, "explore status"));
     }
-    const profilePath = /^\/api\/profiles\/([a-z0-9_]+)(?:\/(posts|replies|followers|following))?$/.exec(path);
+    const profilePath = /^\/api\/profiles\/([a-z0-9_]+)(?:\/(posts|replies|imported|followers|following))?$/.exec(path);
     if (profilePath) {
       const author = AUTHORS.find((a) => a.handle === profilePath[1]);
       if (!author) return null;
@@ -397,6 +676,8 @@ export function createFixtureApi(): FixtureApi {
         return ok(parse(TimelinePage, { items, nextCursor: null }, "profile posts"));
       }
       if (tab === "replies") return ok(parse(PostPage, { items: [], nextCursor: null }, "replies"));
+      // 3b Task 7: the Imported tab, Grace's alone.
+      if (tab === "imported") return ok(parse(PostPage, { items: author.id === GRACE.id ? importedPosts(state.signedIn) : [], nextCursor: null }, "imported"));
       const people = [listItem(GRACE, "Compilers, ships and the occasional heron.", state.signedIn), listItem(LINUS, "Kernels and coffee.", state.signedIn)].filter((p) => p.handle !== author.handle);
       return ok(parse(ProfilePage, { items: people, nextCursor: null }, "profile list"));
     }
@@ -508,7 +789,14 @@ export function createFixtureApi(): FixtureApi {
       state.requests.push({ method, path: `${url.pathname}${url.search}`, at: Date.now() });
       let answer: Answer | null = null;
       try {
-        if (method === "GET") answer = get(url.pathname, url.searchParams);
+        // 3b Task 7: an import's routes (9.2); a chunk whose answer the fixture loses closes its connection.
+        const imported = url.pathname.startsWith("/api/imports") ? importAnswer(state.imports, method, url.pathname, url.searchParams, req.headers, body) : null;
+        if (imported === "drop") {
+          req.socket.destroy();
+          return;
+        }
+        if (imported !== null) answer = imported;
+        else if (method === "GET") answer = get(url.pathname, url.searchParams);
         else if (method === "POST") answer = post_(url.pathname, body) ?? action(method, url.pathname);
         else if (method === "DELETE") answer = action(method, url.pathname);
         // An action's answer waits as long as the step asks, so the step sees the card change before it lands; from UI

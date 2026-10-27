@@ -243,7 +243,7 @@ describe("Appearance and accessibility (section 8.8)", () => {
 });
 
 describe("the Settings index (section 8.8, ruling 10)", () => {
-  test("lists Appearance first, then Security, Privacy, Profile, Account and Cases, each a link with its icon, and no settings row", () => {
+  test("lists Appearance first, then Security, Privacy, Profile, Account, Import posts (3b Task 7) and Cases, each a link with its icon, and no settings row", () => {
     shell.state = signedIn();
     shell.pathname = "/settings";
     const out = html(<SettingsIndex />);
@@ -255,7 +255,7 @@ describe("the Settings index (section 8.8, ruling 10)", () => {
       ["/settings/security", UI_WORDS["settings.security"], "security"],
       ["/settings/privacy", UI_WORDS["settings.privacy"], "privacy"],
       ["/settings/profile", UI_WORDS["settings.profile"], "edit-profile"],
-      ["/settings/account", UI_WORDS["settings.account"], "account"],
+      ["/settings/account", UI_WORDS["settings.account"], "account"], ["/settings/import", IMPORT_WORDS["import.title"], "import"],
       ["/settings/cases", CASES_WORDS.nav, "cases"],
     ];
     // The main column only: the shell's nav and tab bar hold their own Settings link.
@@ -324,3 +324,6 @@ describe("what a choice of the page is", () => {
     expect([...fields].sort()).toEqual((Object.keys(DEFAULT_APPEARANCE) as (keyof Appearance)[]).sort());
   });
 });
+
+// 3b Task 7 appends below, so no line above moves: the Settings index's Import posts row (3b design, section 10.1).
+import { IMPORT_WORDS } from "../src/lib/import-words";

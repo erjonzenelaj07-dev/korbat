@@ -122,8 +122,11 @@ export interface SheetProps {
   dismissible?: boolean;
   size?: "auto" | "tall";
   width?: number;
-  /** What takes the focus on opening: the title (default), or the first control, as a menu's first item. */
-  initialFocus?: "title" | "first";
+  /**
+   * What takes the focus on opening: the title (default), or the first control, as a menu's first item; 3b Task 7: or
+   * "marked", the element inside marked data-sheet-focus (Who sees this opened at its provenance paragraph, 10.6).
+   */
+  initialFocus?: "title" | "first" | "marked";
   children: ReactNode;
 }
 
@@ -234,7 +237,7 @@ export function Sheet({ open, onClose, onClosed, title, description, dismissible
   const focusTitle = () => {
     if (Platform.OS !== "web") return;
     const panel = panelRef.current as unknown as HTMLElement | null;
-    const first = initialFocus === "first" ? panel?.querySelector<HTMLElement>(FOCUSABLE) : null;
+    const first = initialFocus === "first" ? panel?.querySelector<HTMLElement>(FOCUSABLE) : initialFocus === "marked" ? panel?.querySelector<HTMLElement>("[data-sheet-focus]") : null;
     (first ?? (titleRef.current as unknown as HTMLElement | null))?.focus();
   };
 

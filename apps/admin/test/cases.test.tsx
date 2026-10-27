@@ -1092,3 +1092,165 @@ describe("the whole page for the new addresses", () => {
     store.dispose();
   });
 });
+
+// 3b Task 7 appends below, so the lines above keep the numbers other tasks cite.
+import { importEndBases } from "../src/screens/Case";
+import { endImportWithKey, importEndAction } from "../src/step-up";
+import { dateTime as dateTimeOf } from "../src/ui";
+import { IMPORT_END_WORDS } from "../src/messages";
+import { importedLine, importedSize } from "../src/words";
+import { DECISION_FINAL, IMPORT_ONE, importedCase } from "./case-fixtures";
+
+/**
+ * An imported post on a case (3b design, sections 8.7 and 10.7; decision 30): its label and its import's size under the
+ * post's address, from the target's own `imported`; and, for an admin only, "End this import" by a final decision of the
+ * case that restricted the post under a rule, confirmed by the key as import_ended_by_staff.
+ */
+describe("an imported post on a case", () => {
+  const base: Omit<CaseScreenViewProps, "caseId" | "view"> = {
+    shownImage: null,
+    busy: null,
+    notice: null,
+    error: null,
+    note: "",
+    reveal: null,
+    onOpenCase: noop,
+    onShowImage: noop,
+    onShowClearly: noop,
+    onHideImage: noop,
+    onImageError: noop,
+    onSnapshot: noop,
+    onNoteChange: noop,
+    onNoteSave: noop,
+    onRevealOpen: noop,
+    onRevealChange: noop,
+    onRevealConfirm: noop,
+    onRevealClose: noop,
+  };
+  const page = (view: CaseView, extra: Partial<CaseScreenViewProps> = {}) => html(<CaseScreenView {...base} caseId={caseId(view.id)} view={view} {...extra} />);
+  const ending = (role: "admin" | "moderator", more: Partial<NonNullable<CaseScreenViewProps["importEnd"]>> = {}): NonNullable<CaseScreenViewProps["importEnd"]> => ({
+    role,
+    busy: false,
+    error: null,
+    chosen: null,
+    onChoose: noop,
+    onEnd: noop,
+    ...more,
+  });
+  const button = `>${IMPORT_END_WORDS.button}</button>`;
+  const disabled = new RegExp(`<button[^>]*disabled=""[^>]*>${IMPORT_END_WORDS.button}<`);
+
+  test("the label and the size are the console's own words: the source, the archive's day and the day it was imported, in UTC", () => {
+    expect(importedLine("x", "2019-03-03")).toBe("Imported from X, dated 3 Mar 2019");
+    expect(importedLine("mastodon", "2020-09-30")).toBe("Imported from Mastodon, dated 30 Sep 2020");
+    expect(importedLine("bluesky", "2024-12-01")).toBe("Imported from Bluesky, dated 1 Dec 2024");
+    expect(importedSize(1240, "2026-10-21")).toBe("One of 1,240 posts imported together on 21 Oct 2026.");
+    expect(importedSize(2, "2026-10-21")).toBe("One of 2 posts imported together on 21 Oct 2026.");
+    expect(importedSize(1, "2026-10-21")).toBe("The only post of its import, imported on 21 Oct 2026.");
+    expect(IMPORT_END_WORDS.button).toBe("End this import");
+    expect(IMPORT_END_WORDS.what).toBe("Every post of this import is removed, as if the person removed them, and the person is told.");
+  });
+
+  test("an imported post's case prints the label and the import's size under the post's address; a native post's prints neither", () => {
+    const view = importedCase();
+    expect(CaseView.safeParse(view).success).toBe(true);
+    const out = page(view);
+    const address = out.indexOf(`<code>${view.target.type === "post" ? view.target.link : ""}</code>`);
+    expect(address).toBeGreaterThan(-1);
+    expect(out.indexOf(">Imported from X, dated 3 Mar 2019<")).toBeGreaterThan(address);
+    expect(out.indexOf(">One of 1,240 posts imported together on 21 Oct 2026.<")).toBeGreaterThan(out.indexOf(">Imported from X, dated 3 Mar 2019<"));
+    expectInert(out);
+    const native = page(postCase());
+    expect(native).not.toContain("Imported from");
+    expect(native).not.toContain("imported together");
+  });
+
+  test("End this import is offered to an admin, on an imported post's case with a final decision that restricted it under a rule, with what follows said first", () => {
+    const view = importedCase();
+    expect(importEndBases(view).map((basis) => basis.id)).toEqual([DECISION_FINAL]);
+    const out = page(view, { importEnd: ending("admin") });
+    expect(out).toContain(button);
+    expect(out.indexOf(IMPORT_END_WORDS.what)).toBeGreaterThan(-1);
+    expect(out.indexOf(IMPORT_END_WORDS.what)).toBeLessThan(out.indexOf(button));
+    // One basis: nothing to pick, and the button may be pressed.
+    expect(out).not.toContain('type="radio"');
+    expect(out).not.toMatch(disabled);
+    expectInert(out);
+    // While the end is on its way the button is busy, and a refusal is said in the console's words.
+    const busy = page(view, { importEnd: ending("admin", { busy: true, error: IMPORT_END_WORDS.refused.wrong_state }) });
+    expect(busy).toMatch(new RegExp(`<button[^>]*aria-busy="true"[^>]*>${IMPORT_END_WORDS.button}<`));
+    expect(busy).toContain(`role="alert" class="error">${IMPORT_END_WORDS.refused.wrong_state}<`);
+  });
+
+  test("a moderator never sees it, nor does an admin without such a decision or on a native post's case", () => {
+    const view = importedCase();
+    expect(page(view, { importEnd: ending("moderator") })).not.toContain(button);
+    expect(page(view)).not.toContain(button);
+    // Only the interim decision: nothing to rest the end on.
+    const interim = importedCase({ decisions: [decision()] });
+    expect(importEndBases(interim)).toEqual([]);
+    expect(page(interim, { importEnd: ending("admin") })).not.toContain(button);
+    // A final decision that found no breach, or one on the law without a rule, is no basis either.
+    expect(importEndBases(importedCase({ decisions: [decision({ id: DECISION_FINAL, kind: "final", outcome: "no_violation", ruleId: "R6" })] }))).toEqual([]);
+    expect(importEndBases(importedCase({ decisions: [decision({ id: DECISION_FINAL, kind: "final", ground: "illegal", ruleId: null })] }))).toEqual([]);
+    expect(page(postCase({ decisions: [decision({ id: DECISION_FINAL, kind: "final", ruleId: "R6" })] }), { importEnd: ending("admin") })).not.toContain(button);
+  });
+
+  test("with several decisions to rest on, the admin picks one, each named by its rule and its time, before the button may be pressed", () => {
+    const other = "e9f0a1b2-3c4d-4e5f-8a61-7c8d9e0f1a2b";
+    const view = importedCase({
+      decisions: [decision({ id: other, kind: "final", ruleId: "R3", decidedAt: "2026-10-23T09:00:00.000Z" }), decision({ id: DECISION_FINAL, kind: "final", ruleId: "R6", decidedAt: "2026-10-22T09:00:00.000Z" })],
+    });
+    expect(importEndBases(view).map((basis) => basis.id)).toEqual([other, DECISION_FINAL]);
+    const out = page(view, { importEnd: ending("admin") });
+    expect(out.match(/type="radio"/g)).toHaveLength(2);
+    expect(out).toContain(`>${IMPORT_END_WORDS.legend}</legend>`);
+    expect(out).toContain(IMPORT_END_WORDS.basis("R3", dateTimeOf("2026-10-23T09:00:00.000Z")));
+    expect(out).toContain(IMPORT_END_WORDS.basis("R6", dateTimeOf("2026-10-22T09:00:00.000Z")));
+    expect(out).toMatch(disabled);
+    const picked = page(view, { importEnd: ending("admin", { chosen: DECISION_FINAL }) });
+    expect(picked).toMatch(new RegExp(`<input type="radio"(?=[^>]*value="${DECISION_FINAL}")(?=[^>]*checked="")`));
+    expect(picked.match(/checked=""/g)).toHaveLength(1);
+    expect(picked).not.toMatch(disabled);
+  });
+
+  test("the action is the import with the case, the decision and its rule; anything else is refused before the key is asked", () => {
+    const params = { caseId: CASE_POST, decisionId: DECISION_FINAL, ruleId: "R6" as const };
+    expect(importEndAction(IMPORT_ONE, params)).toEqual({ action: "import_ended_by_staff", target: { type: "import", id: IMPORT_ONE }, params });
+    expect(() => importEndAction(IMPORT_ONE.toUpperCase(), params)).toThrow();
+    expect(() => importEndAction(IMPORT_ONE, { ...params, note: "free text" } as never)).toThrow();
+  });
+
+  test("the end is confirmed by the key and sent with the params and the assertion; the answer is the case as it now stands", async () => {
+    const params = { caseId: CASE_POST, decisionId: DECISION_FINAL, ruleId: "R6" as const };
+    const action = importEndAction(IMPORT_ONE, params);
+    const answer = importedCase();
+    const fake = fakeFetch({
+      "GET /api/staff/me": { status: 200, body: makeMe() },
+      "POST /api/staff/step-up/options": { status: 200, body: stepUpOptions(await stepUpChallenge(SESSION_HANDLE, action)) },
+      [`POST /api/staff/imports/${IMPORT_ONE}/end`]: { status: 201, body: answer },
+    });
+    const credentials = fakeCredentials();
+    const api = createStaffApi({ fetch: fake.fetch, cookie: () => "__Host-korbat_staff_csrf=t" });
+    expect(await endImportWithKey({ api, credentials }, IMPORT_ONE, params)).toEqual(answer);
+    expect(credentials.calls).toHaveLength(1);
+    expect(fake.requests.map((request) => `${request.method} ${request.url} ${request.headers["x-staff-activity"]}`)).toEqual([
+      "GET /api/staff/me 1",
+      "POST /api/staff/step-up/options 1",
+      `POST /api/staff/imports/${IMPORT_ONE}/end 1`,
+    ]);
+    expect(fake.requests[1]!.body).toEqual(action);
+    const sent = fake.requests[2]!.body as { stepUp: never };
+    expect(sent).toMatchObject({ ...params, stepUp: { type: "public-key" } });
+    // An import not named by a lower-case uuid is never asked for, and an answer about another case is refused.
+    await expect(api.endImport(IMPORT_ONE.toUpperCase(), { ...params, stepUp: sent.stepUp })).rejects.toBeInstanceOf(ApiError);
+    const elsewhere = fakeFetch({ [`POST /api/staff/imports/${IMPORT_ONE}/end`]: { status: 201, body: frozenCase() } });
+    const other = createStaffApi({ fetch: elsewhere.fetch, cookie: () => "__Host-korbat_staff_csrf=t" });
+    await expect(other.endImport(IMPORT_ONE, { ...params, stepUp: sent.stepUp })).rejects.toThrow();
+  });
+
+  test("a moderator's refusal and the end's other refusals are worded by the console", () => {
+    expect(describeError(Object.assign(new Error("x"), { code: "admin_required" }), IMPORT_END_WORDS.refused)).toBe("Only an admin can end a whole import.");
+    for (const code of ["wrong_state", "not_found", "invalid_request"] as const) expect(describeError(Object.assign(new Error("x"), { code }), IMPORT_END_WORDS.refused), code).toBe(IMPORT_END_WORDS.refused[code]);
+  });
+});

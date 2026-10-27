@@ -218,7 +218,7 @@ describe("the icons", () => {
       passkey: "KeyRound",
       external: "ExternalLink",
       info: "Info",
-      retry: "RotateCw",
+      retry: "RotateCw", import: "Import", // 3b Task 7 (3b design, 10.1): the fortieth, for Import posts and the label.
     });
     const source = readFileSync(path.join(SRC, "components", "icons.ts"), "utf8");
     expect(source).not.toMatch(/from "lucide-react(-native)?"/);

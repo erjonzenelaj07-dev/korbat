@@ -74,6 +74,8 @@ export const social = {
   profile: (handle: string) => api(handlePath(handle), { schema: ProfileView }),
   profilePosts: (handle: string, cursor?: string) => api(`${handlePath(handle)}/posts${query(cursor)}`, { schema: TimelinePage }),
   profileReplies: (handle: string, cursor?: string) => api(`${handlePath(handle)}/replies${query(cursor)}`, { schema: PostPage }),
+  /** 3b (design, sections 9.2 and 10.6): the Imported tab, newest archive date first; public, as the Posts tab is. */
+  profileImported: (handle: string, cursor?: string) => api(`${handlePath(handle)}/imported${query(cursor)}`, { schema: PostPage }),
   followers: (handle: string, cursor?: string) => api(`${handlePath(handle)}/followers${query(cursor)}`, { schema: ProfilePage }),
   followingOf: (handle: string, cursor?: string) => api(`${handlePath(handle)}/following${query(cursor)}`, { schema: ProfilePage }),
   setFollow: (handle: string, on: boolean) => api(`${handlePath(handle)}/follow`, { method: on ? "POST" : "DELETE", schema: FollowResponse }),

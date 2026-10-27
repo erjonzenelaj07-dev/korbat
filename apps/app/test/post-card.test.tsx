@@ -438,3 +438,50 @@ describe("PostCard in a feed (10, 11.2)", () => {
     expect(priorities(html(<PostCard post={post({ media: [image] })} />))).toEqual(["normal"]);
   });
 });
+
+// 3b Task 7 appends below: the provenance label of an imported post (3b design, sections 8.4 and 10.6, decision 6).
+import { IMPORT_WORDS } from "../src/lib/import-words";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
+describe("the provenance label (3b, 10.6)", () => {
+  const LABEL = { source: "x" as const, at: "2019-03-03", shortened: false };
+
+  test("under the author line: Imported from X, dated 3 Mar 2019, a 44 px button named with the day written out, which opens Who sees this", () => {
+    const out = html(<PostCard post={post({ imported: LABEL })} />);
+    expect(textOf(out)).toContain("Imported from X, dated 3 Mar 2019");
+    const button = tags(out).find((tag) => tag.includes('role="button"') && tag.includes("Imported from X"))!;
+    expect(attr(button, "aria-label")).toBe("Imported from X, dated 3 March 2019. About imported posts");
+    expect(attr(button, "aria-haspopup")).toBe("dialog");
+    // The line comes after the author line and before the words.
+    const text = textOf(out);
+    expect(text.indexOf("Imported from X")).toBeGreaterThan(text.indexOf("@ada"));
+    expect(text.indexOf("Imported from X")).toBeLessThan(text.indexOf("The ferries"));
+    const source = readFileSync(path.resolve(import.meta.dirname, "..", "src", "components", "social", "PostCard.tsx"), "utf8");
+    expect(source).toMatch(/ImportedLine[\s\S]*min-h-\[44px\]/);
+    expect(source).toContain('at="provenance"');
+  });
+
+  test("a shortened post's label adds , shortened on import, in its words and its name", () => {
+    const out = html(<PostCard post={post({ imported: { ...LABEL, source: "mastodon", shortened: true } })} />);
+    expect(textOf(out)).toContain(`Imported from Mastodon, dated 3 Mar 2019${IMPORT_WORDS["import.label.shortened"]}`);
+    const button = tags(out).find((tag) => tag.includes('role="button"') && tag.includes("Imported from Mastodon"))!;
+    expect(attr(button, "aria-label")).toBe("Imported from Mastodon, dated 3 March 2019, shortened on import. About imported posts");
+  });
+
+  test("the day is the archive's in UTC, whatever the reader's zone; a native post has no label", () => {
+    // 2019-03-03 is the archive's day; nothing shifts it to the 2nd or the 4th.
+    expect(textOf(html(<PostCard post={post({ imported: { ...LABEL, at: "2019-12-31" } })} />))).toContain("dated 31 Dec 2019");
+    expect(textOf(html(<PostCard post={post()} />))).not.toContain("Imported from");
+  });
+
+  test("the thread's focused post shows the same line", () => {
+    expect(textOf(html(<PostCard post={post({ imported: LABEL })} large />))).toContain("Imported from X, dated 3 Mar 2019");
+  });
+
+  test("Who sees this, opened at the provenance, holds the paragraph and marks it for the focus", () => {
+    const out = html(<WhoSeesThisBody post={post({ imported: LABEL, author: BEN })} me={null} explore={null} />);
+    expect(textOf(out)).toContain(IMPORT_WORDS["import.reach"]);
+    expect(out).toMatch(/data-sheet-focus[^>]*>Anyone who searches the words of an imported post/);
+  });
+});

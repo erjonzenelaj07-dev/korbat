@@ -1330,3 +1330,25 @@ export function describeError(err: unknown, words: Record<string, string> = {}):
   if (code === null) return FALLBACK;
   return Object.hasOwn(words, code) ? words[code]! : messageFor(code);
 }
+
+/**
+ * 3b (design, sections 8.7 and 10.7): an admin's "End this import" on an imported post's case, with what follows said
+ * before the key is asked, the picker of the decision the end rests on when the case has several, and the refusals the
+ * route can answer, in the console's own words (describeError's table for this action).
+ */
+export const IMPORT_END_WORDS = {
+  title: "The whole import",
+  what: "Every post of this import is removed, as if the person removed them, and the person is told.",
+  /** The rule and the decision go into what the key confirms; the person's mail names both, and the decision can be appealed. */
+  sign: "Your staff key confirms the end, with this case, the decision it rests on and that decision's rule.",
+  legend: "The decision the end rests on",
+  basis: (ruleId: string, decidedAt: string) => `${ruleId}, the final decision of ${decidedAt}`,
+  button: "End this import",
+  done: "The import was ended. Its posts are being removed, and the person is told.",
+  refused: {
+    admin_required: "Only an admin can end a whole import.",
+    wrong_state: "This import cannot be ended now: it was ended already, or its posts are being removed or were removed.",
+    not_found: "This import is gone: its account was deleted, or its record was erased.",
+    invalid_request: "This decision cannot end the import: it is not a final decision of this case that restricted the post under a rule. Read the case again.",
+  },
+} as const;

@@ -47,14 +47,14 @@ import {
 } from "../compose";
 import { Frame } from "../frames";
 import { parseImageId, StaffImage, type ImageId } from "../media";
-import { APPEAL_WORDS, AUTOMATION_WORDS, CASE_WORDS, CUSTODY_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, messageFor, NOTE_WORDS, ORDER_WORDS, OUTCOME_WORDS, RECOVERY_WORDS, RELEASE_WORDS, REVEAL_WORDS, STANDING_WORDS } from "../messages";
+import { APPEAL_WORDS, AUTOMATION_WORDS, CASE_WORDS, CUSTODY_WORDS, DECISION_KINDS, DECISION_OUTCOMES, describeError, IMPORT_END_WORDS, messageFor, NOTE_WORDS, ORDER_WORDS, OUTCOME_WORDS, RECOVERY_WORDS, RELEASE_WORDS, REVEAL_WORDS, STANDING_WORDS } from "../messages";
 import { CaseLink, OrderLink } from "../nav";
 import { parseCaseId, parseOrderId, type CaseId, type OrderId } from "../router";
-import { releaseWithKey, revealWithKey } from "../step-up";
+import { endImportWithKey, releaseWithKey, revealWithKey } from "../step-up";
 import type { DraftSlots } from "../store";
 import { normalised, saveStaffText, type RandomBytes } from "../texts";
 import { bothTimes, dateTime, Loaded, UserText, type Loadable } from "../ui";
-import { categoryLabel, COLLAPSED_RULES, counted, LANE_NAMES, revealable, sourceWords, writtenBy } from "../words";
+import { categoryLabel, COLLAPSED_RULES, counted, importedLine, importedSize, LANE_NAMES, revealable, sourceWords, writtenBy } from "../words";
 import type { CredentialsLike } from "../webauthn";
 import { AnswerControl, ComposerView, CorrectControl, ReinstateControl, ReviewControl, WithdrawControl, WithdrawMarksControl, type ComposerViewProps } from "./Composer";
 
@@ -193,6 +193,8 @@ export interface CaseScreenViewProps {
   again?: string | null;
   /** 3d Task 2: the release of a seal for good, on its decision's block; without it the block shows its facts and no working control. */
   release?: ReleaseProps;
+  /** 3b: an admin's "End this import" under an imported post's label; without it, or for a moderator, the page offers none. */
+  importEnd?: ImportEndProps;
   /**
    * The decision composer, for the person's role, with "Lift what was done while deciding" and "Correct this decision"
    * beside the decisions. Without it the page shows the case and decides nothing.
@@ -448,7 +450,7 @@ function Snapshot({ snapshot, newest, props }: { snapshot: CaseSnapshot; newest:
 function Target({ view }: { view: CaseView }) {
   const { target } = view;
   if (target.type === "post") {
-    return (
+    const line = (
       <p>
         The post now: {target.state === null ? "its row is gone" : `${target.state.split("_").join(" ")}, level ${target.level ?? "unknown"}`}
         {target.authorHandle === null ? null : (
@@ -458,6 +460,15 @@ function Target({ view }: { view: CaseView }) {
         )}
         . Its address, as text: <code>{target.link}</code>
       </p>
+    );
+    if (target.imported === null) return line;
+    // 3b (8.7, 10.7): the label and the import's size, from the post's own columns and its import's row, never the account elsewhere.
+    return (
+      <>
+        {line}
+        <p>{importedLine(target.imported.source, target.imported.at)}</p>
+        <p className="hint">{importedSize(target.imported.importSize, target.imported.importedAt)}</p>
+      </>
     );
   }
   // The fields as they read now are the same author's words as the snapshot's: on a case citing R3 or R5 they open
@@ -472,6 +483,80 @@ function Target({ view }: { view: CaseView }) {
       {target.displayName === null || target.displayName === "" ? <p className="quiet">No display name.</p> : <Frame by="Display name. Written by the author" text={target.displayName} collapsedLabel={collapsed} />}
       {target.bio === null || target.bio === "" ? <p className="quiet">No bio.</p> : <Frame by="Bio. Written by the author" text={target.bio} collapsedLabel={collapsed} />}
     </>
+  );
+}
+
+/** 3b: an admin's end of a whole import, as the case page runs it: whose role, the decision picked, whether the end is on its way, and its refusal. */
+export interface ImportEndProps {
+  role: StaffRole;
+  busy: boolean;
+  error: string | null;
+  /** The decision the admin picked to rest the end on; null until one is picked where the case has several. */
+  chosen: string | null;
+  onChoose(decisionId: string): void;
+  onEnd(decision: CaseDecision): void;
+}
+
+/**
+ * 3b (design, section 8.7; the orchestrator's ruling for Task 6): the decisions of a case that an end of the import may
+ * rest on, as the API's importEndBasis reads them: final, restricting, under a rule; none on a case about an account or
+ * about a post that was not imported. In the case's order.
+ */
+export function importEndBases(view: CaseView): CaseDecision[] {
+  if (view.target.type !== "post" || view.target.imported === null) return [];
+  return view.decisions.filter((decision) => decision.kind === "final" && decision.outcome === "restricted" && decision.ruleId !== null);
+}
+
+/** The decision the end rests on: the one basis, or the one the admin picked among several. */
+export function importEndChoice(view: CaseView, chosen: string | null): CaseDecision | null {
+  const bases = importEndBases(view);
+  if (bases.length === 1) return bases[0]!;
+  return bases.find((basis) => basis.id === chosen) ?? null;
+}
+
+/**
+ * 3b (design, sections 8.7 and 10.7; decision 30): "End this import", under the imported post's label, for an admin
+ * alone (a moderator is shown none of it, and the API refuses one with admin_required). What follows is said before the
+ * button; with several decisions to rest on the admin picks one, each named by its rule and its time; the key confirms
+ * the import, the case, the decision and its rule. The button is the console's red confirming button, the one fill it
+ * keeps for an action that cannot be taken back.
+ */
+function ImportEndBlock({ view, importEnd }: { view: CaseView; importEnd: ImportEndProps | undefined }) {
+  const bases = importEndBases(view);
+  if (importEnd === undefined || importEnd.role !== "admin" || bases.length === 0) return null;
+  const W = IMPORT_END_WORDS;
+  const choice = importEndChoice(view, importEnd.chosen);
+  return (
+    <section className="block import-end" aria-labelledby="import-end-title">
+      <h4 id="import-end-title">{W.title}</h4>
+      <p>{W.what}</p>
+      <p className="hint">{W.sign}</p>
+      {bases.length > 1 ? (
+        <fieldset>
+          <legend>{W.legend}</legend>
+          <ul className="choices">
+            {bases.map((basis) => (
+              <li key={basis.id}>
+                <label className="choice">
+                  <input type="radio" name="import-end-basis" value={basis.id} checked={importEnd.chosen === basis.id} disabled={importEnd.busy} onChange={() => importEnd.onChoose(basis.id)} />
+                  {W.basis(basis.ruleId!, dateTime(basis.decidedAt))}
+                </label>
+              </li>
+            ))}
+          </ul>
+        </fieldset>
+      ) : null}
+      {importEnd.error ? (
+        <p role="alert" className="error">
+          {importEnd.error}
+        </p>
+      ) : null}
+      <div className="actions">
+        <button type="button" className="primary" disabled={importEnd.busy || choice === null} aria-busy={importEnd.busy} onClick={() => (choice === null ? undefined : importEnd.onEnd(choice))}>
+          {W.button}
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -1002,6 +1087,7 @@ export function CaseScreenView(props: CaseScreenViewProps) {
       {/* 3f Task 5 (sections 7.13 and 8.6): a report to the authorities owed for this case, since when; nothing more. */}
       {view.reportOwed === null ? null : <p className="notice">{ORDER_WORDS.caseOwed(bothTimes(view.reportOwed.since))}</p>}
       <Target view={view} />
+      <ImportEndBlock view={view} importEnd={props.importEnd} />
       {targetDiffers(view) ? (
         <button type="button" onClick={props.onSnapshot} disabled={busy !== null} aria-busy={busy === "snapshot"}>
           Take a fresh snapshot
@@ -1137,6 +1223,8 @@ export function CaseScreen({
   const [reveal, setReveal] = useState<RevealState | null>(null);
   const [releasing, setReleasing] = useState(false);
   const [releaseError, setReleaseError] = useState<string | null>(null);
+  // 3b: an admin's end of the import the case's post came from: the decision picked, whether it is on its way, its refusal.
+  const [ending, setEnding] = useState<{ chosen: string | null; busy: boolean; error: string | null }>({ chosen: null, busy: false, error: null });
   // The composer's draft lives in the store's slot for this case, so that it is still there after a session that ended
   // and a sign-in by the same handle; the page keeps its own copy to draw.
   const [draft, setDraft] = useState<CaseDraft | null>(() => drafts.get(id));
@@ -1272,6 +1360,32 @@ export function CaseScreen({
       void read();
     } finally {
       if (alive.current) setReleasing(false);
+    }
+  };
+
+  /**
+   * 3b (design, sections 8.7 and 10.7): "End this import", confirmed by the key with the import, this case, the decision
+   * the block shows as chosen and its rule. The answer is the case as it now stands, whose target shows the import; a
+   * refusal is worded in place, in the action's own words, and the case is read again, since what the end rests on may
+   * have moved between the read and the key.
+   */
+  const endImport = async (decision: CaseDecision) => {
+    const shown = page.current.state === "ready" ? page.current.value : null;
+    const target = shown?.target;
+    if (ending.busy || target?.type !== "post" || target.imported === null || decision.ruleId === null) return;
+    setEnding((current) => ({ ...current, busy: true, error: null }));
+    setNotice(null);
+    try {
+      const answer = await endImportWithKey({ api, credentials }, target.imported.importId, { caseId: id, decisionId: decision.id, ruleId: decision.ruleId });
+      if (!alive.current) return;
+      page.current = { state: "ready", value: answer };
+      setView(page.current);
+      setNotice(IMPORT_END_WORDS.done);
+      setEnding({ chosen: null, busy: false, error: null });
+    } catch (err) {
+      if (!alive.current) return;
+      setEnding((current) => ({ ...current, busy: false, error: describeError(err, IMPORT_END_WORDS.refused) }));
+      void read();
     }
   };
 
@@ -1468,6 +1582,14 @@ export function CaseScreen({
           {...(onOpenOrder === undefined ? {} : { onOpenOrder })}
           again={gap === null ? null : RECOVERY_WORDS.again(bothTimes(gap.actedAt))}
           release={{ role, busy: releasing, error: releaseError, onRelease: (decision) => void release(decision) }}
+          importEnd={{
+            role,
+            busy: ending.busy,
+            error: ending.error,
+            chosen: ending.chosen,
+            onChoose: (decisionId) => setEnding((current) => ({ ...current, chosen: decisionId, error: null })),
+            onEnd: (decision) => void endImport(decision),
+          }}
           // One image at a time: showing another puts the first back behind its placeholder.
           onShowImage={(image) => {
             setShownImage({ id: image, clear: false, failed: false });

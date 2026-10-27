@@ -1,4 +1,4 @@
-import type { SourceSummary } from "@korbat/contracts";
+import type { ImportSource, SourceSummary } from "@korbat/contracts";
 
 /**
  * The console's own words for what its screens count and name (3c design, section 8): lanes, waiting times, categories
@@ -72,3 +72,31 @@ export function writtenBy(source: SourceSummary): string {
 
 /** Whether "Reveal who sent this" is offered: only when the summary names someone, a linked reporter or a notifier who gave a name. */
 export const revealable = (source: SourceSummary): boolean => source.kind === "reporter" || (source.kind === "notifier" && source.named === true && !source.contactLost);
+
+/** The platforms an import comes from, as the label names them (3b design, section 10.9's import.source keys, short). */
+const SOURCE_NAMES: Record<ImportSource, string> = { x: "X", mastodon: "Mastodon", bluesky: "Bluesky" };
+
+/** The months as the label writes them: three letters each, so September is Sep wherever a browser's Intl writes Sept. */
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+
+/** A day the API gives as YYYY-MM-DD, a UTC day, as "3 Mar 2019": read from its digits, never through the browser's zone. */
+function shortDay(day: string): string {
+  const [year, month, date] = day.split("-").map(Number);
+  return `${date} ${MONTHS[(month ?? 1) - 1]} ${year}`;
+}
+
+/**
+ * 3b (design, sections 8.4, 8.7 and 10.7; decision 30): an imported post's label, under the post's address on a case:
+ * "Imported from X, dated 3 Mar 2019". Made from the post's own columns, the source and the archive's day, and nothing
+ * else, so it never names the account elsewhere.
+ */
+export const importedLine = (source: ImportSource, day: string): string => `Imported from ${SOURCE_NAMES[source]}, dated ${shortDay(day)}`;
+
+/**
+ * The size of the import a case's post came from, the posts it published, and the day it was imported: "One of 1,240
+ * posts imported together on 21 Oct 2026." An import of one post says so in its own words.
+ */
+export function importedSize(posts: number, importedAt: string): string {
+  if (posts <= 1) return `The only post of its import, imported on ${shortDay(importedAt)}.`;
+  return `One of ${new Intl.NumberFormat("en-GB").format(posts)} posts imported together on ${shortDay(importedAt)}.`;
+}

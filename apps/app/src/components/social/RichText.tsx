@@ -2,7 +2,7 @@ import { Linking, Platform, Text as Inline } from "react-native";
 import { Link } from "expo-router";
 import { FOCUS_RING } from "@/components/kit/interaction";
 import { Text, type TextVariant } from "@/components/kit/Text";
-import { externalLink } from "@/lib/links";
+import { POST_LINK_REL, externalLink } from "@/lib/links";
 
 /** Links and @handles become real links; everything else is plain text. Bodies are never rendered as markup. */
 const TOKEN = /(https?:\/\/[^\s<>"']+|(?<![A-Za-z0-9_])@[A-Za-z0-9_]{3,20})/g;
@@ -19,20 +19,24 @@ const UNDERLINED = "underline decoration-1 underline-offset-2 web:hover:decorati
 /**
  * A post's words (or a quoted post's, in the body variant), with its links and mentions as real anchors. The pieces are
  * React Native's own Text inside the kit's, so they take its face, size and step and change only their colour.
+ *
+ * 3b Task 7 (design, sections 5.3 and 10.6, decision 21): `mentions` false keeps every @name as plain text, for an
+ * imported post, whose names belong to another platform and must never link to the korbat account that happens to hold
+ * the same handle; and every outside link carries POST_LINK_REL.
  */
-export function RichText({ body, variant = "post" }: { body: string; variant?: TextVariant }) {
+export function RichText({ body, variant = "post", mentions = true }: { body: string; variant?: TextVariant; mentions?: boolean }) {
   const parts = body.split(TOKEN);
   return (
     <Text variant={variant}>
       {parts.map((part, index) => {
         if (/^https?:\/\//.test(part)) {
           return (
-            <Inline key={index} className={`text-accent-ink ${UNDERLINED} ${INLINE}`} {...externalLink(part)} onPress={Platform.OS === "web" ? undefined : () => void Linking.openURL(part)}>
+            <Inline key={index} className={`text-accent-ink ${UNDERLINED} ${INLINE}`} {...externalLink(part, POST_LINK_REL)} onPress={Platform.OS === "web" ? undefined : () => void Linking.openURL(part)}>
               {part}
             </Inline>
           );
         }
-        if (/^@[A-Za-z0-9_]{3,20}$/.test(part)) {
+        if (mentions && /^@[A-Za-z0-9_]{3,20}$/.test(part)) {
           return (
             <Link key={index} href={`/u/${part.slice(1).toLowerCase()}`} asChild>
               <Inline className={`text-accent-ink web:hover:underline ${INLINE}`}>{part}</Inline>

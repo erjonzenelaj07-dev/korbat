@@ -33,6 +33,7 @@ import {
   type ContactCloseRequest,
   type FindingRequest,
   type IdentityRevealRequest,
+  type ImportEndRequest,
   type OrderCorrectRequest,
   type OrderEffectRequest,
   type OrderEventRecordRequest,
@@ -350,6 +351,15 @@ export function createStaffApi(deps: StaffApiDeps) {
     releaseSeal: async (caseId: string, actionId: string, body: SealReleaseRequest, call: Call = {}) => {
       if (!isLowerUuid(actionId)) throw new ApiError(0, "invalid_request");
       return sameCase(caseId, await request("POST", `/api/staff/seals/${actionId}/release`, CaseView, call, body));
+    },
+    /**
+     * 3b (design, sections 8.7 and 10.7): an admin's end of a whole import, with the key's confirmation: the import must
+     * already be the lower-case uuid the step-up confirmed, since it is the action's target. The answer is the case the end
+     * was taken from as it now stands, and it must be the case the body names, the page that asked.
+     */
+    endImport: async (importId: string, body: ImportEndRequest, call: Call = {}) => {
+      if (!isLowerUuid(importId) || !isLowerUuid(body.caseId)) throw new ApiError(0, "invalid_request");
+      return sameCase(body.caseId, await request("POST", `/api/staff/imports/${importId}/end`, CaseView, call, body));
     },
     /** 3d Task 7 (8.6): a page of Held uploads. The cursor is one the API itself handed out, encoded. */
     uploads: (cursor: string | null, call: Call = {}) => request("GET", `/api/staff/uploads${cursor === null ? "" : `?cursor=${encodeURIComponent(cursor)}`}`, UploadsPage, call),

@@ -39,7 +39,7 @@ const html = (element: ReactElement): string => renderToStaticMarkup(element);
 /** Every anchor's opening tag in the markup. */
 const anchors = (markup: string): string[] => markup.match(/<a\b[^>]*>/g) ?? [];
 
-const PAGES: SettingsPage[] = ["appearance", "security", "privacy", "profile", "account", "cases"];
+const PAGES: SettingsPage[] = ["appearance", "security", "privacy", "profile", "account", "import", "cases"]; // 3b Task 7: Import after Account (10.1).
 
 describe("the settings row", () => {
   test("links every settings screen as a real anchor inside a navigation landmark", () => {

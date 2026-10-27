@@ -188,3 +188,53 @@ describe("what no sentence may claim (6.14)", () => {
     for (const state of ["withheld", "removed"] as const) expect(texts(reach(post({ state }), me()))[0]).toContain("korbat's moderators");
   });
 });
+
+// 3b Task 7 appends below: Who sees this for an imported post (3b design, sections 8.4, 10.6 and decision 28).
+import { IMPORT_WORDS, provenanceWords } from "../src/lib/import-words";
+
+describe("an imported post (3b, 10.6)", () => {
+  const LABEL = { source: "x" as const, at: "2019-03-03", shortened: false };
+  const imported = (extra: Partial<PostView> = {}) => post({ imported: LABEL, createdAt: "2026-10-21T10:00:00.000Z", ...extra });
+  const provenance = provenanceWords(LABEL, "2026-10-21T10:00:00.000Z");
+
+  test("someone else's: public, then where imported posts show in place of the feeds, then the provenance paragraph, and how korbat treats reach", () => {
+    for (const reader of [null, me()]) {
+      const found = reach(imported({ author: BEN }), reader);
+      expect(texts(found)).toEqual([W["reach.public"], IMPORT_WORDS["import.reach"], provenance, W["reach.never"]]);
+      expect(found.asksExplore).toBe(false);
+    }
+  });
+
+  test("the reader's own: what a block does, then import.reach in place of the feeds' and Explore's lines; /explore is never asked", () => {
+    const found = reach(imported(), me());
+    expect(texts(found)).toEqual([W["reach.public"], W["reach.blocked"], IMPORT_WORDS["import.reach"], provenance, W["reach.never"]]);
+    expect(found.asksExplore).toBe(false);
+    expect(texts(found)).not.toContain(W["reach.feeds"]);
+    // Even with an Explore answer in hand, no Explore line is added: the status is known.
+    expect(texts(reach(imported(), me(), "listed"))).toEqual(texts(found));
+    // A thread's own reply, imported, is said the same way: imported posts are on no Replies tab either.
+    expect(texts(reach(imported({ replyTo: { id: id(50), authorHandle: "ada" } }), me()))).toEqual(texts(found));
+  });
+
+  test("the provenance line is marked, so the label's press opens the sheet at it; its first sentence is decision 28's fact", () => {
+    const line = reach(imported({ author: BEN }), null).lines.find((entry) => entry.text === provenance)!;
+    expect(line.mark).toBe("provenance");
+    expect(provenance.startsWith("Anyone who searches the words of an imported post may find the original and the account that wrote it.")).toBe(true);
+    expect(provenance).toContain("This account imported it from X on 21 Oct 2026. The archive dates it 3 March 2019 (UTC).");
+  });
+
+  test("the reader's own withheld imported post keeps the private branch, with the provenance before the last line", () => {
+    const found = reach(imported({ state: "withheld" }), me());
+    expect(texts(found)[0]).toBe(W["reach.private"]);
+    expect(texts(found).at(-2)).toBe(provenance);
+  });
+
+  test("no sentence names an account elsewhere: no @handle, no address, nothing but the source's name", () => {
+    for (const found of [reach(imported({ author: BEN }), null), reach(imported(), me()), reach(imported({ state: "removed" }), me())]) {
+      for (const sentence of texts(found)) {
+        expect(sentence).not.toMatch(/@[A-Za-z0-9_]/);
+        expect(sentence).not.toMatch(/https?:|www\./);
+      }
+    }
+  });
+});

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,10 +7,12 @@ import { gzipSync } from "node:zlib";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { THEMES, type ThemeName } from "../../src/theme/tokens";
-import { TITLE_WORDS, UI_WORDS } from "../../src/lib/ui-words";
+import { TITLE_WORDS, UI_WORDS, fill } from "../../src/lib/ui-words";
 import { THEME_FADE } from "../../src/theme/motion";
 import { CASES_WORDS, DECISION_WORDS, STATUS_SHEET_WORDS } from "../../src/lib/moderation-words";
 import { RULES_PAGE } from "../../src/lib/public-pages";
+import { IMPORT_WORDS } from "../../src/lib/import-words";
+import { IMPORT_RULES } from "@korbat/contracts";
 import { appSiteHeadersFromCaddyfile } from "./caddyfile";
 import {
   ADA,
@@ -17,6 +20,15 @@ import {
   DECISION_ID,
   GRACE,
   HIDDEN_IMAGE_POST_ID,
+  ARCHIVE_BYTES,
+  IMPORT_BY_STAFF,
+  IMPORT_DONE,
+  IMPORT_NEW,
+  IMPORT_PUBLISHING,
+  IMPORT_READY,
+  IMPORT_RESUME,
+  IMPORT_SCANNING,
+  IMPORTED_POST_ID,
   MISSING_POST_ID,
   newPostIdOf,
   NOTICE_REF,
@@ -283,6 +295,9 @@ const ROUTES = [
   `/settings/cases/${DECISION_ID}/reply`,
   `/settings/cases/releases/${RELEASE_ID}`,
   `/settings/cases/uploads/${UPLOAD_ID}`,
+  // 3b Task 7: the import's two screens, the start and one import.
+  "/settings/import",
+  `/settings/import/${IMPORT_READY}`,
   "/signin",
   "/code",
   "/password",
@@ -603,9 +618,9 @@ describe("the app in Chromium, under the app site's policy", () => {
     const jsGzip = js.reduce((sum, file) => sum + file.gzip, 0);
     const cssGzip = css.reduce((sum, file) => sum + file.gzip, 0);
     console.log(`budgets: JS ${jsGzip} bytes gzip in ${js.length} file(s), CSS ${cssGzip}`);
-    // The baseline (1222b87) is above 400 KB, so the cap is the baseline plus 80 KB.
-    expect(jsGzip).toBeLessThanOrEqual(baseline.js.gzipBytes + 80 * 1024);
-    expect(baseline.js.gzipBytes + 80 * 1024).toBe(791_297);
+    // The baseline (1222b87) is above 400 KB: the cap was it plus 80 KB, and is plus 120 KB from 3b Task 7 (owner), for imports.
+    expect(jsGzip).toBeLessThanOrEqual(baseline.js.gzipBytes + 120 * 1024);
+    expect(baseline.js.gzipBytes + 120 * 1024).toBe(832_257);
     expect(cssGzip).toBeLessThanOrEqual(40 * 1024);
     const fonts: string[] = [];
     const walk = (dir: string) => {
@@ -2016,7 +2031,7 @@ describe("the app in Chromium, under the app site's policy", () => {
   /** The appearance this browser keeps, as lib/appearance.ts writes it. */
   const STORED = `JSON.parse(localStorage.getItem("korbat.appearance") || "null")`;
 
-  test("35. the nav's Settings opens the Settings index, current there and on every page below; its six rows, Appearance first, and no settings row; signed out the nav's Appearance opens Appearance without the row, and /settings goes to sign-in", async () => {
+  test("35. the nav's Settings opens the Settings index, current there and on every page below; its seven rows, Appearance first, and no settings row; signed out the nav's Appearance opens Appearance without the row, and /settings goes to sign-in", async () => {
     const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
     const page = visit_.page;
     // A client navigation keeps the screen it left mounted, hidden, with a shell of its own: only what is shown counts.
@@ -2035,6 +2050,7 @@ describe("the app in Chromium, under the app site's policy", () => {
         "/settings/privacy",
         "/settings/profile",
         "/settings/account",
+        "/settings/import", // 3b Task 7: Import posts after Account (10.1).
         "/settings/cases",
       ]);
       expect(await page.evaluate(`!!document.querySelector('nav[aria-label="Settings"]')`)).toBe(false);
@@ -2286,6 +2302,364 @@ describe("the app in Chromium, under the app site's policy", () => {
           }
         }
       }
+    }
+  });
+
+  // 3b Task 7 appends below: the import's screens, the provenance label and the Imported tab (3b design, sections 10.8 and 12.4).
+
+  /** One import's screen. */
+  const importAt = (importId: string) => `/settings/import/${importId}`;
+  /** The level-2 headings shown in the main column, in order: a client navigation keeps the screen it left, hidden. */
+  const SHOWN_H2 = `[...document.querySelectorAll('main h2')].filter((h) => h.getClientRects().length > 0).map((h) => h.textContent.trim())`;
+  /** What the page's polite status regions say now, joined. */
+  const STATUSES = `[...document.querySelectorAll('[role="status"]')].map((s) => s.textContent).join(" | ")`;
+  /** How far the page reaches past the window's right edge. */
+  const SIDEWAYS = `document.documentElement.scrollWidth - document.documentElement.clientWidth`;
+  /** The focused element's role, name and words, and the ring drawn for it: its own outline, or its row's for a switch. */
+  const FOCUS_RING_NOW = `(() => {
+    const e = document.activeElement;
+    if (!e || e === document.body) return null;
+    let ring = null;
+    for (let node = e, up = 0; node && up < 4 && !ring; node = node.parentElement, up++) {
+      const s = getComputedStyle(node);
+      if (s.outlineStyle !== "none" && parseFloat(s.outlineWidth) >= 2 && s.outlineColor !== "rgba(0, 0, 0, 0)") ring = parseFloat(s.outlineWidth);
+    }
+    return { role: e.getAttribute("role") || e.tagName.toLowerCase(), name: (e.getAttribute("aria-label") || e.textContent || "").trim(), disabled: e.getAttribute("aria-disabled"), ring };
+  })()`;
+
+  /** A generated archive of `size` bytes, a zip's local header first, every other byte from its place. */
+  function generatedArchive(size: number): Buffer {
+    const bytes = Buffer.alloc(size);
+    for (let i = 0; i < size; i++) bytes[i] = (i * 31 + 7) & 0xff;
+    bytes.set([0x50, 0x4b, 0x03, 0x04], 0);
+    return bytes;
+  }
+
+  /** Chooses a file through the browser's file picker, which Choose your archive opens. */
+  async function chooseFile(page: Page, name: string, buffer: Buffer): Promise<void> {
+    const chooser = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: IMPORT_WORDS["import.choose"] }).click();
+    await (await chooser).setFiles({ name, mimeType: name.endsWith(".zip") ? "application/zip" : "application/gzip", buffer });
+  }
+
+  /** Forgets the picks a step made in the ready import's list, so the next step reads the preview as the fixture gives it. */
+  const forgetPicks = () => fixtures.state.imports.picks.clear();
+
+  /** Opens the preview, chooses a range, brings images, opens See every post, leaves the first post out and ticks the statement. */
+  async function choosePreview(page: Page): Promise<void> {
+    await visit(page, importAt(IMPORT_READY));
+    await page.getByRole("radio", { name: IMPORT_WORDS["import.choose.range"] }).click();
+    await page.getByRole("button", { name: IMPORT_WORDS["import.choose.from"] }).waitFor();
+    // The switch takes no pointer of its own: its row flips it (UI design, section 6.11).
+    await page.getByText(IMPORT_WORDS["import.choose.images"], { exact: true }).click();
+    await page.getByRole("button", { name: IMPORT_WORDS["import.seeAll"] }).click();
+    await page.getByRole("checkbox", { name: IMPORT_WORDS["import.list.leaveOut"] }).first().click();
+    await until(page, `document.querySelectorAll('[role="checkbox"][aria-checked="true"]').length === 1`, "the post left out");
+    await page.getByRole("checkbox", { name: IMPORT_WORDS["import.statement"] }).click();
+    await page.waitForLoadState("networkidle");
+    await pause(300);
+  }
+
+  /** Opens the done import's Remove sheet and waits until it is open and its fade has ended. */
+  async function openRemove(page: Page): Promise<void> {
+    await visit(page, importAt(IMPORT_DONE));
+    await page.getByRole("button", { name: IMPORT_WORDS["import.remove"] }).click();
+    await until(page, `${DIALOG_NAME} === ${JSON.stringify(fill(IMPORT_WORDS["import.remove.ask"], { n: "1,240" }))}`, "the Remove sheet");
+    await pause(500);
+  }
+
+  test("41. the import's screens at 360, 768 and 1280 in Dark: the start with a source chosen, the preview with a range, a post left out and the statement ticked, the progress, the result and the Remove sheet; nothing scrolls sideways, no label is cut, every control 44 px at 360", async () => {
+    for (const [width, height] of [
+      [360, 740],
+      [768, 1024],
+      [1280, 900],
+    ] as const) {
+      const visit_ = await open({ width, height, appearance: { theme: "dark" } });
+      const page = visit_.page;
+      const check = async (name: string, scope = ALL) => {
+        expect(await page.evaluate(SIDEWAYS), `${width} ${name}`).toBeLessThanOrEqual(0);
+        expect(await clippedLabels(page, scope), `${width} ${name}`).toEqual([]);
+        if (width < 768) expect(await phoneProblems(page, scope), `${width} ${name}`).toEqual([]);
+        await screenshot(page, `import-${width}-dark-${name}`);
+      };
+      try {
+        await visit(page, "/settings/import");
+        expect(await page.evaluate("document.title")).toBe(TITLE_WORDS["title.import"]);
+        expect(await page.locator("h1:visible").innerText()).toBe(IMPORT_WORDS["import.title"]);
+        await page.getByRole("radio", { name: IMPORT_WORDS["import.source.mastodon"] }).click();
+        await page.getByText(IMPORT_WORDS["import.never.mastodon"]).waitFor();
+        await check("start");
+        await choosePreview(page);
+        expect(await page.evaluate(SHOWN_H2)).toEqual([IMPORT_WORDS["import.found.title"], IMPORT_WORDS["import.left.title"], IMPORT_WORDS["import.choose.title"], IMPORT_WORDS["import.confirm.title"]]);
+        expect(await page.locator('[role="button"][aria-disabled="true"]').count()).toBe(0);
+        await check("preview");
+        await visit(page, importAt(IMPORT_PUBLISHING));
+        await check("progress");
+        await visit(page, importAt(IMPORT_DONE));
+        await check("result");
+        await openRemove(page);
+        await check("remove-sheet", '[role="dialog"]');
+        await page.keyboard.press("Escape");
+        await page.locator('[role="dialog"]').waitFor({ state: "detached" });
+        await clean(visit_);
+      } finally {
+        forgetPicks();
+        await visit_.context.close();
+      }
+    }
+  });
+
+  for (const [step, theme] of [
+    [42, "light"],
+    [43, "dim"],
+    [44, "dark"],
+  ] as const) {
+    test(`${step}. contrast as drawn in ${theme}: the preview, the Remove sheet and a profile's Imported tab`, async () => {
+      const visit_ = await open({ width: 1280, height: 900, appearance: { theme } });
+      const page = visit_.page;
+      try {
+        await choosePreview(page);
+        expect(await contrast(page, ALL), `${theme} the preview`).toEqual([]);
+        await openRemove(page);
+        expect(await contrast(page, '[role="dialog"]'), `${theme} the Remove sheet`).toEqual([]);
+        await page.keyboard.press("Escape");
+        await visit(page, "/u/grace?tab=imported");
+        await page.getByText("Imported from X, dated 3 Mar 2019").waitFor();
+        expect(await contrast(page, DRAWN), `${theme} the Imported tab`).toEqual([]);
+        await screenshot(page, `import-contrast-${theme}-imported-tab`);
+        await clean(visit_);
+      } finally {
+        forgetPicks();
+        await visit_.context.close();
+      }
+    });
+  }
+
+  test("45. at 320 by 640 with Largest text and the root at 200 percent, the preview and the Remove sheet scroll no sideways and cut no label", async () => {
+    const visit_ = await open({ width: 320, height: 640, appearance: { theme: "light", textStep: "largest" } });
+    const page = visit_.page;
+    try {
+      await choosePreview(page);
+      await page.evaluate(`document.documentElement.style.fontSize = "200%"`);
+      await pause(300);
+      expect(await page.evaluate(SIDEWAYS), "the preview").toBeLessThanOrEqual(0);
+      expect(await clippedLabels(page, ALL), "the preview").toEqual([]);
+      await screenshot(page, "largest-320-import-preview");
+      await openRemove(page);
+      await page.evaluate(`document.documentElement.style.fontSize = "200%"`);
+      await pause(300);
+      expect(await page.evaluate(SIDEWAYS), "the Remove sheet").toBeLessThanOrEqual(0);
+      expect(await clippedLabels(page, '[role="dialog"]'), "the Remove sheet").toEqual([]);
+      await screenshot(page, "largest-320-import-remove");
+      await clean(visit_);
+    } finally {
+      forgetPicks();
+      await visit_.context.close();
+    }
+  });
+
+  test("46. reading: the spinner turns; under the system's reduced motion and korbat's own, the import icon stands still in its place", async () => {
+    for (const [name, options] of MOTION_RUNS) {
+      const visit_ = await open({ width: 1280, height: 900, ...options });
+      const page = visit_.page;
+      try {
+        await visit(page, importAt(IMPORT_SCANNING));
+        await page.getByText(IMPORT_WORDS["import.reading"]).first().waitFor();
+        const still = await page.locator('[data-reading="still"]').count();
+        const spin = await page.locator('[data-reading="spin"]').count();
+        const frames = await sampleFrames(page, `document.querySelector('[data-reading]')`, "transform", 400);
+        if (name === "moves") {
+          expect([still, spin], name).toEqual([0, 1]);
+          expect(transformed(frames), name).toBe(true);
+        } else {
+          expect([still, spin], name).toEqual([1, 0]);
+          expect(transformed(frames), name).toBe(false);
+        }
+        await screenshot(page, `import-reading-${name}`);
+        await clean(visit_);
+      } finally {
+        await visit_.context.close();
+      }
+    }
+  });
+
+  test("47. the preview by keyboard alone: every control in order, each with its ring; Publish is reached while aria-disabled, and Enter on it moves the focus to the statement", async () => {
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "dark" } });
+    const page = visit_.page;
+    try {
+      await visit(page, importAt(IMPORT_READY));
+      await page.locator("main h2").first().focus();
+      type Stop = { role: string; name: string; disabled: string | null; ring: number | null };
+      const stops: Stop[] = [];
+      for (let i = 0; i < 30; i++) {
+        await page.keyboard.press("Tab");
+        const stop = (await page.evaluate(FOCUS_RING_NOW)) as Stop | null;
+        if (stop === null) continue;
+        stops.push(stop);
+        expect(stop.ring, JSON.stringify(stop)).toBeGreaterThanOrEqual(2);
+        if (stop.name.startsWith(IMPORT_WORDS["import.publish"].split(" ")[0]!) && stop.disabled === "true") break;
+      }
+      const names = stops.map((stop) => stop.name);
+      const order = [
+        IMPORT_WORDS["import.seeAll"],
+        IMPORT_WORDS["import.choose.all"],
+        IMPORT_WORDS["import.choose.replies"],
+        IMPORT_WORDS["import.choose.warnings"],
+        IMPORT_WORDS["import.choose.images"],
+        IMPORT_WORDS["import.choose.long.leave"],
+        IMPORT_WORDS["import.rules.link"],
+        IMPORT_WORDS["import.statement"],
+      ];
+      const at = order.map((name) => names.findIndex((found) => found.startsWith(name)));
+      expect(at.every((index) => index >= 0), JSON.stringify(names)).toBe(true);
+      expect([...at].sort((a, b) => a - b)).toEqual(at);
+      const publish = stops.at(-1)!;
+      expect(publish.disabled).toBe("true");
+      expect(publish.name).toBe(fill(IMPORT_WORDS["import.publish"], { n: "60" }));
+      await screenshot(page, "import-keyboard-publish");
+      await page.keyboard.press("Enter");
+      await until(page, `document.activeElement && document.activeElement.getAttribute("role") === "checkbox"`, "the statement focused");
+      expect(((await page.evaluate(FOCUS_RING_NOW)) as Stop).name).toBe(IMPORT_WORDS["import.statement"]);
+      await clean(visit_);
+    } finally {
+      await visit_.context.close();
+    }
+  });
+
+  test("48. a change of state while the screen is open: reading turns ready, its sentence is said politely, and the focus, whose button left with the old view, goes to the new heading", async () => {
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
+    const page = visit_.page;
+    try {
+      await visit(page, importAt(IMPORT_SCANNING));
+      await page.getByRole("button", { name: IMPORT_WORDS["import.cancel"] }).focus();
+      fixtures.state.imports.scanReady = true;
+      // The screen reads the import every 3 s while the page is visible.
+      await until(page, `${SHOWN_H2}[0] === ${JSON.stringify(IMPORT_WORDS["import.found.title"])}`, "the preview", 15_000);
+      await until(page, `document.activeElement && document.activeElement.tagName === "H2"`, "the new heading focused", 3_000);
+      expect(await page.evaluate(`document.activeElement.textContent.trim()`)).toBe(IMPORT_WORDS["import.found.title"]);
+      expect(await page.evaluate(STATUSES)).toContain(IMPORT_WORDS["import.now.ready"]);
+      await screenshot(page, "import-state-change");
+      await clean(visit_);
+    } finally {
+      fixtures.state.imports.scanReady = false;
+      await visit_.context.close();
+    }
+  });
+
+  test("49. the progress bars carry their four values and their value text: publishing, and preparing with its two phases", async () => {
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
+    const page = visit_.page;
+    const BARS = `[...document.querySelectorAll('main [role="progressbar"]')].filter((b) => b.getClientRects().length > 0).map((b) => [b.getAttribute("aria-valuemin"), b.getAttribute("aria-valuemax"), b.getAttribute("aria-valuenow"), b.getAttribute("aria-valuetext")])`;
+    try {
+      await visit(page, importAt(IMPORT_PUBLISHING));
+      expect(await page.evaluate(BARS)).toEqual([["0", "100", "65", fill(IMPORT_WORDS["import.publishing"], { done: "800", total: "1,240" })]]);
+      await visit(page, importAt("00000000-0000-4000-8000-000000000804"));
+      expect(await page.evaluate(BARS)).toEqual([
+        ["0", "100", "28", fill(IMPORT_WORDS["import.preparing"], { done: "340", total: "1,200" })],
+        ["0", "100", "0", fill(IMPORT_WORDS["import.publishing"], { done: "0", total: "1,240" })],
+      ]);
+      await clean(visit_);
+    } finally {
+      await visit_.context.close();
+    }
+  });
+
+  test("50. the Imported tab: ?tab=imported opens it; the label is a 44 px button that opens Who sees this at the provenance; @ada is no link; the post's links are nofollow ugc; at 360 nothing scrolls sideways and no label is cut", async () => {
+    for (const [width, height] of [
+      [360, 740],
+      [1280, 900],
+    ] as const) {
+      const visit_ = await open({ width, height, appearance: { theme: "light" } });
+      const page = visit_.page;
+      try {
+        await visit(page, "/u/grace?tab=imported");
+        const label = page.getByRole("button", { name: "Imported from X, dated 3 March 2019. About imported posts" });
+        await label.waitFor();
+        expect(await page.locator('[role="tab"][aria-selected="true"]:visible').innerText()).toBe(IMPORT_WORDS["import.tab"]);
+        expect(await label.innerText()).toBe("Imported from X, dated 3 Mar 2019");
+        expect(await page.getByText(`Imported from Mastodon, dated 20 Nov 2018${IMPORT_WORDS["import.label.shortened"]}`).count()).toBe(1);
+        const box = (await label.boundingBox())!;
+        expect(box.height).toBeGreaterThanOrEqual(44);
+        expect(await page.locator('[role="article"] a[href="/u/ada"]').count()).toBe(0);
+        expect(await page.locator(`[role="article"] a[href="https://example.org/harbour"]`).getAttribute("rel")).toBe("nofollow ugc noopener noreferrer");
+        expect(await page.evaluate(SIDEWAYS)).toBeLessThanOrEqual(0);
+        expect(await clippedLabels(page, DRAWN)).toEqual([]);
+        if (width < 768) expect(await phoneProblems(page, DRAWN)).toEqual([]);
+        await screenshot(page, `import-tab-${width}`);
+        await label.click();
+        await until(page, `${DIALOG_NAME} === ${JSON.stringify(UI_WORDS["post.whoSees"])}`, "Who sees this");
+        await until(page, `(document.activeElement && document.activeElement.textContent || "").startsWith("Anyone who searches the words of an imported post")`, "the provenance focused");
+        expect(await page.locator('[role="dialog"]').innerText()).toContain(IMPORT_WORDS["import.reach"]);
+        await pause(400);
+        await screenshot(page, `import-provenance-${width}`);
+        await page.keyboard.press("Escape");
+        await page.locator('[role="dialog"]').waitFor({ state: "detached" });
+        expect(await page.evaluate(FOCUSED)).toBe("Imported from X, dated 3 March 2019. About imported posts");
+        // No post of the tab asked for its Explore status: an imported post's is known.
+        expect(fixtures.state.requests.some((request) => request.path.startsWith(`/api/posts/${IMPORTED_POST_ID}/explore`))).toBe(false);
+        await clean(visit_);
+      } finally {
+        await visit_.context.close();
+      }
+    }
+  });
+
+  test("51. the upload: a .tar.gz is refused before anything is sent; 20 MB go in three chunks against the fixture, one refused and sent again, one whose answer is lost and resumed from the import's stored bytes; a stopped upload asks for the same file", async () => {
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
+    const page = visit_.page;
+    const imports = fixtures.state.imports;
+    imports.chunks = [];
+    // The second chunk arrives but its answer is lost, until the app reads the import; the third is refused once (chunk_mismatch).
+    imports.dropUntilRead = new Set([IMPORT_RULES.chunkBytes]);
+    imports.refuseOnce = new Set([2 * IMPORT_RULES.chunkBytes]);
+    // What the API was asked from here on: a retried step starts from its own requests.
+    const from = fixtures.state.requests.length;
+    const bytes = generatedArchive(ARCHIVE_BYTES);
+    try {
+      await visit(page, "/settings/import");
+      await page.getByRole("radio", { name: IMPORT_WORDS["import.source.mastodon"] }).click();
+      await chooseFile(page, "archive.tar.gz", Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00]));
+      await until(page, `[...document.querySelectorAll('[role="alert"]')].some((e) => e.textContent.includes(${JSON.stringify(IMPORT_WORDS["import.tarGz"])}))`, "the .tar.gz sentence");
+      expect(fixtures.state.requests.slice(from).some((request) => request.method === "POST" && request.path === "/api/imports")).toBe(false);
+      await chooseFile(page, "archive.zip", bytes);
+      await page.getByText(fill(IMPORT_WORDS["import.chosen"], { name: "archive.zip", size: "20 MB" })).waitFor();
+      // Each chunk's answer waits, so the bar and its value text can be seen while the archive goes in.
+      fixtures.state.delayMs = 400;
+      await page.getByRole("button", { name: IMPORT_WORDS["import.start"] }).click();
+      await until(page, `location.pathname === ${JSON.stringify(importAt(IMPORT_NEW))}`, "the import's screen");
+      await until(page, `!!document.querySelector('[role="progressbar"][aria-label=${JSON.stringify(IMPORT_WORDS["import.bar.upload"])}][aria-valuetext$="of 20 MB"]')`, "the upload's value text", 20_000);
+      await screenshot(page, "import-uploading");
+      await until(page, `${SHOWN_H2}[0] === ${JSON.stringify(IMPORT_WORDS["import.state.scanning"])}`, "reading the archive", 60_000);
+      fixtures.state.delayMs = 0;
+      // Chromium itself tries a PUT again once when a reused connection closes without an answer: tries lost in a row count once.
+      const tries = imports.chunks.map((chunk) => [chunk.offset, chunk.length, chunk.answer]).filter((chunk, index, all) => !(chunk[2] === 0 && index > 0 && all[index - 1]![2] === 0 && all[index - 1]![0] === chunk[0]));
+      expect(tries).toEqual([
+        [0, IMPORT_RULES.chunkBytes, 200],
+        [IMPORT_RULES.chunkBytes, IMPORT_RULES.chunkBytes, 0],
+        [2 * IMPORT_RULES.chunkBytes, ARCHIVE_BYTES - 2 * IMPORT_RULES.chunkBytes, 400],
+        [2 * IMPORT_RULES.chunkBytes, ARCHIVE_BYTES - 2 * IMPORT_RULES.chunkBytes, 200],
+      ]);
+      // After the lost answer the app read the import before it sent more: a GET between the second and the third PUT.
+      const asked = fixtures.state.requests.slice(from).map((request) => `${request.method} ${request.path}`).filter((line) => line.includes(IMPORT_NEW));
+      const puts = asked.flatMap((line, index) => (line === `PUT /api/imports/${IMPORT_NEW}/archive` ? [index] : []));
+      // The fixture answers no try of the lost chunk until the import is read, so the chunks after it came after a read.
+      expect(asked.slice(puts[1]! + 1, puts.at(-1)!)).toContain(`GET /api/imports/${IMPORT_NEW}`);
+      expect(createHash("sha256").update(imports.archive).digest("hex")).toBe(createHash("sha256").update(bytes).digest("hex"));
+      // The refused chunk and the lost connection are what the fixture did on purpose; nothing else is reported.
+      expect(visit_.watcher.take().filter((line) => !/status of 400|ERR_EMPTY_RESPONSE|ERR_CONNECTION|\/archive/.test(line))).toEqual([]);
+      expect(fixtures.state.problems.splice(0)).toEqual([]);
+      // An upload stopped elsewhere, with no file in hand: where it stopped, and only a file of the same size goes on.
+      await visit(page, importAt(IMPORT_RESUME));
+      await page.getByText(fill(IMPORT_WORDS["import.resume"], { done: "8.4 MB", total: "20 MB" })).waitFor();
+      await chooseFile(page, "other.zip", generatedArchive(1000));
+      await until(page, `[...document.querySelectorAll('[role="alert"]')].some((e) => e.textContent.includes(${JSON.stringify(IMPORT_WORDS["import.wrongFile"])}))`, "the size check");
+      await screenshot(page, "import-resume");
+      await clean(visit_);
+    } finally {
+      fixtures.state.delayMs = 0;
+      imports.dropUntilRead.clear();
+      imports.refuseOnce.clear();
+      await visit_.context.close();
     }
   });
 });

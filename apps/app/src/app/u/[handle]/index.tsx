@@ -16,6 +16,7 @@ import { FollowButton } from "@/components/social/ProfileList";
 import { Button, ErrorText, VerifiedChip } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
 import { useAppearance } from "@/lib/appearance";
+import { IMPORT_WORDS } from "@/lib/import-words";
 import { usePageTitle } from "@/lib/page-title";
 import { useSession } from "@/lib/session";
 import { isSuspendedRefusal } from "@/lib/standing";
@@ -25,9 +26,10 @@ import { UI_WORDS, fill } from "@/lib/ui-words";
 import { cn } from "@/theme/cn";
 import { useLayout } from "@/theme/layout";
 
-type Tab = "posts" | "replies" | "likes";
+type Tab = "posts" | "replies" | "imported" | "likes";
 
-const TAB_LABELS: Record<Tab, string> = { posts: UI_WORDS["profile.tab.posts"], replies: UI_WORDS["profile.tab.replies"], likes: UI_WORDS["profile.tab.likes"] };
+/** 3b (design, section 10.6): Imported after Replies, for every reader of a profile with imported posts. */
+const TAB_LABELS: Record<Tab, string> = { posts: UI_WORDS["profile.tab.posts"], replies: UI_WORDS["profile.tab.replies"], imported: IMPORT_WORDS["import.tab"], likes: UI_WORDS["profile.tab.likes"] };
 
 /** The profile's panel, which its tabs control. */
 const PANEL = "profile-panel";
@@ -90,7 +92,8 @@ function ProfileSkeleton() {
  * place holds the way to their settings; then Posts and Replies, and Likes on the reader's own profile.
  */
 export default function ProfileScreen() {
-  const { handle } = useLocalSearchParams<{ handle: string }>();
+  // 3b: `?tab=imported` opens the Imported tab (10.6), once the profile says it has one.
+  const { handle, tab: asked } = useLocalSearchParams<{ handle: string; tab?: string }>();
   const { state } = useSession();
   const title = usePageTitle("title.profile");
   const wide = useLayout() !== "phone";
@@ -116,7 +119,9 @@ export default function ProfileScreen() {
     social
       .profile(handle)
       .then((p) => {
-        if (!cancelled) setProfile(p);
+        if (cancelled) return;
+        setProfile(p);
+        if (asked === "imported" && p.hasImported) setTab("imported");
       })
       .catch((err: unknown) => {
         if (!cancelled) setError(errorMessage(err));
@@ -124,10 +129,11 @@ export default function ProfileScreen() {
     return () => {
       cancelled = true;
     };
-  }, [handle, state.status]);
+  }, [handle, state.status, asked]);
 
   const fetchPosts = useCallback((cursor?: string) => social.profilePosts(handle, cursor), [handle]);
   const fetchReplies = useCallback((cursor?: string) => social.profileReplies(handle, cursor), [handle]);
+  const fetchImported = useCallback((cursor?: string) => social.profileImported(handle, cursor), [handle]);
   const fetchLikes = useCallback((cursor?: string) => social.myLikes(cursor), []);
 
   async function act(action: () => Promise<void>) {
@@ -170,7 +176,7 @@ export default function ProfileScreen() {
 
   const own = me !== null && profile.id === me.user.id;
   const viewer = profile.viewer;
-  const tabs: Tab[] = own ? ["posts", "replies", "likes"] : ["posts", "replies"];
+  const tabs: Tab[] = [...(["posts", "replies"] as const), ...(profile.hasImported ? (["imported"] as const) : []), ...(own ? (["likes"] as const) : [])];
   const mute = () =>
     void act(async () => {
       const { muted } = await social.setMute(profile.handle, !viewer!.muted);
@@ -253,6 +259,9 @@ export default function ProfileScreen() {
           <TimelineList key="posts" fetchPage={fetchPosts} empty={UI_WORDS["profile.empty.posts"]} header={header} />
         ) : tab === "replies" ? (
           <PostList key="replies" fetchPage={fetchReplies} empty={UI_WORDS["profile.empty.replies"]} header={header} />
+        ) : tab === "imported" ? (
+          // 3b (10.6): the archive's dates, newest first, as the API orders them; empty once the last one was removed meanwhile.
+          <PostList key="imported" fetchPage={fetchImported} empty={IMPORT_WORDS["import.tab.empty"]} header={header} />
         ) : (
           <PostList key="likes" fetchPage={fetchLikes} empty={UI_WORDS["profile.empty.likes"]} header={header} />
         )}

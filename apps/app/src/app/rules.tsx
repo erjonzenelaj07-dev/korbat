@@ -61,6 +61,7 @@ export function RulesView({ facts, limits = null }: { facts: PublicFacts | "load
 
       <Heading level={2}>{RULES_PAGE.automationHeading}</Heading>
       <Paragraph>{RULES_PAGE.autoLead}</Paragraph>
+      <Paragraph>{RULES_PAGE.autoImports}</Paragraph>
       {facts === "loading" ? null : facts === "down" ? (
         <Paragraph>{PAGE_DOWN}</Paragraph>
       ) : (

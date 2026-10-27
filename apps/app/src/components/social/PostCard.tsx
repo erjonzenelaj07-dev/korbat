@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type ReactNode, type Ref } from "re
 import { Platform, Pressable, Text as Inline, View } from "react-native";
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { Link, router } from "expo-router";
-import type { Author, PostView, QuotedPost, Tombstone } from "@korbat/contracts";
+import type { Author, ImportedLabel, PostView, QuotedPost, Tombstone } from "@korbat/contracts";
 import { RefusedNotice } from "@/components/moderation/RefusedNotice";
 import { StatusSheet } from "@/components/moderation/StatusSheet";
 import { toast } from "@/components/toast";
@@ -18,6 +18,7 @@ import { VISUALLY_HIDDEN, VisuallyHidden } from "@/components/kit/VisuallyHidden
 import { errorMessage } from "@/lib/api";
 import { useAppearance } from "@/lib/appearance";
 import { useHaptics } from "@/lib/haptics";
+import { importedLabel, importedShort } from "@/lib/import-words";
 import { chipText } from "@/lib/moderation";
 import { CHIP_WORDS } from "@/lib/moderation-words";
 import { useMotion } from "@/lib/motion";
@@ -32,6 +33,7 @@ import { useLayout } from "@/theme/layout";
 import { ImagePriority, MediaGrid } from "./MediaGrid";
 import { PostMenu } from "./PostMenu";
 import { RichText } from "./RichText";
+import { WhoSeesThis } from "./WhoSeesThis";
 
 /**
  * A link inside a line of text (the author line, the repost line, the reply context): inline, so a phone holds it to
@@ -89,6 +91,31 @@ function RepostLine({ by }: { by: Author }) {
   );
 }
 
+/**
+ * 3b (design, sections 8.4 and 10.6, decision 6): an imported post's provenance label, under the author line: the import
+ * icon and "Imported from X, dated 3 Mar 2019" (", shortened on import" for a shortened post) in meta, ink-medium, made
+ * from the post's own label alone. It is a 44 px button that opens Who sees this at its provenance paragraph, named with
+ * the day written out and what it opens ("... dated 3 March 2019. About imported posts"). The day is the archive's, in UTC.
+ */
+function ImportedLine({ label, onPress }: { label: ImportedLabel; onPress: () => void }) {
+  const words = importedLabel(label);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={words.name}
+      aria-haspopup="dialog"
+      onPress={onPress}
+      {...pressDelay(0)}
+      className={cn("min-h-[44px] flex-row items-center gap-1.5 self-start rounded-control pr-1 web:hover:underline", FOCUS_RING)}
+    >
+      <Icon name="import" size={16} tone="medium" />
+      <Text variant="meta" tone="medium" className="shrink">
+        {words.text}
+      </Text>
+    </Pressable>
+  );
+}
+
 /** A quoted post that is gone: its sentence in the text face's italic, on surface-2 (section 8.3). */
 function TombstoneBox({ tombstone }: { tombstone: Tombstone }) {
   return (
@@ -138,6 +165,12 @@ function QuotePreview({ quote }: { quote: QuotedPost }) {
           {timeAgo(quote.createdAt)}
         </Text>
       </View>
+      {/* 3b (10.6): the short label of a quoted imported post, here as in QuoteEmbed. */}
+      {quote.imported ? (
+        <Text variant="meta" tone="medium">
+          {importedShort(quote.imported.source)}
+        </Text>
+      ) : null}
       {quote.body ? <Text className="mt-0.5">{quote.body}</Text> : null}
       <MediaGrid media={quote.media} compact />
     </View>
@@ -157,6 +190,12 @@ export function QuoteEmbed({ quote, preview = false }: { quote: QuotedPost | Tom
   const content = (
     <>
       <AuthorLine author={quote.author} createdAt={quote.createdAt} postId={quote.id} />
+      {/* 3b (10.6): a quoted imported post shows the label's short form, as text. */}
+      {quote.imported ? (
+        <Text variant="meta" tone="medium">
+          {importedShort(quote.imported.source)}
+        </Text>
+      ) : null}
       {quote.body ? <Text className="mt-0.5">{quote.body}</Text> : null}
       <MediaGrid media={quote.media} compact postId={quote.id} />
     </>
@@ -319,6 +358,8 @@ export function PostCard({
   const [feedback, setFeedback] = useState<Partial<Record<ToggleKind, IconButtonFeedback>>>({});
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [washed, setWashed] = useState(false);
+  // 3b (10.6): Who sees this as the provenance label opens it, mounted while it is open or leaving, as the menus' sheets are.
+  const [provenance, setProvenance] = useState({ mounted: false, open: false });
   useEffect(() => setPost(initial), [initial]);
   const moreRef = useRef<View>(null);
   const keepRef = useRef<View>(null);
@@ -488,6 +529,7 @@ export function PostCard({
         </Link>
         <View className="min-w-0 flex-1">
           <AuthorLine author={post.author} createdAt={post.createdAt} postId={post.id} large={large} open />
+          {post.imported ? <ImportedLine label={post.imported} onPress={() => setProvenance({ mounted: true, open: true })} /> : null}
           {own && (post.state !== "visible" || post.inExplore) ? (
             <View className="flex-row flex-wrap gap-x-2">
               <StateChip post={post} />
@@ -508,7 +550,8 @@ export function PostCard({
           {/* A post may consist of images only, and then there is no text. */}
           {post.body ? (
             <View className="mt-1.5">
-              <RichText body={post.body} variant={large ? "post-large" : "post"} />
+              {/* 3b (5.3, 10.6): an imported post's @names belong to another platform and never link. */}
+              <RichText body={post.body} variant={large ? "post-large" : "post"} mentions={post.imported === null} />
             </View>
           ) : null}
           {phone ? null : media}
@@ -532,6 +575,9 @@ export function PostCard({
         <ErrorText message={error} />
         {refused ? <RefusedNotice standing={state.status === "signed-in" ? state.me.standing : null} /> : null}
       </View>
+      {provenance.mounted ? (
+        <WhoSeesThis post={post} at="provenance" open={provenance.open} onClose={() => setProvenance({ mounted: true, open: false })} onClosed={() => setProvenance({ mounted: false, open: false })} />
+      ) : null}
     </>
   );
 

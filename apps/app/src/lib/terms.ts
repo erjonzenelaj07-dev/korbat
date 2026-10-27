@@ -1,6 +1,7 @@
 import {
   ACCOUNT_MEASURE_SCOPE,
   APPEAL_MONTHS,
+  IMPORT_RULES,
   AUTOMATION_RULES,
   CSAM_NOTICE_MAX_ACCOUNTS,
   DAILY_LIMITS,
@@ -80,6 +81,33 @@ const R4 = (() => {
   if (!rule) throw new Error("the rulebook holds no rule R4");
   return `rule ${rule.id} (${ruleName(rule)})`;
 })();
+
+/** The rule on spam and manipulation, under which a false import statement can lead to removal (3b, 11.3), as a sentence names it. */
+const R6 = (() => {
+  const rule = RULES.find((candidate) => candidate.id === "R6");
+  if (!rule) throw new Error("the rulebook holds no rule R6");
+  return `rule ${rule.id} (${ruleName(rule)})`;
+})();
+
+/**
+ * 3b (design, section 11.3): the one licence korbat takes in what is posted, native or imported, which "What you can
+ * post" grants and "Importing posts" points to. The terms held no licence sentence for native posts before 3b.
+ */
+const LICENCE = "korbat may store, show and send what you post as the service needs, until you delete it, except what the rules' records keep";
+
+/**
+ * 3b (design, sections 11.3 and decision 28): "Importing posts", joining the draft without a new TERMS_VERSION, as the
+ * earlier sub-projects' sentences did; its hours and days are IMPORT_RULES', the same numbers the API and the database hold.
+ */
+const IMPORTING_POSTS = paragraphs(
+  "You can bring your own posts from X or Mastodon, and from Bluesky where korbat has turned it on, by uploading the archive you downloaded from that platform yourself; korbat never asks for your password there and never fetches anything from it. korbat opens only the files of your archive that hold your posts and their images, and of those it keeps only your own public posts: it never opens your messages, contacts, followers, likes and the rest, and posts for followers only or direct messages that share a file with public ones are skipped by who they were addressed to, and never kept or logged.",
+  `The whole archive passes through korbat's server and its network provider on its way in. korbat deletes it as soon as it has been read, and within ${IMPORT_RULES.archiveHours} hours of the start at the latest; what was read from it is deleted when the import is published, stopped or cancelled, and within ${numberWord(IMPORT_RULES.workHours / 24)} days at the latest.`,
+  "Imported posts are korbat posts. They follow korbat's rules like any post and show on your profile's Imported tab, each with a label that names where it came from and the day the archive gives it, and they are in no feed on their own and never in Explore; anyone can still repost or quote them, and anyone who searches their words may find the originals and the account that wrote them.",
+  "On each imported post korbat keeps only the source, the day the archive gives it and a keyed hash that tells it a post you already imported, never the other account: no handle, name, address or link of it.",
+  `Before anything is published you state that they are your own and that they were public where you posted them; korbat does not check who wrote an archive. A false statement can lead to the posts' removal under ${R6} and count against your account. Other people named or pictured in an imported post can ask for its removal, as anyone named in a post can.`,
+  "You grant korbat for imported posts and images the same licence as for any post (What you can post), and you must be able to grant it: old posts often hold other people's photos and screenshots.",
+  "Imported images pass the same checks as uploads, and korbat imports images only while it can check them. One action, Remove imported posts, removes every post of an import again.",
+);
 
 /**
  * What each measure does, beside its label. A measure added to the ledger does not compile until it is explained here.
@@ -276,7 +304,11 @@ export const TERMS_SECTIONS: { title: string; body: string }[] = [
   // The 3c design's sentence (section 9), in place of "removed only when it breaks a published rule", which notices of illegality made false. The rules are named from the rulebook.
   {
     title: "What you can post",
-    body: `You can post opinions, including unpopular ones. korbat restricts content only when it breaks a published rule (${RULES.map(ruleName).join(", ")}), or when it is illegal under EU law or the law of an EU country and someone tells korbat so in a notice. Every decision names the rule or the law and says why, and a final decision that restricts your content can be appealed as the section "Appeals" describes. The one restriction that is not korbat's decision is an authority's order (Authorities' orders).`,
+    body: paragraphs(
+      `You can post opinions, including unpopular ones. korbat restricts content only when it breaks a published rule (${RULES.map(ruleName).join(", ")}), or when it is illegal under EU law or the law of an EU country and someone tells korbat so in a notice. Every decision names the rule or the law and says why, and a final decision that restricts your content can be appealed as the section "Appeals" describes. The one restriction that is not korbat's decision is an authority's order (Authorities' orders).`,
+      // 3b (11.3): the licence for every post and image, written here or imported, which Importing posts points to.
+      `You grant korbat a licence for every post and image you put on it, written here or imported: ${LICENCE}.`,
+    ),
   },
   // The rulebook itself, as @korbat/rules holds it: the grounds on which korbat restricts content (Digital Services Act, Article 14(1)).
   {
@@ -353,6 +385,7 @@ export const TERMS_SECTIONS: { title: string; body: string }[] = [
     title: "Explore",
     body: "Public posts can appear in Explore, ranked by how many other accounts like or repost them; How Explore works gives the rules, and Settings > Privacy keeps your posts out.",
   },
+  { title: "Importing posts", body: IMPORTING_POSTS },
   {
     title: "Your account",
     body: "You are responsible for keeping access to your email address. Turn on two-factor authentication and store your recovery codes; korbat cannot restore an account without them.",
@@ -382,6 +415,8 @@ export const TERMS_SECTIONS: { title: string; body: string }[] = [
       // after a restore, and the periods of RETENTION that concern authorities.
       ...AUTHORITIES_DATA,
       "Your account's export holds the decisions its Cases screens list and your own reports. If you ask for your data at the address under Contact, you receive, within a month, every case about you (cases without action included), the copies korbat keeps, where each case came from (a report by another user, a notice, a moderator) and, where the law requires it after weighing the writer's rights, the words of a report without who wrote it.",
+      // 3b (11.3): the import's record and how long it is kept (6.1, decision 25), by IMPORT_RULES' days.
+      `An import's record (its source, its state, its times, your choice and its counts, never a file name or the other account) is kept while a post of it exists and at least ${IMPORT_RULES.recordDays} days after the import ended, and goes with your account.`,
     ),
   },
 ];

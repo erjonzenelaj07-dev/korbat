@@ -1,5 +1,6 @@
 import type { ExploreStatusKind, MeResponse, PostView } from "@korbat/contracts";
 import { exploreStatusText } from "./explore";
+import { IMPORT_WORDS, provenanceWords } from "./import-words";
 import { chipText } from "./moderation";
 import { CHIP_WORDS } from "./moderation-words";
 import { runningMeasure } from "./standing";
@@ -16,6 +17,8 @@ import { UI_WORDS } from "./ui-words";
 export interface ReachLine {
   text: string;
   link?: { label: string; href: string };
+  /** 3b Task 7: the provenance paragraph of an imported post, which the label's press opens the sheet at (10.6). */
+  mark?: "provenance";
 }
 
 export interface Reach {
@@ -29,10 +32,20 @@ export interface Reach {
 /** Always last: how korbat treats reach, with the way to read how Explore ranks. */
 const NEVER: ReachLine = { text: UI_WORDS["reach.never"], link: { label: UI_WORDS["reach.how"], href: "/explore/about" } };
 
+/**
+ * 3b (design, sections 8.4 and 10.6): an imported post's two lines. import.reach says where imported posts show, in place
+ * of the feeds' line and the Explore line (the status is known: none is asked); the provenance paragraph follows, built
+ * from the post's own label and its publication day, so it can never name the other platform's account.
+ */
+function importedLines(post: PostView): ReachLine[] {
+  if (post.imported === null) return [];
+  return [{ text: IMPORT_WORDS["import.reach"] }, { text: provenanceWords(post.imported, post.createdAt), mark: "provenance" }];
+}
+
 export function reach(post: PostView, me: MeResponse | null, explore?: ExploreStatusKind | null): Reach {
   const own = me !== null && post.author.id === me.user.id;
   const publicLine: ReachLine = { text: UI_WORDS["reach.public"] };
-  if (!own) return { lines: [publicLine, NEVER], summary: UI_WORDS["reach.summary.public"], asksExplore: false };
+  if (!own) return { lines: [publicLine, ...importedLines(post), NEVER], summary: UI_WORDS["reach.summary.public"], asksExplore: false };
 
   if (post.state !== "visible") {
     const decision = post.moderation;
@@ -44,8 +57,15 @@ export function reach(post: PostView, me: MeResponse | null, explore?: ExploreSt
     if (decision?.order) {
       lines.push({ text: UI_WORDS["reach.order"], link: { label: UI_WORDS["reach.decision"], href: `/settings/cases/${decision.decisionId}` } });
     }
+    // 3b: a withheld or removed imported post keeps its provenance, which its label still opens.
+    if (post.imported !== null) lines.push(importedLines(post)[1]!);
     lines.push(NEVER);
     return { lines, summary: UI_WORDS["reach.summary.private"], asksExplore: false };
+  }
+
+  // 3b: the author's own imported post, a thread's reply among them, is on no feed and no Replies tab, and never in Explore.
+  if (post.imported !== null) {
+    return { lines: [publicLine, { text: UI_WORDS["reach.blocked"] }, ...importedLines(post), NEVER], summary: UI_WORDS["reach.summary.public"], asksExplore: false };
   }
 
   if (post.replyTo !== null) {

@@ -1,5 +1,6 @@
 import { EXPLORE_V2, type ExploreFormula, type ExplorePage, type ExploreStatusKind, type TimelineItem } from "@korbat/contracts";
 import { ApiError } from "./api";
+import { IMPORT_WORDS } from "./import-words";
 import type { ExploreAnswer } from "./social";
 
 /**
@@ -241,9 +242,10 @@ export function exploreStatusText(status: ExploreStatusKind, formula: ExploreFor
     case "reply":
     case "quote":
       return null;
-    // 3b (design, section 10.6): for completeness; the author's own imported post's "Who sees this" never asks /explore.
+    // 3b (design, section 10.6): for completeness; the author's own imported post's "Who sees this" never asks /explore,
+    // and the post's page says it without asking (3b Task 7: the words module's import.explore).
     case "imported":
-      return "Not in Explore: imported posts enter no feed on their own.";
+      return IMPORT_WORDS["import.explore"];
     case "not_visible":
       return "Not in Explore: posts under review or removed never appear there.";
     case "suspended":

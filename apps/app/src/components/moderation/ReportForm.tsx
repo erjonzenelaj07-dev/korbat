@@ -3,6 +3,7 @@ import { Pressable, View } from "react-native";
 import { Turnstile, type TurnstileInstance } from "@marsidev/react-turnstile";
 import { NOTICE_LIMITS, REPORT_RULE_IDS, TDB_FORM_CATEGORIES, type AccountStanding, type CsamKeywordChoice, type NoticeResponse, type ReportRuleId } from "@korbat/contracts";
 import { RULES } from "@korbat/rules";
+import { Checkbox } from "@/components/kit/Checkbox";
 import { Icon } from "@/components/kit/Icon";
 import { FOCUS_RING, FOCUS_RING_INSET, HOVER_WASH } from "@/components/kit/interaction";
 import { Text } from "@/components/kit/Text";
@@ -113,17 +114,9 @@ function Choice<T extends string>({ label, entries, value, onChange }: { label: 
   );
 }
 
-/** A statement the person may tick: a checkbox that says whether it is checked; its tick is drawn, not written. */
+/** A statement the person may tick (3b Task 7: on the kit's Checkbox, whose tick is drawn, not written). */
 function Check({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
-  return (
-    <Pressable accessibilityRole="checkbox" aria-checked={checked} onPress={() => onChange(!checked)} className={cn("mt-6 min-h-[44px] flex-row items-start gap-3 rounded-control py-1", FOCUS_RING)}>
-      <View className={cn("mt-0.5 h-5 w-5 items-center justify-center rounded-[5px] border-2", checked ? "border-accent bg-accent" : "border-line-high bg-surface-1")}>
-        {/* The tick: two sides of a box turned 45 degrees, in the colour that reads on the accent. */}
-        {checked ? <View className="-mt-0.5 h-2.5 w-1.5 border-b-2 border-r-2 border-on-accent" style={{ transform: [{ rotate: "45deg" }] }} /> : null}
-      </View>
-      <Text className="flex-1">{label}</Text>
-    </Pressable>
-  );
+  return <Checkbox label={label} checked={checked} onChange={onChange} className="mt-6" />;
 }
 
 const Hint = ({ children }: { children: string }) => (

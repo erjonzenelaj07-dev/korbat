@@ -125,8 +125,8 @@ describe("the key is asked only after the console checked what it is asked to si
     // The revocation of a session, the reveal, the decision and the review are callers of it; none asks the key itself.
     // 3f: and an order's event, an admin's correction of an order, and giving effect to an order (Task 3); Task 6: the
     // audit log's download and a gap closed as not needed; 3d Task 2: the release of a seal for good; 3d Task 7: the end of
-    // a held upload's hold and its release.
-    expect(stepUp.split("confirmWithKey(deps, action,").length - 1).toBe(12);
+    // a held upload's hold and its release; 3b Task 7: an admin's end of a whole import.
+    expect(stepUp.split("confirmWithKey(deps, action,").length - 1).toBe(13);
   });
 
   test("navigator.credentials is called only by the three ceremonies, each of which checks its challenge first", () => {

@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
+import { IMPORT_RULES } from "@korbat/contracts";
 import { appRoute, appSite, appSiteHeadersFromCaddyfile } from "./caddyfile";
 
 /**
@@ -29,6 +30,13 @@ const TYPES: Record<string, string> = {
 /** The largest JSON body the app site lets through to the API (request_body max_size 64KB; Caddy's KB is 1000 bytes). */
 const BODY_LIMIT = 64 * 1000;
 
+/**
+ * 3b Task 7: an import's chunk, which the Caddyfile's @import_chunk lets through at 9MB (decimal megabytes, the contracts'
+ * IMPORT_RULES.chunkBodyBytes), the one body besides an image upload larger than BODY_LIMIT; every other body stays at it.
+ */
+const CHUNK_ROUTE = /^\/api\/imports\/[0-9a-f-]{36}\/archive$/;
+const limitFor = (method: string | undefined, pathname: string): number => (method === "PUT" && CHUNK_ROUTE.test(pathname) ? IMPORT_RULES.chunkBodyBytes : BODY_LIMIT);
+
 /** How long the entry bundle waits when it is held back. */
 export const HOLD_MS = 2000;
 
@@ -45,15 +53,15 @@ export interface AppSiteServer {
   close(): Promise<void>;
 }
 
-function readBody(req: IncomingMessage): Promise<Buffer | null> {
+function readBody(req: IncomingMessage, limit: number): Promise<Buffer | null> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;
-      if (size <= BODY_LIMIT) chunks.push(chunk);
+      if (size <= limit) chunks.push(chunk);
     });
-    req.on("end", () => resolve(size > BODY_LIMIT ? null : Buffer.concat(chunks)));
+    req.on("end", () => resolve(size > limit ? null : Buffer.concat(chunks)));
     req.on("error", reject);
   });
 }
@@ -94,7 +102,7 @@ export async function startAppSite(options: { dist: string; api: ApiHandler; pos
       const url = new URL(req.url ?? "/", "http://localhost");
       const route = appRoute(block, url.pathname);
       if (route.kind === "api") {
-        const body = await readBody(req);
+        const body = await readBody(req, limitFor(req.method, url.pathname));
         if (body === null) {
           res.writeHead(413).end();
           return;

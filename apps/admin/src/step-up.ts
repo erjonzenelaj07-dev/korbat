@@ -8,6 +8,7 @@ import {
   type AuthenticationResponseJSON,
   type CaseDecidedParams,
   type IdentityRevealedParams,
+  type ImportEndedByStaffParams,
   type OrderCorrectFacts,
   type OrderEffectedParams,
   type OrderEventRecordedParams,
@@ -255,4 +256,20 @@ export function recordOrderEventWithKey(deps: { api: StaffApi; credentials: Cred
 export function correctOrderWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, orderId: string, facts: OrderCorrectFacts) {
   const action = orderCorrectAction(orderId, facts);
   return confirmWithKey(deps, action, (stepUp) => deps.api.correctOrder(action.target.id, { facts, stepUp }, { activity: true }));
+}
+
+/**
+ * 3b (design, sections 8.7 and 10.7; decision 30): the action of an admin's end of a whole import: the import as the
+ * target, and as params the case it is ended from, the decision it rests on and that decision's rule, as the case page
+ * shows them. The contracts' schema refuses an id that is not lower case and anything typed, so checkStepUpOptions
+ * compares the options with exactly this before the key is asked.
+ */
+export function importEndAction(importId: string, params: ImportEndedByStaffParams): StaffStepUpOptionsRequest {
+  return StaffStepUpOptionsRequest.parse({ action: "import_ended_by_staff", target: { type: "import", id: importId }, params });
+}
+
+/** "End this import", confirmed by the key. Answers the case it was ended from as it now stands, which the page shows. */
+export function endImportWithKey(deps: { api: StaffApi; credentials: CredentialsLike }, importId: string, params: ImportEndedByStaffParams) {
+  const action = importEndAction(importId, params);
+  return confirmWithKey(deps, action, (stepUp) => deps.api.endImport(action.target.id, { ...params, stepUp }, { activity: true }));
 }

@@ -45,3 +45,26 @@ export function fullDate(iso: string, timeZone?: string): string {
   const at = parts(iso, timeZone, { day: "numeric", month: "short", year: "numeric" });
   return `${at.day} ${at.month} ${at.year}, ${at.hour}:${at.minute}`;
 }
+
+/**
+ * 3b (design, sections 8.4 and 10.6): the archive's day of an imported post, which readers get as a day and never as a
+ * second, printed in UTC whatever the reader's zone: "3 Mar 2019", or written out, "3 March 2019", for a spoken name and
+ * the provenance paragraph. The short month is the long one's first three letters, since en-GB writes September "Sept".
+ */
+export function utcDay(day: string, form: "short" | "long" = "short"): string {
+  const at = new Date(`${day.slice(0, 10)}T12:00:00Z`);
+  const month = new Intl.DateTimeFormat("en-GB", { month: "long", timeZone: "UTC" }).format(at);
+  return `${at.getUTCDate()} ${form === "long" ? month : month.slice(0, 3)} ${at.getUTCFullYear()}`;
+}
+
+/** 3b: the day of an instant in the reader's zone (or `timeZone`), as the short form of utcDay prints one: "21 Oct 2026". */
+export function localDay(iso: string, timeZone?: string): string {
+  const named = Object.fromEntries(new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone }).formatToParts(new Date(iso)).map((part) => [part.type, part.value]));
+  return `${named.day} ${String(named.month).slice(0, 3)} ${named.year}`;
+}
+
+/** 3b (10.4): a month of the archive's month table, YYYY-MM, written out in UTC: "March 2019". */
+export function monthWords(month: string): string {
+  const at = new Date(`${month.slice(0, 7)}-15T12:00:00Z`);
+  return `${new Intl.DateTimeFormat("en-GB", { month: "long", timeZone: "UTC" }).format(at)} ${at.getUTCFullYear()}`;
+}

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Pressable, View } from "react-native";
 import { Link } from "expo-router";
 import type { ExploreStatusKind, MeResponse, PostView } from "@korbat/contracts";
-import { FOCUS_RING } from "@/components/kit/interaction";
+import { FOCUS_RING, dataAttribute } from "@/components/kit/interaction";
 import { Sheet } from "@/components/kit/Sheet";
 import { Text } from "@/components/kit/Text";
 import { reach } from "@/lib/reach";
@@ -21,7 +21,14 @@ export function WhoSeesThisBody({ post, me, explore }: { post: PostView; me: MeR
     <View className="gap-3 px-5 pb-3">
       {found.lines.map((line, index) => (
         <View key={line.text} className="gap-0.5">
-          <Text tone={index === 0 ? "high" : "medium"}>{line.text}</Text>
+          {/* 3b: an imported post's provenance paragraph is where the label's press opens the sheet; it can take the focus. */}
+          {line.mark === "provenance" ? (
+            <Text {...dataAttribute("sheet-focus")} {...({ tabIndex: -1 } as object)} tone="medium" className={cn("rounded-sm", FOCUS_RING)}>
+              {line.text}
+            </Text>
+          ) : (
+            <Text tone={index === 0 ? "high" : "medium"}>{line.text}</Text>
+          )}
           {line.link ? (
             <Link href={line.link.href} asChild>
               <Pressable className={cn("min-h-[44px] justify-center self-start rounded-control", FOCUS_RING)}>
@@ -43,7 +50,7 @@ export function WhoSeesThisBody({ post, me, explore }: { post: PostView; me: MeR
  * post does (2c design, section 8). The answer stays in this component's state, as 2c's rule wants every answer about
  * Explore kept: never stored, never cached.
  */
-export function WhoSeesThis({ post, open, onClose, onClosed }: { post: PostView; open: boolean; onClose: () => void; onClosed?: () => void }) {
+export function WhoSeesThis({ post, open, onClose, onClosed, at }: { post: PostView; open: boolean; onClose: () => void; onClosed?: () => void; at?: "provenance" }) {
   const { state } = useSession();
   const me = state.status === "signed-in" ? state.me : null;
   const asks = reach(post, me).asksExplore;
@@ -67,7 +74,8 @@ export function WhoSeesThis({ post, open, onClose, onClosed }: { post: PostView;
   }, [open, asks, post.id]);
 
   return (
-    <Sheet open={open} onClose={onClose} onClosed={onClosed} title={UI_WORDS["post.whoSees"]}>
+    // 3b Task 7: opened from an imported post's label (`at`), the focus goes to the provenance paragraph (10.6).
+    <Sheet open={open} onClose={onClose} onClosed={onClosed} title={UI_WORDS["post.whoSees"]} initialFocus={at === "provenance" ? "marked" : "title"}>
       <WhoSeesThisBody post={post} me={me} explore={answer?.id === post.id ? answer.status : null} />
     </Sheet>
   );

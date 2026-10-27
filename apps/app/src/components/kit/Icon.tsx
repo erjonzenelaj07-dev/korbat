@@ -17,6 +17,7 @@ import EyeOff from "lucide-react-native/icons/eye-off";
 import Flag from "lucide-react-native/icons/flag";
 import Heart from "lucide-react-native/icons/heart";
 import House from "lucide-react-native/icons/house";
+import Import from "lucide-react-native/icons/import";
 import ImagePlus from "lucide-react-native/icons/image-plus";
 import Info from "lucide-react-native/icons/info";
 import KeyRound from "lucide-react-native/icons/key-round";
@@ -89,6 +90,7 @@ const COMPONENTS: Record<IconName, LucideIcon> = {
   external: ExternalLink,
   info: Info,
   retry: RotateCw,
+  import: Import,
 };
 
 /** Lucide's 24 px drawing has a stroke of 2; korbat draws 1.75, scaled with the icon, and 2.25 when strong. */

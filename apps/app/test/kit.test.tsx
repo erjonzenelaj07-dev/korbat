@@ -734,3 +734,68 @@ describe("radio groups on the keyboard (6.11, UI Task 8)", () => {
     expect(out.match(/tabindex="0"/g) ?? []).toEqual([]);
   });
 });
+
+// 3b Task 7 appends below: the import's three kit parts (3b design, section 10.1).
+import { Checkbox } from "../src/components/kit/Checkbox";
+import { MonthPicker, MonthChoices } from "../src/components/kit/MonthPicker";
+import { ProgressBar } from "../src/components/kit/ProgressBar";
+
+describe("Checkbox (3b, 10.1)", () => {
+  test("a checkbox named by its label, which says whether it is ticked, a 44 px tab stop with the kit's ring", () => {
+    const off = html(<Checkbox label="These are my own posts." checked={false} onChange={noop} />);
+    const box = tagWith(off, 'role="checkbox"');
+    expect(box).toContain('aria-checked="false"');
+    expect(box).toContain('tabindex="0"');
+    expect(textOf(off)).toBe("These are my own posts.");
+    const on = html(<Checkbox label="These are my own posts." checked onChange={noop} />);
+    expect(tagWith(on, 'role="checkbox"')).toContain('aria-checked="true"');
+    const source = kitSource("Checkbox.tsx");
+    expect(source).toContain("min-h-[44px]");
+    expect(source).toContain("FOCUS_RING");
+    // The tick is drawn, never written as a letter.
+    expect(source).toContain("rotate");
+  });
+
+  test("a description under it is tied to it by aria-describedby", () => {
+    const out = html(<Checkbox label="Leave this one out" checked={false} onChange={noop} describedBy="why" />);
+    expect(tagWith(out, 'role="checkbox"')).toContain('aria-describedby="why"');
+  });
+});
+
+describe("ProgressBar (3b, 10.1)", () => {
+  test("the four aria values and a value text; indeterminate, no value", () => {
+    const out = html(<ProgressBar label="Archive uploaded" value={120} max={840} valueText="120 MB of 840 MB" />);
+    const bar = tagWith(out, 'role="progressbar"');
+    for (const part of ['aria-valuemin="0"', 'aria-valuemax="100"', 'aria-valuenow="14"', 'aria-valuetext="120 MB of 840 MB"', 'aria-label="Archive uploaded"']) expect(bar).toContain(part);
+    const empty = tagWith(html(<ProgressBar label="Removing" value={0} max={0} valueText="0 of 0" />), 'role="progressbar"');
+    expect(empty).toContain('aria-valuenow="0"');
+    expect(tagWith(html(<ProgressBar label="Reading" indeterminate />), 'role="progressbar"')).not.toContain("aria-valuenow");
+  });
+
+  test("its fill eases to a new value, and under reduced motion it is a static bar", () => {
+    const source = kitSource("ProgressBar.tsx");
+    expect(source).toContain("motion.reduced");
+    expect(source).not.toMatch(/withSpring/);
+  });
+});
+
+describe("MonthPicker (3b, 10.1)", () => {
+  const MONTHS = ["2019-03", "2019-04", "2021-05"];
+
+  test("a button named by its label and the chosen month, which opens a sheet: no native select", () => {
+    const out = html(<MonthPicker label="From" months={MONTHS} value="2019-04" onChange={noop} />);
+    const button = tagWith(out, 'role="button"');
+    expect(button).toContain('aria-haspopup="dialog"');
+    expect(textOf(out)).toBe("From April 2019");
+    expect(out).not.toContain("<select");
+    expect(kitSource("MonthPicker.tsx")).not.toContain("<select");
+  });
+
+  test("the sheet holds a radio group of the scan's months, one tab stop on the chosen one", () => {
+    const out = html(<MonthChoices labelledBy="from-title" months={MONTHS} value="2019-04" onChange={noop} />);
+    expect(tagWith(out, 'role="radiogroup"')).toContain('aria-labelledby="from-title"');
+    const radios = out.match(/<[a-z]+ [^>]*role="radio"[^>]*>/g) ?? [];
+    expect(radios.map((tag) => /aria-checked="(true|false)"/.exec(tag)?.[1])).toEqual(["false", "true", "false"]);
+    expect(textOf(out)).toBe("March 2019 April 2019 May 2021");
+  });
+});

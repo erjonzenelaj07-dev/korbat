@@ -15,6 +15,7 @@ import { PostCard } from "@/components/social/PostCard";
 import { Button, TextLink } from "@/components/ui";
 import { errorMessage } from "@/lib/api";
 import { EXPLORE_WORDS, exploreStatusText } from "@/lib/explore";
+import { IMPORT_WORDS } from "@/lib/import-words";
 import { insertPosted } from "@/lib/feed-cache";
 import { usePageTitle } from "@/lib/page-title";
 import { useSession } from "@/lib/session";
@@ -43,6 +44,27 @@ function AncestorRow({ item }: { item: PostView | Tombstone }) {
     );
   }
   return <PostCard post={item} joined />;
+}
+
+/**
+ * 3b Task 7 (design, section 10.6): the author's line under their own imported post, which no Explore status needs to be
+ * asked for: imported posts enter no feed on their own. It keeps the line's way to how Explore works.
+ */
+function ImportedExploreLine() {
+  return (
+    <View className="px-4 pb-2">
+      <Text variant="meta" tone="medium">
+        {IMPORT_WORDS["import.explore"]}
+      </Text>
+      <Link href="/explore/about" asChild>
+        <Pressable className={cn(LINE_LINK, "self-start")}>
+          <Text tone="accent" className="underline web:underline-offset-2">
+            {EXPLORE_WORDS.about}
+          </Text>
+        </Pressable>
+      </Link>
+    </View>
+  );
 }
 
 /**
@@ -216,7 +238,9 @@ export default function Thread() {
         <View {...dataAttribute("row", "focused")} className="border-b border-line-low">
           <PostCard post={thread.post} large onDeleted={() => router.replace("/")} onReply={signedIn ? () => replyCard.current?.open() : undefined} />
           {/* Replies and quotes never enter Explore, so they get no line and no request. */}
-          {mine && thread.post.replyTo === null && thread.post.quoteOf === null ? <ExploreStatusLine id={thread.post.id} /> : null}
+          {mine && thread.post.replyTo === null && thread.post.quoteOf === null && thread.post.imported === null ? <ExploreStatusLine id={thread.post.id} /> : null}
+          {/* 3b (10.6): the author's own imported post is never in Explore, which is known without asking /explore. */}
+          {mine && thread.post.imported !== null ? <ImportedExploreLine /> : null}
           {signedIn ? (
             <View className="flex-row justify-end px-4 pb-3">
               <View className="-mt-6">

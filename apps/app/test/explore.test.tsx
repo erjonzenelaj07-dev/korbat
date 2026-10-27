@@ -771,7 +771,7 @@ describe("the author's status line", () => {
 
   test("shows under the author's own top-level post only, never a reply's or a quote's, with links to How Explore works and to the switch", () => {
     const thread = read("app", "post", "[id].tsx");
-    expect(thread).toContain("{mine && thread.post.replyTo === null && thread.post.quoteOf === null ? <ExploreStatusLine id={thread.post.id} /> : null}");
+    expect(thread).toContain("{mine && thread.post.replyTo === null && thread.post.quoteOf === null && thread.post.imported === null ? <ExploreStatusLine id={thread.post.id} /> : null}"); // 3b Task 7: imported posts too.
     expect(thread).toContain(".exploreStatus(id)");
     expect(thread).toContain("exploreStatusText(answer.status)");
     const line = block(thread, "ExploreStatusLine");

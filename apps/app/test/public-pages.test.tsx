@@ -468,3 +468,15 @@ describe("the smoke test looks for the pages' own lead sentences in the bundle (
     expect(smoke).toContain(TRANSPARENCY_PAGE.lead);
   });
 });
+
+// 3b Task 7 appends below: the rules page's Automation section gains one sentence on imported images (3b design, 11.4).
+describe("Automation on imported images (3b, 11.4)", () => {
+  test("one sentence, under the section's lead, whatever the facts say", () => {
+    expect(RULES_PAGE.autoImports).toBe("Imported images pass the same checks as uploaded ones, and korbat imports images only while it can check them.");
+    for (const facts of ["loading", "down", OFF] as const) {
+      const text = textOf(html(<RulesView facts={facts} />));
+      expect(text).toContain(RULES_PAGE.autoImports);
+      expect(text.indexOf(RULES_PAGE.autoImports)).toBeGreaterThan(text.indexOf(RULES_PAGE.autoLead));
+    }
+  });
+});

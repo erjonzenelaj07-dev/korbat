@@ -17,6 +17,7 @@ import EyeOff from "lucide-react/dist/esm/icons/eye-off.mjs";
 import Flag from "lucide-react/dist/esm/icons/flag.mjs";
 import Heart from "lucide-react/dist/esm/icons/heart.mjs";
 import House from "lucide-react/dist/esm/icons/house.mjs";
+import Import from "lucide-react/dist/esm/icons/import.mjs";
 import ImagePlus from "lucide-react/dist/esm/icons/image-plus.mjs";
 import Info from "lucide-react/dist/esm/icons/info.mjs";
 import KeyRound from "lucide-react/dist/esm/icons/key-round.mjs";
@@ -89,6 +90,7 @@ const COMPONENTS: Record<IconName, LucideIcon> = {
   external: ExternalLink,
   info: Info,
   retry: RotateCw,
+  import: Import,
 };
 
 /** Lucide's 24 px drawing has a stroke of 2; korbat draws 1.75, scaled with the icon, and 2.25 when strong. */

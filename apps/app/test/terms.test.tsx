@@ -276,7 +276,7 @@ describe("the terms' sections", () => {
       "Contact point for authorities",
       // 3d (W.9): what korbat publishes.
       "Transparency",
-      "Explore",
+      "Explore", "Importing posts", // 3b (11.3): after Explore, beside which it says where imported posts show; no line moves.
       "Your account",
       "Your data",
     ]);
@@ -303,7 +303,7 @@ describe("the terms' sections", () => {
   test("What you can post says when korbat restricts content: a published rule, each named from the rulebook, or the law and a notice; and that a final restriction can be appealed", () => {
     const names = rules.RULES.map(ruleName).join(", ");
     expect(names).toBe("sexual or pornographic content, child sexual abuse material, targeted hatred or harassment based on protected traits, doxxing, direct threats of violence, spam, scams, impersonation or coordinated manipulation");
-    expect(bodyOf(terms, "What you can post")).toBe(
+    expect(paragraphsOf(terms, "What you can post")[0]).toBe(
       `You can post opinions, including unpopular ones. korbat restricts content only when it breaks a published rule (${names}), or when it is illegal under EU law or the law of an EU country and someone tells korbat so in a notice. Every decision names the rule or the law and says why, and a final decision that restricts your content can be appealed as the section "Appeals" describes. The one restriction that is not korbat's decision is an authority's order (Authorities' orders).`,
     );
     // The sentence 3c's code made false is gone from every section.
@@ -709,7 +709,7 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
     };
     collect([contracts.NOTICE_LIMITS, contracts.DAILY_LIMITS, contracts.RETENTION, contracts.CSAM_NOTICE_MAX_ACCOUNTS, contracts.SUSPECT_EARLIER_MONTHS, contracts.APPEAL_MONTHS, contracts.STANDING_RULES, contracts.REPLY_AIM_HOURS]);
     collect([contracts.ORDER_RULES.reportHoldDays, contracts.ORDER_RULES.preserveMarginDays]);
-    collect([contracts.AUTOMATION_RULES, contracts.RECIPIENT_RULES.saltHours]);
+    collect([contracts.AUTOMATION_RULES, contracts.RECIPIENT_RULES.saltHours, contracts.IMPORT_RULES.recordDays]); // 3b Task 7: the import's record.
     const outside = Object.entries(text)
       .filter(([title]) => title !== "The rules")
       .map(([, body]) => body)
@@ -827,7 +827,7 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
       collect([c.NOTICE_LIMITS, c.DAILY_LIMITS, c.RETENTION, c.CSAM_NOTICE_MAX_ACCOUNTS, c.SUSPECT_EARLIER_MONTHS, c.APPEAL_MONTHS, c.APPEAL_MONTHS + Math.ceil(c.RETENTION.intakeDays / 30), changed.rules.RULES_VERSION]);
       collect([c.STANDING_RULES, c.REPLY_AIM_HOURS, c.STANDING_RULES.ladderStrikes - 1, c.STANDING_RULES.reportWarnShare * 100]);
       collect([c.ORDER_RULES.reportHoldDays, c.ORDER_RULES.preserveMarginDays]);
-      collect([c.AUTOMATION_RULES, c.RECIPIENT_RULES.saltHours]);
+      collect([c.AUTOMATION_RULES, c.RECIPIENT_RULES.saltHours, c.IMPORT_RULES.recordDays]); // 3b Task 7: the import's record.
       const outside = all.replace(/Article [0-9]+ of /g, " ").replace(/Article [0-9]+\([0-9]+\)|Regulation \(EU\) [0-9]+\/[0-9]+/g, " ").replace(/\bR[1-6]\b/g, " ");
       expect((outside.match(/[0-9]+/g) ?? []).filter((digits) => !values.has(digits))).toEqual(["48", "48"]);
     });
@@ -941,6 +941,42 @@ describe("Your data names what the browser keeps (UI design, section 8.8)", () =
     expect(first).toContain("Your browser keeps a random device id so korbat can tell a new device from a known one; it is shared by every account used in that browser and is stored on the server only as a keyed hash.");
     expect(first.indexOf("your appearance choices")).toBeGreaterThan(first.indexOf("a random device id"));
     expect(added.length).toBeGreaterThanOrEqual(8);
+    expect(terms.TERMS_VERSION).toBe("draft-2026-09");
+  });
+});
+
+// 3b Task 7 appends below: the terms' section on imports and the one licence (3b design, section 11.3).
+describe("Importing posts (3b, 11.3)", () => {
+  const R = contracts.IMPORT_RULES;
+  const section = () => bodyOf(terms, "Importing posts");
+
+  test("says what an import reads and never reads, the transit and the deletion by IMPORT_RULES' hours, where imported posts show and what korbat keeps", () => {
+    const text = section();
+    expect(text).toContain("korbat opens only the files of your archive that hold your posts and their images");
+    expect(text).toContain("korbat's server and its network provider");
+    expect(text).toContain(`within ${R.archiveHours} hours of the start`);
+    expect(text).toContain(`within ${numberWord(R.workHours / 24)} days`);
+    expect(text).toContain("Imported tab");
+    expect(text).toContain("in no feed");
+    expect(text).toContain("anyone who searches their words may find the originals");
+    expect(text).toContain("the source, the day the archive gives it and a keyed hash");
+    expect(text).toContain("never the other account");
+    expect(text).toContain("that they are your own and that they were public");
+    expect(text).toContain("rule R6");
+    expect(text).toContain("same checks as uploads");
+    expect(text).toContain("Remove imported posts");
+    expect(text).toContain("named or pictured in an imported post can ask");
+  });
+
+  test("both sections name the one licence: What you can post grants it for every post and image, Importing posts points to it", () => {
+    const licence = "korbat may store, show and send what you post as the service needs, until you delete it, except what the rules' records keep";
+    expect(bodyOf(terms, "What you can post")).toContain(licence);
+    expect(section()).toContain('the same licence as for any post (What you can post)');
+    expect(section()).toContain("you must be able to grant it");
+  });
+
+  test("Your data gains the import's record and how long it is kept, by IMPORT_RULES' days, without a new version", () => {
+    expect(bodyOf(terms, "Your data")).toContain(`at least ${R.recordDays} days after the import ended`);
     expect(terms.TERMS_VERSION).toBe("draft-2026-09");
   });
 });

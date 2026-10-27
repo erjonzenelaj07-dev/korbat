@@ -194,10 +194,16 @@ export function deviceId(): string {
 export const platform: "web" | "ios" | "android" = Platform.OS === "ios" || Platform.OS === "android" ? Platform.OS : "web";
 
 interface RequestOptions<T> {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  /** 3b Task 7: PUT for an import's chunk and pick (3b design, section 9.2). */
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   json?: unknown;
   /** A raw body sent as it is, with its declared type: how an image is uploaded. */
   raw?: { type: string; body: Blob };
+  /**
+   * 3b Task 7: request headers of the caller's own, in lower case, beside the type and the CSRF echo this function sets: an
+   * import's chunk carries Import-Offset and Import-Chunk-Sha256 (3b design, section 7.3).
+   */
+  headers?: Record<string, string>;
   /** Schema for a JSON response body. Omit for 204 responses. */
   schema?: z.ZodType<T>;
 }
@@ -209,7 +215,7 @@ interface RequestOptions<T> {
  */
 export async function apiResponse(path: string, options: Omit<RequestOptions<unknown>, "schema"> = {}): Promise<Response> {
   const method = options.method ?? (options.json === undefined && options.raw === undefined ? "GET" : "POST");
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...options.headers };
   if (options.json !== undefined) headers["content-type"] = "application/json";
   if (options.raw) headers["content-type"] = options.raw.type;
   if (method !== "GET") {

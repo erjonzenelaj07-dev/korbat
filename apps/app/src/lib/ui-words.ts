@@ -363,6 +363,8 @@ export const TITLE_WORDS = {
   "title.settingsPrivacy": "Privacy - Settings - korbat",
   "title.settingsProfile": "Profile - Settings - korbat",
   "title.settingsAccount": "Account - Settings - korbat",
+  /** 3b (design, section 10.9): both import screens, the start and one import, never naming the import or its source. */
+  "title.import": "Import - Settings - korbat",
   /**
    * The sign-in flow and the token pages (8.10). A token page is named korbat alone: its address holds the link's
    * secret and its words say what the link does, so the tab names neither (shell.test.tsx allows this one key).

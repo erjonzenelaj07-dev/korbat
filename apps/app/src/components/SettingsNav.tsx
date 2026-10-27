@@ -1,5 +1,6 @@
 import { Pressable, View } from "react-native";
 import { Link } from "expo-router";
+import { IMPORT_WORDS } from "@/lib/import-words";
 import { CASES_WORDS } from "@/lib/moderation-words";
 import { UI_WORDS } from "@/lib/ui-words";
 import { cn } from "@/theme/cn";
@@ -7,19 +8,21 @@ import type { IconName } from "./icons";
 import { FOCUS_RING, HOVER_WASH } from "./kit/interaction";
 import { Text } from "./kit/Text";
 
-export type SettingsPage = "appearance" | "security" | "privacy" | "profile" | "account" | "cases";
+export type SettingsPage = "appearance" | "security" | "privacy" | "profile" | "account" | "import" | "cases";
 
 /**
  * The settings pages in their order, with their names and icons (UI design, sections 4.7 and 8.8): Appearance first
  * (UI Task 8, the owner's ruling 10), so the page a newcomer looks for comes first, in this row and in the Settings
  * index (app/settings/index.tsx), which lists the same pages as rows.
  */
-export const SETTINGS_PAGES: { page: SettingsPage; label: string; icon: IconName }[] = [
+export const SETTINGS_PAGES: { page: SettingsPage; label: string; icon: IconName; row?: string }[] = [
   { page: "appearance", label: UI_WORDS["appearance.nav"], icon: "appearance" },
   { page: "security", label: UI_WORDS["settings.security"], icon: "security" },
   { page: "privacy", label: UI_WORDS["settings.privacy"], icon: "privacy" },
   { page: "profile", label: UI_WORDS["settings.profile"], icon: "edit-profile" },
   { page: "account", label: UI_WORDS["settings.account"], icon: "account" },
+  // 3b (design, section 10.1): Import after Account in this row, and "Import posts" as the Settings index's row (`row`).
+  { page: "import", label: IMPORT_WORDS["import.nav"], icon: "import", row: IMPORT_WORDS["import.title"] },
   // The decisions about the account and the reports it sent (3c design, section 9); its screens are the folder settings/cases.
   { page: "cases", label: CASES_WORDS.nav, icon: "cases" },
 ];

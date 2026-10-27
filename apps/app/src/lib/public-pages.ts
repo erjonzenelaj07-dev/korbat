@@ -39,6 +39,8 @@ export const RULES_PAGE = {
   measuresHeading: "What korbat can do, and when",
   automationHeading: "Automation",
   autoLead: `korbat's moderators are people. A program may do the few things listed here and nothing else. It never removes anything, never judges text, and never suspends or restricts an account. What a program does to a post lasts only until a person decides; the person a measure concerns is told at once, and can put it before a person with "Ask for a person". An upload that a program does not accept stays not accepted: a person decides what happens to the held file, and nobody at korbat can accept it, since nobody opens it. This list is printed by the running server: it says what is switched on today.`,
+  /** 3b (design, section 11.4): the one sentence the section gains on imported images, under its lead. */
+  autoImports: "Imported images pass the same checks as uploaded ones, and korbat imports images only while it can check them.",
   autoCap: (l: AutomationLimits) =>
     `A program takes at most ${l.decisionsPerHour} measures an hour and ${l.decisionsPerDay} a day under rule R1, and at most ${l.r2DecisionsPerHour} an hour and ${l.r2DecisionsPerDay} a day under rule R2. It takes no new measure under a rule while ${l.unansweredMax} of its measures under that rule wait for a person, and none under either rule while a request for a person has waited longer than ${l.unansweredHours} hours. It refuses at most ${l.refusalsPerHour} uploads an hour. Over a limit it only reports to korbat's staff.`,
   autoTarget: (hours: number) => `When you ask for a person, korbat's target is an answer within ${hours} hours. It is a target that korbat publishes, not a time after which a measure ends.`,

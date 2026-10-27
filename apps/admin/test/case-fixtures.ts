@@ -902,3 +902,27 @@ export function orderCase(overrides: Partial<CaseView> = {}): CaseView {
     ...overrides,
   });
 }
+
+/** 3b Task 7: the import a case's post came from, and a final decision that restricted it under R6. */
+export const IMPORT_ONE = "c7d8e9f0-1a2b-4c3d-8e4f-5a6b7c8d9e0f";
+export const DECISION_FINAL = "d8e9f0a1-2b3c-4d4e-9f50-6b7c8d9e0f1a";
+
+/**
+ * 3b Task 7 (design, sections 8.7 and 10.7): a post's case whose post was imported from X, one of 1,240 posts of its
+ * import, with the interim decision and a final one that restricted it under R6, on which an admin may end the import.
+ */
+export function importedCase(overrides: Partial<CaseView> = {}): CaseView {
+  return postCase({
+    target: {
+      type: "post",
+      id: POST_ID,
+      link: `http://localhost:8081/post/${POST_ID}`,
+      authorHandle: HOSTILE.bidi,
+      state: "removed",
+      level: "removed",
+      imported: { source: "x", at: "2019-03-03", importId: IMPORT_ONE, importSize: 1240, importedAt: "2026-10-21" },
+    },
+    decisions: [decision({ id: DECISION_FINAL, kind: "final", ruleId: "R6", decidedAt: "2026-10-22T09:00:00.000Z", throughSeq: 2 }), decision()],
+    ...overrides,
+  });
+}
