@@ -1,0 +1,22 @@
+FROM node:24.21.0-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS build
+WORKDIR /repo
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
+# pnpm verifies the repository patches named in package.json at every install, hashed into the lockfile.
+COPY patches ./patches
+# pnpm at the version and hash the root package.json names; corepack verifies the download against the hash.
+RUN corepack enable && corepack install
+COPY packages ./packages
+COPY apps/importer ./apps/importer
+RUN pnpm install --frozen-lockfile --filter @korbat/importer...
+RUN pnpm --filter @korbat/importer build
+
+FROM node:24.21.0-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
+ENV NODE_ENV=production
+WORKDIR /app
+# One bundle and nothing else: the importer has no native module and no package at runtime (3b design, 7.1).
+COPY --from=build /repo/apps/importer/dist ./dist
+# The volumes mount here. A new volume takes the owner of the path in the image, so both paths exist and belong to
+# the user the process runs as. import-archives is mounted read-only; the importer writes only import-work.
+RUN mkdir -p /import/archives /import/work && chown node:node /import/archives /import/work
+USER node
+CMD ["node", "dist/index.js"]

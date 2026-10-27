@@ -242,6 +242,49 @@ importers:
         specifier: 4.1.11
         version: 4.1.11(@types/node@24.13.5)(vite@8.3.0(@types/node@24.13.5)(esbuild@0.28.2)(jiti@1.21.7)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.1))
 
+  apps/importer:
+    dependencies:
+      '@ipld/car':
+        specifier: 5.4.7
+        version: 5.4.7
+      '@ipld/dag-cbor':
+        specifier: 10.0.2
+        version: 10.0.2
+      '@korbat/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@korbat/import-protocol':
+        specifier: workspace:*
+        version: link:../../packages/import-protocol
+      cborg:
+        specifier: 6.1.4
+        version: 6.1.4
+      multiformats:
+        specifier: 14.0.5
+        version: 14.0.5
+      pino:
+        specifier: 10.3.1
+        version: 10.3.1
+      stream-json:
+        specifier: 3.7.0
+        version: 3.7.0
+      zod:
+        specifier: 4.6.5
+        version: 4.6.5
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.5
+        version: 24.13.5
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+      typescript:
+        specifier: 7.0.2
+        version: 7.0.2
+      vitest:
+        specifier: 4.1.11
+        version: 4.1.11(@types/node@24.13.5)(vite@8.3.0(@types/node@24.13.5)(esbuild@0.28.2)(jiti@1.21.7)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.1))
+
   apps/worker:
     dependencies:
       '@korbat/contracts':
@@ -1595,6 +1638,13 @@ packages:
   '@ioredis/commands@2.0.0':
     resolution: {integrity: sha512-vrx0AE/T0h7cRZwfo1M39Cr+ZhZrkf0V8mQN75wucKCxCLD9l/VX6no3gFvrLqD1IlG/1LtzWovqEw3t0Vr9zg==}
 
+  '@ipld/car@5.4.7':
+    resolution: {integrity: sha512-fohzeOYlm0vM1kGn48zcyDunamXSJaeM5xt0Fmkp5YJkZzgZyjLbb0DcDK6TDgZWo54btkXNACaXUw2H86Elag==}
+    engines: {node: '>=16.0.0', npm: '>=7.0.0'}
+
+  '@ipld/dag-cbor@10.0.2':
+    resolution: {integrity: sha512-1eCD4YMTlkx5i36oQUmeAojLS/wu+XCd1Gs31BA0afk0TaVkhnyMofIAT/pi0wV3HS3/G7QSN/1NibhiksMyZQ==}
+
   '@isaacs/ttlcache@1.4.1':
     resolution: {integrity: sha512-RQgQ4uQ+pLbqXfOmieB91ejmLwvSgv9nLx6sT6sD83s7umBypgg+OIBOBbEUiJXrfpnp9j0mRhYYdzp9uqq3lA==}
     engines: {node: '>=12'}
@@ -2613,6 +2663,10 @@ packages:
 
   caniuse-lite@1.0.30001810:
     resolution: {integrity: sha512-TITQPUkaz+aVk5GL6NhOdwk1aEaNTSDPsGFWrTuhKGtjTF70jL/Oht2W4c6rXUe5fu7Ie19VIahAXHIIiWWNeg==}
+
+  cborg@6.1.4:
+    resolution: {integrity: sha512-JqjDDfTuED2qUvy570NGQUXqfzC34H++AHJIZnLAmiAdHNqHJKbtzox5yViRz5rc0gM9OPSX7n7Sh+BNU263Xw==}
+    hasBin: true
 
   chai@6.2.2:
     resolution: {integrity: sha512-NUPRluOfOiTKBKvWPtSD4PhFvWCqOi0BGStNWs57X9js7XGTprSmFoz5F0tWhR4WPjNeR9jXqdC7/UpSJTnlRg==}
@@ -3854,6 +3908,9 @@ packages:
   ms@2.1.3:
     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
 
+  multiformats@14.0.5:
+    resolution: {integrity: sha512-vbIm83F2yZ1pWJGS0yl0ysracIvv56LtbrIyiIQHoLdYDJOMoLfVFsXhh9DUH4SFdkdkFhucyWniihsNzVEjkQ==}
+
   multitars@1.0.2:
     resolution: {integrity: sha512-6GwVw5eLi9sThdtlS4PKwC7yRLaf45pYhIEzKBHdKxi+YOXGKFX8acIniH+Uh/+k9mS2lQOupTccjoe5r0/1IQ==}
 
@@ -4544,6 +4601,12 @@ packages:
     resolution: {integrity: sha512-uyQK/mx5QjHun80FLJTfaWE7JtwfRMKBLkMne6udYOmvH0CawotVa7TfgYHzAnpphn4+TweIx1QKMnRIbipmUg==}
     engines: {node: '>= 0.10.0'}
 
+  stream-chain@4.2.6:
+    resolution: {integrity: sha512-1zeJ8CrtJfmiba26ui8jXkq/xLRFvhzkdH02D5QLO9Cnovgeb28IJxg88DdraWnjnkbOol/++uIAybJbJhk7ig==}
+
+  stream-json@3.7.0:
+    resolution: {integrity: sha512-rCSBdcBP/bPk6T8QFcxAj1MSzAuc5i49cYW6IE7sYObNEPccBJIUiL6fU9c9BWt40aJK0siVynLX7lWaW8alXw==}
+
   strict-uri-encode@2.0.0:
     resolution: {integrity: sha512-QwiXZgpRcKkhTj2Scnn++4PKtWsH0kpzZ62L2R6c/LUVYv7hVnZqcg2+sMuT6R7Jusu1vviK/MFsu6kNJfWlEQ==}
     engines: {node: '>=4'}
@@ -4767,6 +4830,9 @@ packages:
   validate-npm-package-name@5.0.1:
     resolution: {integrity: sha512-OljLrQ9SQdOUqTaQxqL5dEfZWrXExyyWsozYlAWFawPVNuD83igl7uJD2RTkNMbniIYgt8l81eCJGIdQF7avLQ==}
     engines: {node: ^14.17.0 || ^16.13.0 || >=18.0.0}
+
+  varint@6.0.0:
+    resolution: {integrity: sha512-cXEIW6cfr15lFv563k4GuVuW/fiwjknytD37jIOLSdSWuOI6WnO/oKwmP2FQTU2l01LP8/M5TSAJpzUaGe3uWg==}
 
   vary@1.1.2:
     resolution: {integrity: sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg==}
@@ -6207,6 +6273,18 @@ snapshots:
 
   '@ioredis/commands@2.0.0': {}
 
+  '@ipld/car@5.4.7':
+    dependencies:
+      '@ipld/dag-cbor': 10.0.2
+      cborg: 6.1.4
+      multiformats: 14.0.5
+      varint: 6.0.0
+
+  '@ipld/dag-cbor@10.0.2':
+    dependencies:
+      cborg: 6.1.4
+      multiformats: 14.0.5
+
   '@isaacs/ttlcache@1.4.1': {}
 
   '@jest/schemas@29.6.3':
@@ -7203,6 +7281,8 @@ snapshots:
   camelcase@6.3.0: {}
 
   caniuse-lite@1.0.30001810: {}
+
+  cborg@6.1.4: {}
 
   chai@6.2.2: {}
 
@@ -8572,6 +8652,8 @@ snapshots:
 
   ms@2.1.3: {}
 
+  multiformats@14.0.5: {}
+
   multitars@1.0.2: {}
 
   mz@2.7.0:
@@ -9301,6 +9383,12 @@ snapshots:
 
   stream-buffers@2.2.0: {}
 
+  stream-chain@4.2.6: {}
+
+  stream-json@3.7.0:
+    dependencies:
+      stream-chain: 4.2.6
+
   strict-uri-encode@2.0.0: {}
 
   string-width@4.2.3:
@@ -9525,6 +9613,8 @@ snapshots:
   uuid@7.0.3: {}
 
   validate-npm-package-name@5.0.1: {}
+
+  varint@6.0.0: {}
 
   vary@1.1.2: {}
 

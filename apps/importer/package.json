@@ -1,0 +1,30 @@
+{
+  "name": "@korbat/importer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p .",
+    "test": "vitest run",
+    "test:lab": "vitest run --config vitest.lab.config.ts --configLoader runner"
+  },
+  "dependencies": {
+    "@ipld/car": "5.4.7",
+    "@ipld/dag-cbor": "10.0.2",
+    "@korbat/contracts": "workspace:*",
+    "@korbat/import-protocol": "workspace:*",
+    "cborg": "6.1.4",
+    "multiformats": "14.0.5",
+    "pino": "10.3.1",
+    "stream-json": "3.7.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.5",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  }
+}
