@@ -64,7 +64,9 @@ const COLUMN_UPDATES: Record<string, string[]> = {
   intakes: ["receipt", "receipt_sent_at"],
   intake_items: ["outcome_mail"],
   decisions: ["author_mail", "author_mail_at"],
-  posts: ["body", "state", "deleted_at", "like_count", "repost_count", "reply_count", "quote_count"],
+  // 3b (0044_imported_posts): the five import columns, which posts_import_guard lets an update only clear, all at once,
+  // with the post's tombstone.
+  posts: ["body", "state", "deleted_at", "like_count", "repost_count", "reply_count", "quote_count", "import_job_id", "import_source", "original_created_at", "import_shortened", "import_key"],
   post_media: ["status", "error", "post_id", "position", "width", "height", "blurhash", "alt_text", "nsfw_score"],
 };
 const READ_ONLY = ["moderation_limits", "seal_posts"];
@@ -165,7 +167,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect(await tablePrivileges("korbat_api", "public.measures_in_force")).toEqual(["SELECT"]);
     });
 
-    test("posts: UPDATE of the seven columns the API writes, never of the moderation level or the erasure time; no DELETE, no TRUNCATE", async () => {
+    test("posts: UPDATE of the twelve columns the API writes (3b added the five import columns), never of the moderation level or the erasure time; no DELETE, no TRUNCATE", async () => {
       expect(await tablePrivileges("korbat_api", "public.posts")).toEqual(["SELECT", "INSERT"]);
       expect((await updatableColumns("korbat_api", "public.posts")).sort()).toEqual([...COLUMN_UPDATES.posts!].sort());
     });
@@ -695,6 +697,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         media_holds_apply: "AFTER INSERT OR UPDATE ON public.media_holds FOR EACH ROW",
         media_holds_insert: "BEFORE INSERT ON public.media_holds FOR EACH ROW",
         post_media_guard: 'BEFORE UPDATE OF post_id, owner_id, alt_text, "position", width, height, blurhash ON public.post_media FOR EACH ROW',
+        // 3b (0044_imported_posts): an imported image is attached only to its own import's post; it is inserted only with a
+        // preparing job of its owner, and a native one names no job. By name, the import's insert check runs first.
+        post_media_import_attach: "BEFORE UPDATE OF post_id ON public.post_media FOR EACH ROW",
+        post_media_import_insert: "BEFORE INSERT ON public.post_media FOR EACH ROW",
         post_media_insert: "BEFORE INSERT ON public.post_media FOR EACH ROW",
         post_media_keep: "BEFORE DELETE ON public.post_media FOR EACH ROW",
         // 3d review M12 (0041_review): an image that stops being sealed weighs its lost files' notices again.
@@ -731,6 +737,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         posts_guard_insert: "BEFORE INSERT ON public.posts FOR EACH ROW",
         // Only a statement that names one of the three columns and changes one meets the guard: a counter's update never does.
         posts_guard_update: expect.stringMatching(/^BEFORE UPDATE OF state, moderation_level, erased_at ON public\.posts FOR EACH ROW WHEN \(.*IS DISTINCT FROM.*IS DISTINCT FROM.*IS DISTINCT FROM.*\)$/),
+        // 3b (0044_imported_posts): only a statement that names one of the five import columns meets the import's guard, so
+        // a counter's update (every like) never does; by name it runs after posts_guard_insert.
+        posts_import_guard: "BEFORE INSERT OR UPDATE OF import_job_id, import_source, original_created_at, import_shortened, import_key ON public.posts FOR EACH ROW",
         // 3d Task 3 (0035_edge_purges): one outbox row for each image of a post whose level or state leaves visible.
         posts_purge: "AFTER UPDATE OF moderation_level, state ON public.posts FOR EACH ROW",
       });

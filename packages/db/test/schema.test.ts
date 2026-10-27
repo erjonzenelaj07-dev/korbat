@@ -46,7 +46,7 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 66 tables in total", () => {
+  test("there are 72 tables in total", () => {
     // 28 before 3c, minus the five retired tables, plus the twelve moderation tables and the four auth tables; then 3e's
     // three: suspension_replies, unfounded_marks and report_tallies; then 3f's first four: contact_messages, alert_outbox,
     // notify_state and notify_folders; then the three of order records: legal_orders, legal_order_items and
@@ -56,8 +56,9 @@ describe("trust and safety schema", () => {
     // release_posts and release_notices; then the edge's outbox (Task 3), edge_purges; then the public figures' two (Task
     // 4), transparency_editions and recipient_months; then the head's (Task 5), head_publications; then the automated
     // decision's two (Task 6), automated_signals and automated_objections; then known material's three (Task 7),
-    // media_hashes, media_matches and upload_refusals.
-    expect(tables.length).toBe(69);
+    // media_hashes, media_matches and upload_refusals; then 3b's three (Task 2, migration 0043_imports): import_jobs,
+    // import_picks and import_keys.
+    expect(tables.length).toBe(72);
   });
 
   test("3d Task 7's known material (section 6.7): the hashes of an image, a match's record and a held upload's refusal, each under its closed lists, with its keys and indexes", () => {
@@ -397,8 +398,10 @@ describe("images 2b", () => {
   });
   test("the database itself refuses a ready image without dimensions and an attached image that is incomplete", () => {
     const cfg = byName.get("post_media")!;
-    expect(cfg.checks.map((c) => c.name).sort()).toEqual(["post_media_alt_len", "post_media_attached_is_complete", "post_media_ready_has_dims"]);
-    expect(cfg.indexes.map((i) => i.config.name).sort()).toEqual(["post_media_owner_created_idx", "post_media_post_position_idx", "post_media_status_created_idx"]);
+    // 3b (Task 2, 0044_imported_posts): an image's import link names a running import only on an imported image.
+    expect(cfg.checks.map((c) => c.name).sort()).toEqual(["post_media_alt_len", "post_media_attached_is_complete", "post_media_import_link", "post_media_ready_has_dims"]);
+    // 3b: the import's images by their job, which the foreign key's set null and the import's own cleanup read.
+    expect(cfg.indexes.map((i) => i.config.name).sort()).toEqual(["post_media_import_job_idx", "post_media_owner_created_idx", "post_media_post_position_idx", "post_media_status_created_idx"]);
     expect(cfg.indexes.find((i) => i.config.name === "post_media_post_position_idx")?.config.unique).toBe(true);
   });
 });
@@ -1671,5 +1674,222 @@ describe("order records 3f", () => {
     expect(sqlOf("decisions_restricted")).toMatch(/ or "decisions"."kind"::text = 'order'$/);
     expect(sqlOf("decisions_ground_law")).toMatch(/ or "decisions"."kind"::text = 'order'$/);
     expect(sqlOf("decisions_informed")).toBe(`"decisions"."informed_at" is not null or "decisions"."author_mail"::text = 'none'`);
+  });
+});
+
+/**
+ * 3b, import from other platforms (design, sections 6.1 to 6.4 and 6.7; Task 2): the three tables of 0043_imports, the
+ * columns of posts and post_media that 0044_imported_posts adds, and the readers' indexes of 0045_import_readers, as the
+ * schema declares them and drizzle writes them. The CHECKs hold the contracts' numbers and lists as literals (this
+ * package does not depend on @korbat/contracts); apps/api's import-schema.test.ts holds the migrated ones equal to them.
+ */
+describe("import from other platforms 3b", () => {
+  const column = (table: string, name: string) => byName.get(table)!.columns.find((c) => c.name === name);
+  /** Name, SQL type and not-null of every column, in order. */
+  const shape = (table: string) => byName.get(table)!.columns.map((c) => [c.name, c.getSQLType(), c.notNull]);
+  const checks = (table: string) => byName.get(table)!.checks.map((c) => c.name).sort();
+  const checkSql = (table: string, name: string) => new PgDialect().sqlToQuery(byName.get(table)!.checks.find((c) => c.name === name)!.value).sql;
+  const policies = (table: string) => byName.get(table)!.policies.map((p) => [p.name, p.for, p.to]);
+  /** Name, columns, unique and predicate of every index, by name. */
+  const indexes = (table: string) =>
+    byName
+      .get(table)!
+      .indexes.map((i) => [i.config.name, i.config.columns.map((c) => (c as { name?: string }).name), i.config.unique ?? false, i.config.where ? new PgDialect().sqlToQuery(i.config.where).sql : null])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  const foreignKeys = (table: string) =>
+    byName
+      .get(table)!
+      .foreignKeys.map((k) => [k.reference().columns.map((c) => c.name).join(","), getTableConfig(k.reference().foreignTable).name, k.onDelete])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  const TABLES = ["import_jobs", "import_picks", "import_keys"];
+
+  test("the three tables are public, with row level security and one allow-all policy for the API role", () => {
+    for (const name of TABLES) {
+      const cfg = byName.get(name);
+      expect(cfg, name).toBeDefined();
+      expect(cfg!.schema, name).toBeUndefined();
+      expect(cfg!.enableRLS, name).toBe(true);
+      expect(policies(name), name).toEqual([[`${name}_api_all`, "all", apiRole]]);
+    }
+  });
+
+  test("the two enums: the three sources, and the twelve states in the order of section 4.1", () => {
+    expect(schema.importSource.enumName).toBe("import_source");
+    expect(schema.importSource.enumValues).toEqual(["x", "mastodon", "bluesky"]);
+    expect(schema.importStatus.enumName).toBe("import_status");
+    expect(schema.importStatus.enumValues).toEqual(["uploading", "scanning", "ready", "preparing", "publishing", "done", "stopped", "undoing", "undone", "failed", "cancelled", "expired"]);
+  });
+
+  test("import_jobs: every column of 6.1 in its order, the counts and cursors at zero, the state uploading by default", () => {
+    expect(shape("import_jobs")).toEqual([
+      ["id", "uuid", true],
+      ["owner_id", "uuid", true],
+      ["source", "import_source", true],
+      ["status", "import_status", true],
+      ["declared_bytes", "bigint", true],
+      ["received_bytes", "bigint", true],
+      ["created_at", "timestamp with time zone", true],
+      ["uploaded_at", "timestamp with time zone", false],
+      ["scanned_at", "timestamp with time zone", false],
+      ["confirmed_at", "timestamp with time zone", false],
+      ["ended_at", "timestamp with time zone", false],
+      ["failure", "text", false],
+      ["stop_reason", "text", false],
+      ["staff_ended_at", "timestamp with time zone", false],
+      ["staff_rule_id", "text", false],
+      ["refused_at_original", "date", false],
+      ["refused_words", "text", false],
+      ["scan", "jsonb", false],
+      ["choice", "jsonb", false],
+      ["stated_at", "timestamp with time zone", false],
+      ["seed", "bytea", false],
+      ["post_cursor", "integer", true],
+      ["image_cursor", "integer", true],
+      ["posts_published", "integer", true],
+      ["images_kept", "integer", true],
+      ["images_left_out", "integer", true],
+      ["posts_removed", "integer", true],
+    ]);
+    // The API makes the id (it names the import's folders): no default. The insert trigger forces the rest.
+    expect(column("import_jobs", "id")?.primary).toBe(true);
+    expect(column("import_jobs", "id")?.hasDefault).toBe(false);
+    expect(column("import_jobs", "status")?.default).toBe("uploading");
+    for (const name of ["received_bytes", "post_cursor", "image_cursor", "posts_published", "images_kept", "images_left_out", "posts_removed"]) {
+      expect(column("import_jobs", name)?.default, name).toBe(0);
+    }
+    // No on delete clause: no profile row is ever deleted.
+    expect(foreignKeys("import_jobs")).toEqual([["owner_id", "profiles", "no action"]]);
+  });
+
+  test("import_jobs: its CHECKs, each list and number of 6.1 and 9.3 written out", () => {
+    expect(checks("import_jobs")).toEqual([
+      "import_jobs_choice",
+      "import_jobs_counts",
+      "import_jobs_declared_bytes",
+      "import_jobs_failed",
+      "import_jobs_failure",
+      "import_jobs_received_bytes",
+      "import_jobs_refused",
+      "import_jobs_refused_words",
+      "import_jobs_scan",
+      "import_jobs_seed",
+      "import_jobs_staff",
+      "import_jobs_stated",
+      "import_jobs_stop_reason",
+      "import_jobs_stopped",
+    ]);
+    expect(checkSql("import_jobs", "import_jobs_declared_bytes")).toBe(`"import_jobs"."declared_bytes" between 1 and 2147483648`);
+    expect(checkSql("import_jobs", "import_jobs_received_bytes")).toBe(`"import_jobs"."received_bytes" between 0 and "import_jobs"."declared_bytes"`);
+    expect(checkSql("import_jobs", "import_jobs_failure")).toBe(
+      `"import_jobs"."failure" in ('not_this_source', 'not_an_archive', 'tar_gz', 'partial_archive', 'encrypted', 'too_many_entries', 'too_large_uncompressed', 'bad_entry_name', 'unreadable', 'nothing_to_import', 'scan_timed_out', 'interrupted')`,
+    );
+    // The state is compared as text, as every enum of 3b is (section 6).
+    expect(checkSql("import_jobs", "import_jobs_failed")).toBe(`("import_jobs"."status"::text = 'failed') = ("import_jobs"."failure" is not null)`);
+    expect(checkSql("import_jobs", "import_jobs_stop_reason")).toBe(`"import_jobs"."stop_reason" in ('refused_image', 'by_author', 'by_staff', 'time_ran_out')`);
+    expect(checkSql("import_jobs", "import_jobs_stopped")).toBe(
+      `("import_jobs"."status"::text <> 'stopped' or "import_jobs"."stop_reason" is not null) and ("import_jobs"."stop_reason" is null or "import_jobs"."status"::text in ('stopped', 'undoing', 'undone'))`,
+    );
+    expect(checkSql("import_jobs", "import_jobs_staff")).toBe(`("import_jobs"."staff_ended_at" is null) = ("import_jobs"."staff_rule_id" is null)`);
+    expect(checkSql("import_jobs", "import_jobs_refused")).toBe(`("import_jobs"."refused_at_original" is null) = ("import_jobs"."refused_words" is null)`);
+    expect(checkSql("import_jobs", "import_jobs_refused_words")).toBe(`char_length("import_jobs"."refused_words") <= 80`);
+    expect(checkSql("import_jobs", "import_jobs_scan")).toBe(`jsonb_typeof("import_jobs"."scan") = 'object' and octet_length("import_jobs"."scan"::text) <= 262144`);
+    expect(checkSql("import_jobs", "import_jobs_choice")).toBe(`jsonb_typeof("import_jobs"."choice") = 'object' and octet_length("import_jobs"."choice"::text) <= 1024`);
+    expect(checkSql("import_jobs", "import_jobs_stated")).toBe(`("import_jobs"."choice" is null) = ("import_jobs"."stated_at" is null)`);
+    expect(checkSql("import_jobs", "import_jobs_seed")).toBe(`octet_length("import_jobs"."seed") = 32`);
+    expect(checkSql("import_jobs", "import_jobs_counts")).toBe(
+      `"import_jobs"."post_cursor" >= 0 and "import_jobs"."image_cursor" >= 0 and "import_jobs"."posts_published" >= 0 and "import_jobs"."images_kept" >= 0 and "import_jobs"."images_left_out" >= 0 and "import_jobs"."posts_removed" >= 0`,
+    );
+  });
+
+  test("import_jobs: one active import an account, import-drive's index and the account's list", () => {
+    expect(indexes("import_jobs")).toEqual([
+      ["import_jobs_one_active", ["owner_id"], true, "status in ('uploading', 'scanning', 'ready', 'preparing', 'publishing')"],
+      ["import_jobs_owner_idx", ["owner_id", "created_at"], false, null],
+      ["import_jobs_status_idx", ["status", "created_at"], false, null],
+    ]);
+  });
+
+  test("import_picks: one pick a line of a job, gone with its job; at most four descriptions in 16,384 bytes", () => {
+    expect(shape("import_picks")).toEqual([
+      ["import_job_id", "uuid", true],
+      ["ref", "integer", true],
+      ["left_out", "boolean", true],
+      ["alts", "jsonb", false],
+    ]);
+    expect(column("import_picks", "left_out")?.default).toBe(false);
+    const keys = byName.get("import_picks")!.primaryKeys;
+    expect(keys.map((k) => k.columns.map((c) => c.name))).toEqual([["import_job_id", "ref"]]);
+    expect(foreignKeys("import_picks")).toEqual([["import_job_id", "import_jobs", "cascade"]]);
+    expect(checks("import_picks")).toEqual(["import_picks_alts"]);
+    expect(checkSql("import_picks", "import_picks_alts")).toBe(
+      `case jsonb_typeof("import_picks"."alts") when 'array' then jsonb_array_length("import_picks"."alts") <= 4 and octet_length("import_picks"."alts"::text) <= 16384 else "import_picks"."alts" is null end`,
+    );
+    expect(indexes("import_picks")).toEqual([]);
+  });
+
+  test("import_keys: one key of 32 bytes an account, never updated, erased with the account", () => {
+    expect(shape("import_keys")).toEqual([
+      ["owner_id", "uuid", true],
+      ["key", "bytea", true],
+      ["created_at", "timestamp with time zone", true],
+    ]);
+    expect(column("import_keys", "owner_id")?.primary).toBe(true);
+    expect(foreignKeys("import_keys")).toEqual([["owner_id", "profiles", "no action"]]);
+    expect(checks("import_keys")).toEqual(["import_keys_key"]);
+    expect(checkSql("import_keys", "import_keys_key")).toBe(`octet_length("import_keys"."key") = 32`);
+  });
+
+  test("posts gain the five import columns, all null or all set, and five indexes: the key, the job, the Imported tab, the native posts and Latest without imports", () => {
+    for (const [name, type] of [
+      ["import_job_id", "uuid"],
+      ["import_source", "import_source"],
+      ["original_created_at", "timestamp with time zone"],
+      ["import_shortened", "boolean"],
+      ["import_key", "bytea"],
+    ] as const) {
+      expect(column("posts", name)?.getSQLType(), name).toBe(type);
+      expect(column("posts", name)?.notNull, name).toBe(false);
+      expect(column("posts", name)?.hasDefault, name).toBe(false);
+    }
+    // The last five columns, after Explore's three.
+    expect(shape("posts").slice(-5).map(([name]) => name)).toEqual(["import_job_id", "import_source", "original_created_at", "import_shortened", "import_key"]);
+    expect(checks("posts")).toEqual(["posts_body_len", "posts_counts_nonnegative", "posts_import_columns"]);
+    expect(checkSql("posts", "posts_import_columns")).toBe(
+      `("posts"."import_job_id" is null) = ("posts"."import_source" is null) and ("posts"."import_job_id" is null) = ("posts"."original_created_at" is null) and ("posts"."import_job_id" is null) = ("posts"."import_shortened" is null) and ("posts"."import_job_id" is null) = ("posts"."import_key" is null)`,
+    );
+    // No on delete clause on the job: a job row cannot go while a post names it.
+    expect(foreignKeys("posts").filter(([columns]) => columns === "import_job_id")).toEqual([["import_job_id", "import_jobs", "no action"]]);
+    const imports = indexes("posts").filter(([name]) => ["posts_import_key_idx", "posts_import_job_idx", "posts_imported_idx", "posts_author_native_idx", "posts_latest_idx"].includes(String(name)));
+    expect(imports).toEqual([
+      ["posts_author_native_idx", ["author_id", "created_at", "id"], false, "import_job_id is null"],
+      ["posts_import_job_idx", ["import_job_id", "id"], false, "import_job_id is not null"],
+      ["posts_import_key_idx", ["author_id", "import_key"], true, "import_key is not null"],
+      ["posts_imported_idx", ["author_id", "original_created_at", "id"], false, "import_job_id is not null and reply_to_id is null"],
+      // Latest leaves imported posts out (6.2): the index is replaced with the clause added to its predicate.
+      ["posts_latest_idx", ["created_at", "id"], false, "reply_to_id is null and state = 'visible' and import_job_id is null"],
+    ]);
+    expect(indexes("posts").map(([name]) => name)).toEqual([
+      "posts_author_created_idx",
+      "posts_author_native_idx",
+      "posts_created_id_idx",
+      "posts_explore_from_idx",
+      "posts_import_job_idx",
+      "posts_import_key_idx",
+      "posts_imported_idx",
+      "posts_latest_idx",
+      "posts_quote_of_idx",
+      "posts_reply_to_created_idx",
+    ]);
+  });
+
+  test("post_media gains imported (false by default) and the running import's id, set null when the job row goes", () => {
+    expect(shape("post_media").slice(-2)).toEqual([
+      ["imported", "boolean", true],
+      ["import_job_id", "uuid", false],
+    ]);
+    expect(column("post_media", "imported")?.default).toBe(false);
+    expect(foreignKeys("post_media").filter(([columns]) => columns === "import_job_id")).toEqual([["import_job_id", "import_jobs", "set null"]]);
+    expect(checkSql("post_media", "post_media_import_link")).toBe(`"post_media"."import_job_id" is null or "post_media"."imported"`);
+    expect(indexes("post_media").filter(([name]) => name === "post_media_import_job_idx")).toEqual([["post_media_import_job_idx", ["import_job_id", "id"], false, "import_job_id is not null"]]);
   });
 });

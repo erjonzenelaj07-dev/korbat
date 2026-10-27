@@ -310,3 +310,31 @@ describe("the enum-literal rule of 3d's automated decisions migration", () => {
     expect(flat(withoutComments(text))).toContain("i.kind::text = 'automated'");
   });
 });
+
+/**
+ * 3b (design, sections 6 and 6.7; Task 2): import from other platforms adds two enums of its own and no value to any enum
+ * that exists, so the rule above has nothing new to hold in its migrations; the 3e, 3f and 3d describes above read them
+ * all the same, from their first files on. This case holds that: from 0043_imports on, no file adds a value with ALTER
+ * TYPE, and import_source and import_status are created whole, each in one CREATE TYPE with every value of the design.
+ */
+describe("3b's migrations: two enums created whole, no value added to an existing one", () => {
+  test("from 0043_imports on, no ALTER TYPE ... ADD VALUE, and import_source and import_status are created with their values", () => {
+    const journal = JSON.parse(readFileSync(path.join(MIGRATIONS, "meta", "_journal.json"), "utf8")) as { entries: { idx: number; tag: string }[] };
+    const first = journal.entries.find((entry) => entry.tag === "0043_imports");
+    expect(first?.idx).toBe(43);
+    const files = journal.entries.filter((entry) => entry.idx >= first!.idx);
+    expect(files.slice(0, 3).map((entry) => entry.tag)).toEqual(["0043_imports", "0044_imported_posts", "0045_import_readers"]);
+    const created: Record<string, string[]> = {};
+    for (const entry of files) {
+      const text = flat(withoutComments(readFileSync(path.join(MIGRATIONS, `${entry.tag}.sql`), "utf8")));
+      expect(text, entry.tag).not.toMatch(/ALTER TYPE [^ ]+ ADD VALUE/i);
+      for (const match of text.matchAll(/CREATE TYPE "public"."([a-z_]+)" AS ENUM ?[(]([^)]*)[)]/g)) {
+        created[match[1]!] = [...match[2]!.matchAll(/'([a-z_]+)'/g)].map((value) => value[1]!);
+      }
+    }
+    expect(created).toEqual({
+      import_source: ["x", "mastodon", "bluesky"],
+      import_status: ["uploading", "scanning", "ready", "preparing", "publishing", "done", "stopped", "undoing", "undone", "failed", "cancelled", "expired"],
+    });
+  });
+});

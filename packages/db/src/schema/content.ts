@@ -1,7 +1,8 @@
 import { sql } from "drizzle-orm";
-import { bigint, check, index, integer, pgEnum, pgTable, primaryKey, real, smallint, text, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
-import { apiRole, fullAccess, ts } from "./helpers";
+import { bigint, boolean, check, index, integer, pgEnum, pgTable, primaryKey, real, smallint, text, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { apiRole, bytea, fullAccess, ts } from "./helpers";
 import { profiles } from "./identity";
+import { importJobs, importSource } from "./imports";
 
 /** 3f (design, section 6.2): `disabled`, a post an authority's order disables, which every reader answers as missing. */
 export const postState = pgEnum("post_state", ["visible", "withheld", "removed", "deleted_by_author", "disabled"]);
@@ -49,6 +50,18 @@ export const posts = pgTable(
     hiddenAt: ts("hidden_at"),
     restoredAt: ts("restored_at"),
     exploreFrom: ts("explore_from"),
+    /**
+     * 3b (design, section 6.2): an imported post's import, source, the date its archive gives it, whether it was cut to
+     * 1,000 characters, and the key of section 5.4 (32 bytes) by which a later import of the account skips it. All five
+     * are set or none is (a native post, or an imported one's tombstone); posts_import_guard (migration 0044) lets an
+     * insert set them only for a publishing import of the author with the same source, and an update only clear them, all
+     * at once, with the post's tombstone. No on delete clause on the job: its row cannot go while a post names it.
+     */
+    importJobId: uuid("import_job_id").references((): AnyPgColumn => importJobs.id),
+    importSource: importSource("import_source"),
+    originalCreatedAt: ts("original_created_at"),
+    importShortened: boolean("import_shortened"),
+    importKey: bytea("import_key"),
   },
   (t) => [
     index("posts_author_created_idx").on(t.authorId, t.createdAt),
@@ -57,11 +70,29 @@ export const posts = pgTable(
     index("posts_created_id_idx").on(t.createdAt, t.id),
     /** A thread's replies in order, and every lookup by parent. */
     index("posts_reply_to_created_idx").on(t.replyToId, t.createdAt, t.id),
-    /** The public Latest timeline: visible top-level posts and quotes, newest first. */
-    index("posts_latest_idx").on(t.createdAt, t.id).where(sql`reply_to_id is null and state = 'visible'`),
+    /**
+     * The public Latest timeline: visible top-level posts and quotes, newest first. 3b (6.2): imported posts are in no
+     * feed, so the predicate leaves them out (migration 0045 drops the index and creates it again).
+     */
+    index("posts_latest_idx").on(t.createdAt, t.id).where(sql`reply_to_id is null and state = 'visible' and import_job_id is null`),
     index("posts_quote_of_idx").on(t.quoteOfId),
+    /** 3b: a post is imported once per account while it exists (decision 24). */
+    uniqueIndex("posts_import_key_idx").on(t.authorId, t.importKey).where(sql`import_key is not null`),
+    /** 3b: an import's posts, for the undo, the foreign key's checks and the job's count. */
+    index("posts_import_job_idx").on(t.importJobId, t.id).where(sql`import_job_id is not null`),
+    /** 3b (0045): the profile's Imported tab, its top-level imported posts by the archive's date. */
+    index("posts_imported_idx").on(t.authorId, t.originalCreatedAt, t.id).where(sql`import_job_id is not null and reply_to_id is null`),
+    /**
+     * 3b (0045): an author's native posts, for Following's own branch and the Posts and Replies tabs, so a followed
+     * account's 50,000 imported posts are never scanned there.
+     */
+    index("posts_author_native_idx").on(t.authorId, t.createdAt, t.id).where(sql`import_job_id is null`),
     check("posts_body_len", sql`char_length(${t.body}) <= 1000`),
     check("posts_counts_nonnegative", sql`${t.likeCount} >= 0 and ${t.repostCount} >= 0 and ${t.replyCount} >= 0 and ${t.quoteCount} >= 0`),
+    check(
+      "posts_import_columns",
+      sql`(${t.importJobId} is null) = (${t.importSource} is null) and (${t.importJobId} is null) = (${t.originalCreatedAt} is null) and (${t.importJobId} is null) = (${t.importShortened} is null) and (${t.importJobId} is null) = (${t.importKey} is null)`,
+    ),
     fullAccess("posts_api_all", apiRole),
   ],
 ).enableRLS();
@@ -147,6 +178,15 @@ export const postMedia = pgTable(
     holdUntil: ts("hold_until"),
     /** Set when an R4 removal of the image became final and its content was erased. */
     erasedAt: ts("erased_at"),
+    /**
+     * 3b (design, section 6.3): the image came from an import, which never changes; and the running import that owns the
+     * upload, so the sweeper leaves it alone and the import cleans it up. post_media_import_insert (migration 0044) takes an
+     * imported row only for a preparing import of its owner and a native one naming no import; the API role holds no
+     * UPDATE of either. The import's row may go first: then its id is set null and the row stays imported, which
+     * post_media_import_attach lets onto no post.
+     */
+    imported: boolean("imported").notNull().default(false),
+    importJobId: uuid("import_job_id").references((): AnyPgColumn => importJobs.id, { onDelete: "set null" }),
   },
   (t) => [
     uniqueIndex("post_media_post_position_idx").on(t.postId, t.position),
@@ -155,6 +195,12 @@ export const postMedia = pgTable(
     check("post_media_ready_has_dims", sql`${t.status} <> 'ready' or (${t.width} is not null and ${t.height} is not null and ${t.blurhash} is not null)`),
     check("post_media_attached_is_complete", sql`${t.postId} is null or (${t.status} = 'ready' and ${t.position} between 0 and 3 and ${t.altText} is not null)`),
     check("post_media_alt_len", sql`char_length(${t.altText}) <= 1000`),
+    check("post_media_import_link", sql`${t.importJobId} is null or ${t.imported}`),
+    /**
+     * 3b: an import's images by their job. The foreign key's set null when a job row goes, and the import's cleanup of its
+     * unattached rows in id order (media.deleteImportLeftovers), would scan post_media without it.
+     */
+    index("post_media_import_job_idx").on(t.importJobId, t.id).where(sql`import_job_id is not null`),
     fullAccess("post_media_api_all", apiRole),
   ],
 ).enableRLS();
