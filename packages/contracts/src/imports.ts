@@ -269,7 +269,10 @@ const scanCounts = {
   images: Count.max(IMPORT_RULES.maxImages),
   skipped: z.partialRecord(z.enum(IMPORT_SKIP_REASONS), Count),
   imagesSkipped: z.partialRecord(z.enum(IMPORT_IMAGE_SKIPS), Count),
-  /** Characters removed by 5.3 step 5, and descriptions that became null. */
+  /**
+   * Posts written whose text lost characters to 5.3 step 5, or one of whose written images' descriptions lost some or
+   * became null: a post, not a character, is counted, once however much it lost (apps/importer/src/core.ts).
+   */
   cleaned: Count,
   /** Posts that begin with a content warning's line (Mastodon), and links to the source platform replaced by words (5.3 step 3b). */
   warnings: Count,

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { ALERT_RULES, ALERT_TEXTS, AUTOMATION_RULES, EDGE_CACHE, EDGE_RULES, HEAD_RULES, ORDER_RULES, RECIPIENT_RULES, REPLY_AIM_HOURS, RETENTION, SIGNAL_RULES, STANDING_RULES, TRANSPARENCY_RULES } from "@korbat/contracts";
+import { ALERT_RULES, ALERT_TEXTS, AUTOMATION_RULES, EDGE_CACHE, EDGE_RULES, HEAD_RULES, IMPORT_RULES, ORDER_RULES, RECIPIENT_RULES, REPLY_AIM_HOURS, RETENTION, SIGNAL_RULES, STANDING_RULES, TRANSPARENCY_RULES } from "@korbat/contracts";
 import { AUTOMATION_WORDS } from "../src/messages";
 import { ERASURE_OVERDUE_RUNBOOK, RELEASE_OVERDUE_RUNBOOK } from "../src/screens/Home";
 
@@ -786,5 +786,129 @@ describe("the README after the review of 3d (Task 9)", () => {
     expect(mark).toBeGreaterThan(-1);
     expect(start).toBeGreaterThan(-1);
     expect(mark).toBeLessThan(start);
+  });
+});
+
+/**
+ * 3b Task 8 (design, section 13): the README's record of import from other platforms. "Importing posts" stands after The
+ * interface and before Before going public, and every number of IMPORT_RULES it prints stands in its sentence with the
+ * constant's value; each import setting is named as infra/.env names it, with the default compose.yml gives it, and
+ * compose's numbers are IMPORT_RULES' own. Upgrading names 3b's migrations above 3f's paragraph (whose digits are 3f's
+ * alone), Backups names the two import volumes beside its two pinned sentences, Counsel's list gains decision 28's points,
+ * and The interface's budget is the baseline of the app's browser check plus 120 KB, with its last step's number.
+ */
+describe("the README's record of importing posts (3b design, section 13, Task 8)", () => {
+  const IMPORTING_HEADING = "## Importing posts";
+  const R = IMPORT_RULES;
+  const GIB = 1024 ** 3;
+  /** A number as the README writes it: with a comma between thousands. */
+  const n = (value: number): string => value.toLocaleString("en-US");
+  const importing = () => sectionLines(IMPORTING_HEADING).join(" ");
+  const repository = (...parts: string[]) => readFileSync(path.resolve(import.meta.dirname, "..", "..", "..", ...parts), "utf8");
+
+  test("Importing posts stands after The interface and before Before going public, and names the design", () => {
+    const lines = readmeLines();
+    const at = ["## The interface", IMPORTING_HEADING, "## Before going public"].map((heading) => lines.indexOf(heading));
+    expect(at[0]).toBeGreaterThan(-1);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    expect(importing()).toContain("`docs/superpowers/specs/2026-10-22-import-3b-design.md`");
+  });
+
+  test("every number of IMPORT_RULES it prints stands in its sentence with the constant's value", () => {
+    const phrases = [
+      `the file's size (at most ${R.maxBytes / GIB} GiB)`,
+      `in chunks of ${R.chunkBytes / 1024 ** 2} MiB, each sent with its SHA-256`,
+      `must finish within ${R.archiveHours} hours of its start`,
+      `posts over ${n(R.shortenTo)} characters`,
+      `a preview not confirmed within ${R.previewHours} hours of the reading expires`,
+      `and at the latest ${R.archiveHours} hours after the import was created`,
+      `and at the latest ${R.workHours} hours after the scan`,
+      `at least ${R.recordDays} days after its end`,
+      `while the importer's heartbeat is more than ${R.heartbeatStaleMs / 1000} seconds old`,
+      `once it is at least ${R.minAccountAgeDays} days old`,
+      `an account younger than ${R.newAccountDays} days publishes at most ${n(R.newAccountMaxPosts)} posts an import`,
+      `${R.importsPerWeek} published imports an account in seven days`,
+      `${R.importsPerAddressDay} imports started from one address in a day`,
+      `at most ${n(R.maxPosts)} posts and ${n(R.maxImages)} images kept an import`,
+      `at most ${R.imagesInFlight} at a time`,
+      `the ${R.scanWriteBytes / GIB} GiB its scan may write`,
+    ];
+    const text = importing();
+    for (const phrase of phrases) expect(text, phrase).toContain(phrase);
+  });
+
+  test("each import setting of compose's api service is named as infra/.env names it, with compose's default, and compose's numbers are IMPORT_RULES'", () => {
+    const defaults = Object.fromEntries([...repository("infra", "compose.yml").matchAll(/[$][{](API_IMPORT[A-Z_]*):-([^}]*)[}]/g)].map((match) => [match[1]!, match[2]!]));
+    expect(Object.keys(defaults).sort()).toEqual(["API_IMPORTS", "API_IMPORT_IMAGES", "API_IMPORT_IMAGES_PER_HOUR", "API_IMPORT_MAX_ACTIVE", "API_IMPORT_MIN_FREE_BYTES", "API_IMPORT_SOURCES"]);
+    const lines = sectionLines(IMPORTING_HEADING);
+    for (const [name, value] of Object.entries(defaults)) {
+      expect(lines.filter((line) => line.startsWith(`- ${CODE_MARK}${name}${CODE_MARK} (default ${CODE_MARK}${value}${CODE_MARK}`)), name).toHaveLength(1);
+    }
+    expect([defaults.API_IMPORT_MAX_ACTIVE, defaults.API_IMPORT_IMAGES_PER_HOUR, defaults.API_IMPORT_MIN_FREE_BYTES]).toEqual([R.maxActiveDefault, R.imagesPerHourDefault, R.minFreeBytesDefault].map(String));
+    expect(importing()).toContain(`from 0 to ${R.imagesPerHourMax}, so it can only be lowered`);
+    expect(importing()).toContain(`${CODE_MARK}MEDIA_MATCH${CODE_MARK} keeps its own name`);
+    // A setting is never written without its prefix: the operator would not find it in infra/.env.
+    expect(importing()).not.toMatch(/`IMPORT[A-Z_]*`/);
+  });
+
+  test("it says why images stay off, what turning Bluesky on accepts, what the import key still allows, the screens, the console's end and the labs", () => {
+    const text = importing();
+    for (const words of [
+      "stops the API at its start while `MEDIA_MATCH` is `off`, in every environment",
+      "so no build imports images today",
+      "a Bluesky archive proves nothing about who uploads it",
+      "Bluesky imports are text only",
+      "whoever holds the database or a backup of it",
+      "Import posts in Settings",
+      "`/settings/import`",
+      "resumes from the bytes the server holds",
+      "**The profile's Imported tab.**",
+      "the audit action `import_ended_by_staff`",
+      "an open gap of the class `restriction`",
+      "?gap=",
+      "pnpm --filter @korbat/importer test:lab",
+      "test/lab/imports-intake.lab.ts",
+      "about 25 minutes at half a processor",
+    ]) {
+      expect(text, words).toContain(words);
+    }
+    expect(text).not.toContain("APP_SITE=");
+  });
+
+  test("Upgrading names 3b's migrations, the slow one and the importer above 3f's paragraph", () => {
+    const upgrading = sectionLines("## Upgrading");
+    const orders = upgrading.findIndex((line) => line.startsWith("Authorities' orders and the alert channel (sub-project 3f)"));
+    const ours = upgrading.findIndex((line) => line.startsWith("Import from other platforms (sub-project 3b)"));
+    expect(ours).toBeGreaterThan(-1);
+    expect(ours).toBeLessThan(orders);
+    const paragraph = upgrading[ours]!;
+    for (const words of ["the migrations 0043 to 0048", "`0045_import_readers` is the slow one", "`posts_latest_idx`", "the service `importer`", "`import-archives`", "`import-work`", "No setting is needed"]) {
+      expect(paragraph, words).toContain(words);
+    }
+  });
+
+  test("Backups names the two import volumes as never backed up, and keeps its two sentences", () => {
+    const text = sectionLines("## Backups").join(" ");
+    expect(text).toContain("`import-archives` and `import-work` are never backed up");
+    expect(text).toContain(`is deleted ${RETENTION.backupDays} days after it was taken`);
+    expect(text).toContain("`media-quarantine` is never backed up");
+  });
+
+  test("Counsel's list gains decision 28's points from importing posts, in its order, with the licence", () => {
+    const counsel = sectionLines("## Before going public").find((line) => line.startsWith("Counsel's list,")) ?? "";
+    const from = counsel.indexOf("From importing posts:");
+    expect(from).toBeGreaterThan(counsel.indexOf("From transparency and automation:"));
+    const points = counsel.slice(from);
+    const decisions = [...points.matchAll(/[(]decisions? ([0-9]+(?:(?:, | and )[0-9]+)*)[)]/g)].flatMap((match) => match[1]!.split(/, | and /).map(Number));
+    expect(decisions).toEqual([4, 14, 16, 15, 18, 25, 28]);
+    for (const words of ["impact assessment", "the licence", "section 11.3", "`docs/superpowers/specs/2026-10-22-import-3b-design.md`"]) expect(points, words).toContain(words);
+  });
+
+  test("The interface's JavaScript cap is the browser check's baseline plus 120 KB, and its steps run to the last numbered one", () => {
+    const baseline = JSON.parse(repository("apps", "app", "test", "browser", "baseline.json")) as { commit: string; js: { gzipBytes: number } };
+    const text = sectionLines("## The interface").join(" ");
+    expect(text).toContain(`JavaScript at most ${n(baseline.js.gzipBytes + 120 * 1024)} bytes gzip, which is the export of ${baseline.commit} (${n(baseline.js.gzipBytes)} bytes`);
+    const steps = Math.max(...[...repository("apps", "app", "test", "browser", "app.browser.ts").matchAll(/test[(]"([0-9]+)[.] /g)].map((match) => Number(match[1])));
+    expect(text).toContain(`(${steps} steps,`);
   });
 });

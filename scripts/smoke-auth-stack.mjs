@@ -27,9 +27,9 @@
  * 14. A second throwaway account (the first one's session is gone by now, and a deleted account could not
  *     be granted a role) edits its bio, changes its handle, reports the first account's post under a rule
  *     (its own list of reports shows the report undecided, and no decision is about it), downloads its
- *     export as a ZIP whose export.json ends with the moderation member holding that report, posts, and
- *     deletes itself with a code read from Mailpit and its handle typed; afterwards its profile is not
- *     found, its session is gone, and its post has left the Latest timeline.
+ *     export as a ZIP whose export.json ends with the moderation member holding that report and, since 3b, the
+ *     account's imports (none), posts, and deletes itself with a code read from Mailpit and its handle typed;
+ *     afterwards its profile is not found, its session is gone, and its post has left the Latest timeline.
  * 15. Signed out, a notice that the first account's post is illegal is taken through the app's site with the
  *     human check: it answers a reference and a token. The status page opens with that token and shows the
  *     post's link, undecided, and the contact as given; another token finds no notice. The receipt arrives in
@@ -56,13 +56,18 @@
  *     page; the first font file the entry bundle names (a hashed /assets/__node_modules/@fontsource-variable/... woff2)
  *     answers 200 with public, max-age=31536000, immutable; and a post's page answers 200 while the post is public and
  *     404 for a post that does not exist (step 17 checks the rest of the post's page).
- * 21. 3b Task 4: an import, before the grant-role step while the first account's session works: the account aged past
- *     seven days through psql in the postgres container, a Mastodon archive built here with fflate's zipSync (four public
- *     posts, a followers-only one and a boost beside a 9 MiB file korbat never opens), created and sent in chunks of 8 MiB
- *     with their SHA-256 through Caddy, the real importer's scan read by import-drive until the import is ready with its
- *     counts and its three samples, the archive gone once read; the importer healthy with only a loopback interface and
- *     512 MiB; then the import cancelled. The stack needs the archive's size, 4 GiB and IMPORT_MIN_FREE_BYTES free on
- *     Docker's disk.
+ * 21. 3b Tasks 4 and 8: the whole import, before the grant-role step while the first account's session works: the account
+ *     aged past seven days through psql in the postgres container, a Mastodon archive built here with fflate's zipSync
+ *     (four public posts, a followers-only one and a boost beside a 9 MiB file korbat never opens), created and sent in
+ *     chunks of 8 MiB with their SHA-256 through Caddy, the real importer's scan read by import-drive until the import is
+ *     ready with its counts and its three samples, the archive gone once read; the importer healthy with only a loopback
+ *     interface and 512 MiB. Then confirmed (POST /api/imports/:id/confirm) with every choice off or open, long posts left
+ *     out and the statement; images are off in the stack, so it publishes at once, and import-drive's rounds every five
+ *     seconds publish the four posts until it is done. The profile's Imported tab (GET /api/profiles/<handle>/imported)
+ *     holds them, newest first by the archive's day, each labelled as imported from Mastodon with its day; the profile
+ *     shows the tab (hasImported) and counts four more posts, and Latest holds none of them. Last, Remove imported posts
+ *     (POST /api/imports/:id/undo) runs until the import is undone: the tab is empty, the profile no longer shows it and
+ *     counts as before. The stack needs the archive's size, 4 GiB and IMPORT_MIN_FREE_BYTES free on Docker's disk.
  *
  * Runs only against a local Docker context. Needs API_TURNSTILE_SECRET_KEY set to Cloudflare's always-pass test secret and API_SMTP_URL pointing
  * at Mailpit, and API_CONSOLE_ORIGIN naming the --console address. Makes its images with the sharp the worker uses.
@@ -70,8 +75,9 @@
  *
  * Every run leaves its first account, by then a moderator, and one open case on that account's post, in the lane
  * that is read last, with a report and a notice that no run can decide. One network may run it five times an hour
- * and twenty times a day: its two sign-ups count against the hourly sign-up limit, and its signed-out notice
- * against the limits of reports sent without an account.
+ * and five times a day: its two sign-ups count against the hourly sign-up limit, its signed-out notice against the
+ * limits of reports sent without an account, and its import against the five imports started from one address in a
+ * day (3b's import-address-day).
  *
  * Usage, from the repo root:
  *   node scripts/smoke-auth-stack.mjs --base http://localhost:8080 --console http://localhost:8090 \
@@ -563,9 +569,10 @@ async function signedInReport(postId, token) {
 }
 
 /**
- * The export's moderation member (3c design, section 7.11), read from the archive itself: export.json's last member,
- * with no decision about this account and the one report it sent, under its reference and its ground, its item
- * undecided.
+ * The export's moderation member (3c design, section 7.11), read from the archive itself: export.json's member before
+ * the last, with no decision about this account and the one report it sent, under its reference and its ground, its item
+ * undecided. Since 3b Task 6 the last member is `imports` (3b design, section 11.2), empty for this account, which
+ * imported nothing.
  */
 function exportedModeration(archive, reportRef, postId) {
   let document = null;
@@ -575,8 +582,9 @@ function exportedModeration(archive, reportRef, postId) {
     document = null;
   }
   const moderation = document?.moderation;
-  const last = document === null ? "export.json could not be read" : `last member ${Object.keys(document).at(-1)}`;
-  if (!check("export.json ends with the moderation member: its decisions and its reports", document !== null && Object.keys(document).at(-1) === "moderation" && Array.isArray(moderation?.decisions) && Array.isArray(moderation?.reports), last)) return;
+  const last = document === null ? "export.json could not be read" : `last members ${Object.keys(document).slice(-2).join(", ")}`;
+  const ends = document !== null && isDeepStrictEqual(Object.keys(document).slice(-2), ["moderation", "imports"]) && isDeepStrictEqual(document.imports, []);
+  if (!check("export.json ends with the moderation member, its decisions and its reports, then the account's imports, none", ends && Array.isArray(moderation?.decisions) && Array.isArray(moderation?.reports), last)) return;
   const own = moderation.reports[0];
   check(
     "the export holds no decision and the account's one report, undecided",
@@ -737,7 +745,30 @@ function importerState() {
   return { memory: Number(fields[0]), restarts: Number(fields[1]), health: fields[2] };
 }
 
-/** Step 21 (3b Task 4): an archive uploaded in chunks through Caddy, scanned by the real importer, ready, then cancelled. */
+/**
+ * Reads an import every second while its state is one of `moving`, for at most two minutes, the scan's bound: import-drive
+ * runs a round every five seconds, and the smoke archive's four posts are one batch. Answers the last view read.
+ */
+async function waitImport(id, token, moving) {
+  let view = null;
+  for (let attempt = 0; attempt < 120; attempt++) {
+    view = (await api(`/api/imports/${id}`, { token })).body;
+    if (!moving.includes(view?.status)) break;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  return view;
+}
+
+/** The posts of a profile's Imported tab, as [text, label] in the tab's order; null when the tab does not answer a page. */
+async function importedTab(handle) {
+  const tab = await api(`/api/profiles/${handle}/imported`);
+  return Array.isArray(tab.body?.items) ? tab.body.items.map((post) => [post.body, post.imported]) : null;
+}
+
+/**
+ * Step 21 (3b Tasks 4 and 8): an archive uploaded in chunks through Caddy and scanned by the real importer; the import
+ * confirmed and published on the profile's Imported tab, then removed again with the person's own undo.
+ */
 async function importArchive(token) {
   const aged = inside("postgres", `psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "update public.profiles set created_at = now() - interval '8 days' where handle = '${handle}' returning 1"`);
   if (!check("3b: the account is aged past the import's seven days", aged.split(String.fromCharCode(10))[0] === "1", aged)) return;
@@ -758,12 +789,7 @@ async function importArchive(token) {
     received = answer.receivedBytes;
   }
   check("3b: the whole archive arrived, in more than one chunk", received === archive.length && archive.length > IMPORT_CHUNK_BYTES, `${received} of ${archive.length} bytes`);
-  let view = null;
-  for (let attempt = 0; attempt < 120; attempt++) {
-    view = (await api(`/api/imports/${id}`, { token })).body;
-    if (view?.status !== "scanning" && view?.status !== "uploading") break;
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
+  const view = await waitImport(id, token, ["uploading", "scanning"]);
   if (!check("3b: the importer's scan is read and the import is ready", view?.status === "ready", `${view?.status ?? "no answer"}${view?.failure ? ` ${view.failure}` : ""}`)) return;
   const scan = view.scan;
   check(
@@ -786,8 +812,40 @@ async function importArchive(token) {
   const interfaces = inside("importer", "ls -x /sys/class/net");
   check("3b: the importer has only a loopback interface", interfaces === "lo", interfaces);
   check("3b: the importer's memory limit is 512 MiB", importer.memory === 512 * 1024 * 1024, `${importer.memory} bytes`);
-  const cancelled = await api(`/api/imports/${id}/cancel`, { method: "POST", token });
-  check("3b: the import is cancelled", cancelled.status === 200 && cancelled.body?.status === "cancelled", cancelled.summary);
+
+  // Task 8: the rest of the import. The profile's post count before it, which the four posts raise and the undo lowers again.
+  const before = (await api(`/api/profiles/${handle}`)).body;
+  check("3b: before the import the profile shows no Imported tab", before?.hasImported === false, JSON.stringify(before?.hasImported));
+  // Every choice off or open, long posts left out (none is long), and the statement, without which nothing is confirmed.
+  // Images are off in the stack (IMPORT_IMAGES needs a matcher), so the confirmation goes straight to publishing.
+  const choice = { from: null, to: null, replies: false, warnings: false, protected: false, images: false, long: "leave" };
+  const confirmed = await api(`/api/imports/${id}/confirm`, { json: { choice, statement: true }, token });
+  if (!check("3b: the import is confirmed with the statement and publishes", confirmed.status === 200 && ["publishing", "done"].includes(confirmed.body?.status), `${confirmed.summary} ${confirmed.body?.status ?? ""}`)) return;
+  const done = await waitImport(id, token, ["publishing"]);
+  if (!check("3b: import-drive publishes the four posts and the import is done", done?.status === "done" && done.progress?.postsPublished === 4, `${done?.status ?? "no answer"}, ${done?.progress?.postsPublished ?? "?"} published`)) return;
+  const label = (at) => ({ source: "mastodon", at, shortened: false });
+  const published = [
+    ["Smoke test post 5", label("2019-05-05")],
+    ["Smoke test post 4", label("2019-04-04")],
+    ["Smoke test post 2", label("2019-03-02")],
+    ["Smoke test post 1", label("2019-03-01")],
+  ];
+  const tab = await importedTab(handle);
+  check("3b: the Imported tab holds the four posts, newest first by the archive's day, each imported from Mastodon on its day", isDeepStrictEqual(tab, published), JSON.stringify(tab));
+  const shown = (await api(`/api/profiles/${handle}`)).body;
+  check("3b: the profile shows its Imported tab and counts four more posts", shown?.hasImported === true && shown.counts?.posts === before?.counts?.posts + 4, `hasImported ${shown?.hasImported}, ${before?.counts?.posts} then ${shown?.counts?.posts} posts`);
+  const latest = await api("/api/timeline/latest");
+  const leaked = Array.isArray(latest.body?.items) ? latest.body.items.filter((item) => item.post?.imported != null || published.some(([text]) => item.post?.body === text)).length : -1;
+  check("3b: Latest holds none of the imported posts", leaked === 0, `${latest.summary}, ${leaked} imported`);
+
+  const undo = await api(`/api/imports/${id}/undo`, { method: "POST", token });
+  if (!check("3b: Remove imported posts is taken", undo.status === 200 && ["undoing", "undone"].includes(undo.body?.status), `${undo.summary} ${undo.body?.status ?? ""}`)) return;
+  const undone = await waitImport(id, token, ["undoing"]);
+  check("3b: import-drive removes the four posts and the import is undone", undone?.status === "undone" && undone.progress?.postsRemoved === 4, `${undone?.status ?? "no answer"}, ${undone?.progress?.postsRemoved ?? "?"} removed`);
+  const emptied = await importedTab(handle);
+  check("3b: the Imported tab is empty again", Array.isArray(emptied) && emptied.length === 0, JSON.stringify(emptied));
+  const after = (await api(`/api/profiles/${handle}`)).body;
+  check("3b: the profile no longer shows the tab and counts its posts as before", after?.hasImported === false && after.counts?.posts === before?.counts?.posts, `hasImported ${after?.hasImported}, ${after?.counts?.posts} posts`);
 }
 
 async function main() {
