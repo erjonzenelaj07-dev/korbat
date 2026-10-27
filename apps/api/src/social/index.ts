@@ -19,6 +19,9 @@ import { postStatusRoutes, socialRoutes } from "./routes";
 
 export { SocialError } from "./context";
 export { enforceWriteLimit } from "./limits";
+// 3b (design, section 7.6): the imports module counts its chunks, acts and picks in this module's one table of limits.
+export { limitsFor } from "./tiers";
+export type { ImportAction, WriteAction } from "./tiers";
 export type { SocialDeps, SocialEvents, ViewerId } from "./context";
 export type { AccountLockMode, CapturedPost, CapturedProfile, LockedAccount } from "./repo";
 export type { ExportedMedia, ExportedPost, ProfileExport } from "./flows/export";
@@ -63,6 +66,15 @@ export interface SocialForModeration {
   postAuthor(postId: string): Promise<string | null>;
   /** The post's author, state and the post it quotes, or null when no row has the id; no lock. */
   postRef(postId: string): Promise<{ authorId: string; state: StoredPostState; quoteOfId: string | null } | null>;
+}
+
+/**
+ * What the imports module needs from this one (3b design, section 9.1): the read of 7.5 step 2 that tells which lines of
+ * an archive the account already imported. Task 6 adds the batch writers of section 6.5.
+ */
+export interface SocialForImports {
+  /** Which of these keys (64 lowercase hex each) the account's posts that still exist carry; at most a thousand a call. */
+  importedKeys(ownerId: string, keys: readonly string[]): Promise<Set<string>>;
 }
 
 /**
@@ -115,10 +127,15 @@ export function createSocial(options: CreateSocialOptions) {
     purgeProfile: (userId, now, within) => deps.repo.purgeProfile(userId, now, within),
     exportProfile: (userId, pageSize) => exportProfile(deps, userId, pageSize),
   };
+  const forImports: SocialForImports = {
+    importedKeys: (ownerId, keys) => deps.repo.importedKeys(ownerId, keys),
+  };
   return {
     deps,
     /** The interface the account module uses. */
     forAccount,
+    /** 3b: the interface the imports module uses. */
+    forImports,
     routes: socialRoutes(deps, options.requireSession, options.requireFreshAuth),
     /**
      * 3f (design, section 7.12): GET /api/posts/:id/status, a router of its own that app.ts mounts after the global limit

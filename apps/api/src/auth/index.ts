@@ -270,6 +270,15 @@ export interface AuthForTransparency {
   mailKeeper(message: KeeperMessage): Promise<KeeperMailResult>;
 }
 
+/**
+ * What the imports module needs from this one (3b design, section 4.2 step 3): whether the account's address was
+ * verified (users.email_verified_at, set at the account's creation today, 3.4), which an import requires. The imports
+ * module may name no auth table, so it asks here; false for an account that has no user row.
+ */
+export interface AuthForImports {
+  emailVerified(userId: string): Promise<boolean>;
+}
+
 export interface CreateAuthOptions {
   config: Config;
   logger: Logger;
@@ -377,6 +386,9 @@ export function createAuth(options: CreateAuthOptions) {
   const forTransparency: AuthForTransparency = {
     mailKeeper: (message) => mailKeeper(deps, message),
   };
+  const forImports: AuthForImports = {
+    emailVerified: async (userId) => ((await repo.findUserById(userId))?.emailVerifiedAt ?? null) !== null,
+  };
   return {
     deps,
     routes: authRoutes(deps),
@@ -392,6 +404,8 @@ export function createAuth(options: CreateAuthOptions) {
     forModeration,
     /** 3d Task 5: the interface the transparency module uses, the keeper's daily mail alone. */
     forTransparency,
+    /** 3b: the interface the imports module uses, the address's verification alone. */
+    forImports,
     /** Runs first on every request: resolves the client address the way TRUST_PROXY says and hashes it, and its network with it. */
     clientIdentity: clientIdentity({ trust: deps.config.trustProxy, ipHashKey: deps.config.ipHashKey }),
     resolveSession: resolveSession(deps, () => seenBy),

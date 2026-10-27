@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
   IMPORT_ACTIVE_STATES,
   IMPORT_FAILURES,
+  IMPORT_MARKS,
   IMPORT_RULES,
   IMPORT_SOURCE_KINDS,
   IMPORT_STOP_REASONS,
@@ -255,8 +256,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
           images_kept: 0,
           images_left_out: 0,
           posts_removed: 0,
+          // 3b Task 4 (migration 0046): whether the import brings images is the creating statement's, kept as sent.
+          images: false,
           fresh: true,
         });
+        const other = await profile(tx);
+        const withImages = randomUUID();
+        await tx.execute(sql`insert into import_jobs (id, owner_id, source, declared_bytes, images) values (${withImages}::uuid, ${other.id}::uuid, 'x', 10, true)`);
+        expect((await jobRow(tx, withImages)).images).toBe(true);
+        // And it never changes: the API role holds no UPDATE of it.
+        expect(await attempt(tx, sql`update import_jobs set images = false where id = ${withImages}::uuid`)).toEqual({ code: "42501", message: "permission denied for table import_jobs" });
       });
     });
 
@@ -481,7 +490,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
         expect(seen).toEqual(STATES.map((state) => [state, kept.includes(state) ? "42501 import_column" : "deleted", "deleted"]));
         // A ready job's picks go with it.
         const ready = await jobIn(tx, "ready");
-        await tx.execute(sql`insert into import_picks (import_job_id, ref, left_out) values (${ready.id}::uuid, 0, true), (${ready.id}::uuid, 1, false)`);
+        await tx.execute(sql`insert into import_picks (import_job_id, ref, left_out, month, marks) values (${ready.id}::uuid, 0, true, '2019-03', 0), (${ready.id}::uuid, 1, false, '2019-03', 0)`);
         await tx.execute(sql`update import_jobs set ${moveSet("ready", "cancelled")} where id = ${ready.id}::uuid`);
         expect(await step(tx, sql`delete from import_jobs where id = ${ready.id}::uuid`)).toBeNull();
         const [left] = await tx.execute<{ n: number }>(sql`select count(*)::int as n from import_picks where import_job_id = ${ready.id}::uuid`);
@@ -684,7 +693,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
     test("picks are written only while their import is ready, each with at most MEDIA_MAX_PER_POST descriptions in altsMaxBytes; they are deleted in any state", async () => {
       await asApi(async (tx) => {
         const ready = await jobIn(tx, "ready");
-        const pick = (jobId: string, ref: number, alts: SQL) => sql`insert into import_picks (import_job_id, ref, left_out, alts) values (${jobId}::uuid, ${ref}, false, ${alts})`;
+        // 3b Task 4 (migration 0046): every pick carries its line's month and marks.
+        const pick = (jobId: string, ref: number, alts: SQL) => sql`insert into import_picks (import_job_id, ref, left_out, alts, month, marks) values (${jobId}::uuid, ${ref}, false, ${alts}, '2019-03', 0)`;
         expect(await step(tx, pick(ready.id, 0, sql`null`))).toBeNull();
         expect(await attempt(tx, sql`update import_picks set left_out = true where import_job_id = ${ready.id}::uuid and ref = 0`)).toBeNull();
         expect(await attempt(tx, pick(ready.id, 1, json(["a", null, "b", "c"])))).toBeNull();
@@ -699,8 +709,20 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
         expect(size!.n).toBe(IMPORT_RULES.altsMaxBytes);
         expect(await attempt(tx, pick(ready.id, 1, json(["x".repeat(each), "x".repeat(each), "x".repeat(each), "x".repeat(each)])))).toBeNull();
         expect(await attempt(tx, pick(ready.id, 1, json(["x".repeat(each + 1), "x".repeat(each), "x".repeat(each), "x".repeat(each)])))).toMatchObject(check("import_picks_alts"));
-        // The job and the line of a pick are outside the API role's grants.
+        // The job and the line of a pick are outside the API role's grants, and so are the line's facts (migration 0046).
         expect(await attempt(tx, sql`update import_picks set ref = 9 where import_job_id = ${ready.id}::uuid`)).toEqual({ code: "42501", message: "permission denied for table import_picks" });
+        for (const facts of [sql`month = '2020-01'`, sql`marks = 1`, sql`described = 1`]) {
+          expect(await attempt(tx, sql`update import_picks set ${facts} where import_job_id = ${ready.id}::uuid`)).toEqual({ code: "42501", message: "permission denied for table import_picks" });
+        }
+        // A month that is not YYYY-MM, marks beyond four bits and more described images than a post holds are refused.
+        const facts = (month: string, marks: number, described: number) =>
+          sql`insert into import_picks (import_job_id, ref, left_out, month, marks, described) values (${ready.id}::uuid, 7, false, ${month}, ${marks}, ${described})`;
+        expect(await attempt(tx, facts("2019-13", 0, 0))).toMatchObject(check("import_picks_month"));
+        expect(await attempt(tx, facts("2019-3", 0, 0))).toMatchObject(check("import_picks_month"));
+        expect(await attempt(tx, facts("2019-03", 16, 0))).toMatchObject(check("import_picks_marks"));
+        expect(await attempt(tx, facts("2019-03", -1, 0))).toMatchObject(check("import_picks_marks"));
+        expect(await attempt(tx, facts("2019-03", 15, 5))).toMatchObject(check("import_picks_described"));
+        expect(await attempt(tx, facts("2019-03", 15, MEDIA_MAX_PER_POST))).toBeNull();
         // Once the import leaves ready, a pick is neither written nor changed, and may still be deleted.
         await move(tx, ready.id, "ready", "publishing");
         expect(await attempt(tx, pick(ready.id, 2, sql`null`))).toEqual(REFUSED);
@@ -818,6 +840,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
       expect(numbers(await checkDefinition("import_jobs", "import_jobs_choice"))).toEqual([IMPORT_RULES.choiceMaxBytes]);
       expect(numbers(await checkDefinition("import_jobs", "import_jobs_seed"))).toEqual([IMPORT_RULES.seedBytes]);
       expect(numbers(await checkDefinition("import_picks", "import_picks_alts"))).toEqual([MEDIA_MAX_PER_POST, IMPORT_RULES.altsMaxBytes]);
+      // 3b Task 4 (migration 0046): a pick's marks are IMPORT_MARKS' bits, its described images at most MEDIA_MAX_PER_POST.
+      expect(numbers(await checkDefinition("import_picks", "import_picks_marks"))).toEqual([0, 2 ** IMPORT_MARKS.length - 1]);
+      expect(numbers(await checkDefinition("import_picks", "import_picks_described"))).toEqual([0, MEDIA_MAX_PER_POST]);
       expect(numbers(await checkDefinition("import_keys", "import_keys_key"))).toEqual([IMPORT_RULES.keyBytes]);
       const [enums] = await apiDb.execute<{ sources: string[]; states: string[] }>(
         sql`select enum_range(null::public.import_source)::text[] as sources, enum_range(null::public.import_status)::text[] as states`,

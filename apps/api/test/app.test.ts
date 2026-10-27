@@ -8,6 +8,7 @@ import { createDb } from "@korbat/db";
 import { createAccount } from "../src/account";
 import { createApp } from "../src/app";
 import { AuthError, createAuth } from "../src/auth";
+import { createImports, importSettingsFrom } from "../src/imports";
 import { MemoryKv } from "../src/auth/kv";
 import { loadConfig } from "../src/config";
 import { MemoryMailer } from "../src/mail/memory";
@@ -72,7 +73,18 @@ function app(checks: Record<string, () => Promise<void>>, advisoryChecks?: Recor
     rateLimitStore,
     logger,
   });
-  return createApp({ config, logger, rateLimitStore, healthChecks: checks, advisoryChecks, auth, social, media, account });
+  const imports = createImports({
+    apiDb,
+    archivesDir: path.join(mediaRoot, "archives"),
+    workDir: path.join(mediaRoot, "work"),
+    settings: importSettingsFrom(config),
+    auth: auth.forImports,
+    social: social.forImports,
+    rateLimitStore,
+    requireSession: auth.requireSession,
+    logger,
+  });
+  return createApp({ config, logger, rateLimitStore, healthChecks: checks, advisoryChecks, auth, social, media, account, imports });
 }
 
 describe("GET /api/health", () => {
@@ -127,6 +139,31 @@ describe("request bodies", () => {
     expect(await refused.json()).toMatchObject({ error: { code: "payload_too_large" } });
     const upload = await a.request("/api/media", { method: "POST", headers: { "content-type": "image/jpeg" }, body: big });
     expect(upload.status).toBe(401);
+  });
+  test("3b: a chunk of an import's archive, PUT /api/imports/<id>/archive, is the one other route exempt; every other import route keeps 64 KiB", async () => {
+    const a = app({});
+    const id = "3f2a9c1e-8b7d-4e6f-a5c4-0123456789ab";
+    const big = "x".repeat(70_000);
+    const raw = { "content-type": "application/octet-stream" };
+    // Exempt: the route's own guard answers, not the limit.
+    expect((await a.request(`/api/imports/${id}/archive`, { method: "PUT", headers: raw, body: big })).status).toBe(401);
+    const refused = async (url: string, method: string) => {
+      const res = await a.request(url, { method, headers: { "content-type": "application/json" }, body: JSON.stringify({ x: big }) });
+      return [res.status, ((await res.json()) as { error: { code: string } }).error.code];
+    };
+    for (const [url, method] of [
+      ["/api/imports", "POST"],
+      [`/api/imports/${id}/lines/0`, "PUT"],
+      [`/api/imports/${id}/cancel`, "POST"],
+      // Only PUT, only /archive, only a 36-character id of the UUID's alphabet.
+      [`/api/imports/${id}/archive`, "POST"],
+      [`/api/imports/${id}/archive/x`, "PUT"],
+      [`/api/imports/${id.toUpperCase()}/archive`, "PUT"],
+      [`/api/imports/${id}0/archive`, "PUT"],
+      ["/api/imports/not-an-id/archive", "PUT"],
+    ] as const) {
+      expect(await refused(url, method), `${method} ${url}`).toEqual([413, "payload_too_large"]);
+    }
   });
 });
 

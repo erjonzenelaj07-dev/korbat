@@ -383,11 +383,16 @@ export const ImportView = z.object({
 });
 export type ImportView = z.infer<typeof ImportView>;
 
-/** Every code the imports endpoints add to ErrorEnvelope.error.code; rate_limited, account_suspended and not_found are shared. */
+/**
+ * Every code the imports endpoints add to ErrorEnvelope.error.code; rate_limited, account_suspended and not_found are shared.
+ * import_weekly_limit is the account's three published imports in seven days (import-week), a code of its own so the app
+ * says that and not the per-address limit's words, which rate_limited carries (the orchestrator's ruling for Task 4).
+ */
 export const ImportErrorCode = z.enum([
   "imports_unavailable",
   "import_active",
   "rate_limited",
+  "import_weekly_limit",
   "archive_too_large",
   "wrong_state",
   "wrong_offset",

@@ -56,6 +56,13 @@
  *     page; the first font file the entry bundle names (a hashed /assets/__node_modules/@fontsource-variable/... woff2)
  *     answers 200 with public, max-age=31536000, immutable; and a post's page answers 200 while the post is public and
  *     404 for a post that does not exist (step 17 checks the rest of the post's page).
+ * 21. 3b Task 4: an import, before the grant-role step while the first account's session works: the account aged past
+ *     seven days through psql in the postgres container, a Mastodon archive built here with fflate's zipSync (four public
+ *     posts, a followers-only one and a boost beside a 9 MiB file korbat never opens), created and sent in chunks of 8 MiB
+ *     with their SHA-256 through Caddy, the real importer's scan read by import-drive until the import is ready with its
+ *     counts and its three samples, the archive gone once read; the importer healthy with only a loopback interface and
+ *     512 MiB; then the import cancelled. The stack needs the archive's size, 4 GiB and IMPORT_MIN_FREE_BYTES free on
+ *     Docker's disk.
  *
  * Runs only against a local Docker context. Needs API_TURNSTILE_SECRET_KEY set to Cloudflare's always-pass test secret and API_SMTP_URL pointing
  * at Mailpit, and API_CONSOLE_ORIGIN naming the --console address. Makes its images with the sharp the worker uses.
@@ -72,7 +79,7 @@
  *     -- docker compose -f infra/compose.yml -f infra/compose.dev.yml
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { isDeepStrictEqual } from "node:util";
 import { CONSOLE_CSP } from "../apps/admin/site-headers.mjs";
@@ -115,7 +122,7 @@ requireLocalDocker();
 /** The sharp the worker depends on, so the test images come from the same library that will read them. */
 const sharp = createRequire(new URL("../apps/worker/package.json", import.meta.url))("sharp");
 /** The fflate the API depends on: the export's archive is opened with the library the API's own tests open it with. */
-const { strFromU8, unzipSync } = createRequire(new URL("../apps/api/package.json", import.meta.url))("fflate");
+const { strFromU8, strToU8, unzipSync, zipSync } = createRequire(new URL("../apps/api/package.json", import.meta.url))("fflate");
 
 /** Cloudflare's test secret accepts any token. */
 const TURNSTILE_TOKEN = "XXXX.DUMMY.TOKEN.XXXX";
@@ -683,6 +690,106 @@ async function accountLifecycle(reportedPostId) {
   check("its post has left the Latest timeline", Array.isArray(latest.body?.items) && !latest.body.items.some((item) => item.post?.id === posted.body?.id), latest.summary);
 }
 
+/** 3b (design, section 7.3): IMPORT_RULES.chunkBytes, the size of every chunk but an archive's last. */
+const IMPORT_CHUNK_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Step 21's archive: what the Mastodon adapter reads (outbox.json, and the name of actor.json) and a file of 9 MiB it
+ * never opens, so the upload takes two chunks. Four public Notes, one followers-only Note and one boost; the newest three
+ * public ones are the samples. Nothing of it is a real person's: every name is the script's own.
+ */
+function mastodonArchive() {
+  const actor = "https://smoke.korbat.test/users/smoke";
+  const PUBLIC = "https://www.w3.org/ns/activitystreams#Public";
+  const note = (n, to, published) => ({
+    type: "Create",
+    object: { type: "Note", id: `${actor}/statuses/${n}`, attributedTo: actor, published, to, cc: [], content: `<p>Smoke test post ${n}</p>` },
+  });
+  const outbox = {
+    "@context": "https://www.w3.org/ns/activitystreams",
+    type: "OrderedCollection",
+    orderedItems: [
+      note(1, [PUBLIC], "2019-03-01T10:00:00Z"),
+      note(2, [PUBLIC], "2019-03-02T10:00:00Z"),
+      note(3, [`${actor}/followers`], "2019-03-03T10:00:00Z"),
+      note(4, [PUBLIC], "2019-04-04T10:00:00Z"),
+      { type: "Announce", object: `${actor}/statuses/1` },
+      note(5, [PUBLIC], "2019-05-05T10:00:00Z"),
+    ],
+  };
+  return zipSync(
+    {
+      "outbox.json": strToU8(JSON.stringify(outbox)),
+      "actor.json": strToU8(JSON.stringify({ type: "Person", id: actor })),
+      // Random bytes do not compress: stored, they make the archive larger than one chunk.
+      "filler.bin": [new Uint8Array(randomBytes(9 * 1024 * 1024)), { level: 0 }],
+    },
+    { level: 6 },
+  );
+}
+
+/** The importer's container: its memory limit, its restarts and its health. */
+function importerState() {
+  const id = execFileSync(compose[0], [...compose.slice(1), "ps", "-q", "importer"], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] }).trim();
+  const fields = execFileSync(compose[0], ["inspect", id, "--format", "{{.HostConfig.Memory}} {{.RestartCount}} {{.State.Health.Status}}"], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] })
+    .trim()
+    .split(" ");
+  return { memory: Number(fields[0]), restarts: Number(fields[1]), health: fields[2] };
+}
+
+/** Step 21 (3b Task 4): an archive uploaded in chunks through Caddy, scanned by the real importer, ready, then cancelled. */
+async function importArchive(token) {
+  const aged = inside("postgres", `psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "update public.profiles set created_at = now() - interval '8 days' where handle = '${handle}' returning 1"`);
+  if (!check("3b: the account is aged past the import's seven days", aged.split(String.fromCharCode(10))[0] === "1", aged)) return;
+  const archive = mastodonArchive();
+  const created = await api("/api/imports", { json: { source: "mastodon", bytes: archive.length }, token });
+  if (!check("3b: an import is created, uploading", created.status === 201 && created.body?.status === "uploading" && created.body?.chunkBytes === IMPORT_CHUNK_BYTES, created.summary)) return;
+  const id = created.body.id;
+  let received = 0;
+  for (let at = 0; at < archive.length; at += IMPORT_CHUNK_BYTES) {
+    const chunk = archive.subarray(at, Math.min(archive.length, at + IMPORT_CHUNK_BYTES));
+    const res = await fetch(`${base}/api/imports/${id}/archive`, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream", "import-offset": String(at), "import-chunk-sha256": createHash("sha256").update(chunk).digest("hex") },
+      body: chunk,
+    });
+    const answer = await res.json().catch(() => null);
+    if (!check(`3b: a chunk of ${chunk.length} bytes at ${at} is taken through Caddy`, res.status === 200 && answer?.receivedBytes === at + chunk.length, `HTTP ${res.status}${answer?.error?.code ? ` ${answer.error.code}` : ""}`)) return;
+    received = answer.receivedBytes;
+  }
+  check("3b: the whole archive arrived, in more than one chunk", received === archive.length && archive.length > IMPORT_CHUNK_BYTES, `${received} of ${archive.length} bytes`);
+  let view = null;
+  for (let attempt = 0; attempt < 120; attempt++) {
+    view = (await api(`/api/imports/${id}`, { token })).body;
+    if (view?.status !== "scanning" && view?.status !== "uploading") break;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  if (!check("3b: the importer's scan is read and the import is ready", view?.status === "ready", `${view?.status ?? "no answer"}${view?.failure ? ` ${view.failure}` : ""}`)) return;
+  const scan = view.scan;
+  check(
+    "3b: its counts: four posts from March to May 2019, the followers-only post and the boost skipped",
+    scan?.posts === 4 && scan.skipped?.not_public === 1 && scan.skipped?.repost === 1 && scan.first === "2019-03" && scan.last === "2019-05",
+    JSON.stringify(scan),
+  );
+  check(
+    "3b: its three samples, newest first, by day",
+    isDeepStrictEqual(view.samples, [
+      { at: "2019-05-05", text: "Smoke test post 5" },
+      { at: "2019-04-04", text: "Smoke test post 4" },
+      { at: "2019-03-02", text: "Smoke test post 2" },
+    ]),
+    JSON.stringify(view.samples),
+  );
+  check("3b: the archive was deleted once its scan was read", inside("api", `test -e /import/archives/jobs/${id} && echo present || echo gone`) === "gone");
+  const importer = importerState();
+  check("3b: the importer is healthy and has never restarted", importer.health === "healthy" && importer.restarts === 0, `${importer.health}, restarts ${importer.restarts}`);
+  const interfaces = inside("importer", "ls -x /sys/class/net");
+  check("3b: the importer has only a loopback interface", interfaces === "lo", interfaces);
+  check("3b: the importer's memory limit is 512 MiB", importer.memory === 512 * 1024 * 1024, `${importer.memory} bytes`);
+  const cancelled = await api(`/api/imports/${id}/cancel`, { method: "POST", token });
+  check("3b: the import is cancelled", cancelled.status === 200 && cancelled.body?.status === "cancelled", cancelled.summary);
+}
+
 async function main() {
   if (closed) return closedSite();
   const page = await fetch(`${base}/`);
@@ -725,6 +832,7 @@ async function main() {
 
   await images(token);
   if (worstCase) await worstCaseImages(token);
+  await importArchive(token);
 
   const output = execFileSync(compose[0], [...compose.slice(1), "run", "--rm", "--no-deps", "-T", "api", "node", "dist/grant-role.js", email, "moderator"], {
     encoding: "utf8",

@@ -8,6 +8,7 @@ import { AccountError, type Account } from "./account";
 import { AuthError, type Auth } from "./auth";
 import type { Config } from "./config";
 import type { AppEnv } from "./env";
+import { ImportError, type Imports } from "./imports";
 import { errorBody } from "./lib/errors";
 import { MediaError, type Media } from "./media";
 import { observability } from "./middleware/observability";
@@ -19,8 +20,16 @@ import { SocialError, type Social } from "./social";
 import type { Staff } from "./staff";
 import type { Transparency } from "./transparency";
 
-/** JSON requests are small; the one raw upload route counts its own bytes and is exempt. */
+/** JSON requests are small; the two raw upload routes count their own bytes and are exempt. */
 export const JSON_BODY_LIMIT_BYTES = 64 * 1024;
+
+/**
+ * 3b (design, section 7.3): a chunk of an import's archive, PUT /api/imports/<id>/archive with the id as a lowercase
+ * UUID's 36 characters, the pattern Caddy's @import_chunk matches. Its route counts the bytes against the chunk's own
+ * rules, so it is the one route besides POST /api/media that the JSON body limit leaves alone.
+ */
+const IMPORT_CHUNK_PATH = /^[/]api[/]imports[/][0-9a-f-]{36}[/]archive$/;
+const isRawUpload = (method: string, path: string): boolean => (method === "POST" && path === "/api/media") || (method === "PUT" && IMPORT_CHUNK_PATH.test(path));
 
 /**
  * The staff console's paths (3a design, section 5): /api/staff and everything under it, never a path that merely begins
@@ -51,9 +60,11 @@ export interface AppDeps {
   advisoryChecks?: HealthChecks;
   /** 3d: the public figures' two routes. Optional as the other modules are; the server always wires it. */
   transparency?: Transparency;
+  /** 3b: import from other platforms. Optional as the other modules are; the server always wires it. */
+  imports?: Imports;
 }
 
-export function createApp({ config, logger, rateLimitStore, healthChecks, auth, social, media, account, staff, moderation, advisoryChecks, transparency }: AppDeps) {
+export function createApp({ config, logger, rateLimitStore, healthChecks, auth, social, media, account, staff, moderation, advisoryChecks, transparency, imports }: AppDeps) {
   const app = new Hono<AppEnv>();
 
   app.use(observability(logger));
@@ -65,7 +76,7 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
     maxSize: JSON_BODY_LIMIT_BYTES,
     onError: (c) => c.json(errorBody("payload_too_large", "The request body is too large", (c as typeof c & { get(key: "requestId"): string }).get("requestId")), 413),
   });
-  app.use((c, next) => (c.req.method === "POST" && c.req.path === "/api/media" ? next() : jsonBodies(c, next)));
+  app.use((c, next) => (isRawUpload(c.req.method, c.req.path) ? next() : jsonBodies(c, next)));
   // Image files come before the global limit and session resolution: they have their own bucket,
   // and a public image needs no session. Everything else under /api/media falls through to below.
   if (media) app.route("/api/media", media.fileRoutes);
@@ -91,6 +102,8 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
     return c.json({ ...base, standing } satisfies MeResponse);
   });
   if (media) app.route("/api/media", media.routes);
+  // 3b (design, section 9.1): every route behind the auth module's requireSession, CSRF included, like the social routes.
+  if (imports) app.route("/api/imports", imports.routes);
   if (account) app.route("/api/account", account.routes);
   // The console is off while CONSOLE_ORIGIN is unset: nothing is mounted, and every staff path is the unknown route below.
   if (staff && config.CONSOLE_ORIGIN !== undefined) app.route("/api/staff", staff.routes(config.CONSOLE_ORIGIN));
@@ -107,6 +120,12 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
     }
     if (err instanceof HTTPException) return c.json(errorBody("invalid_request", err.message, c.get("requestId")), err.status);
     if (err instanceof MediaError) return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);
+    // 3b (design, sections 9.1 and 9.4): every refusal of an import with its status, never 500; wrong_offset carries the
+    // stored size, so the app goes on from there.
+    if (err instanceof ImportError) {
+      if (err.retryAfterSeconds) c.header("Retry-After", String(err.retryAfterSeconds));
+      return c.json(errorBody(err.code, err.message, c.get("requestId"), err.details), err.status);
+    }
     if (err instanceof SocialError) {
       if (err.retryAfterSeconds) c.header("Retry-After", String(err.retryAfterSeconds));
       return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);

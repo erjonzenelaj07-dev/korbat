@@ -133,6 +133,7 @@ describe("the closed lists, in the design's order (9.3)", () => {
       "imports_unavailable",
       "import_active",
       "rate_limited",
+      "import_weekly_limit",
       "archive_too_large",
       "wrong_state",
       "wrong_offset",

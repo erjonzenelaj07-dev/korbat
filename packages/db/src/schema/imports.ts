@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, boolean, check, date, index, integer, jsonb, pgEnum, pgTable, primaryKey, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, check, date, index, integer, jsonb, pgEnum, pgTable, primaryKey, smallint, text, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { apiRole, bytea, fullAccess, ts } from "./helpers";
 import { profiles } from "./identity";
 
@@ -73,6 +73,12 @@ export const importJobs = pgTable(
     imagesKept: integer("images_kept").notNull().default(0),
     imagesLeftOut: integer("images_left_out").notNull().default(0),
     postsRemoved: integer("posts_removed").notNull().default(0),
+    /**
+     * 3b Task 4 (the orchestrator's ruling; migration 0046): whether this import brings images, decided once at its
+     * creation (IMPORT_IMAGES on, which the API allows only beside a matcher, decision 15) and written into job.json. The
+     * API role inserts it and holds no UPDATE of it, so it never changes; the preview's media route reads it from here.
+     */
+    images: boolean("images").notNull().default(false),
   },
   (t) => [
     // IMPORT_RULES.maxBytes.
@@ -134,9 +140,23 @@ export const importPicks = pgTable(
     leftOut: boolean("left_out").notNull().default(false),
     /** An array of at most MEDIA_MAX_PER_POST AltText or null, or null. */
     alts: jsonb("alts"),
+    /**
+     * 3b Task 4 (the orchestrator's ruling; migration 0046): the picked line's month (YYYY-MM), its marks (IMPORT_MARKS as
+     * bits) and how many of its images its source described, copied from posts.jsonl when the pick is first written. The
+     * picks' counts of ImportView and ImportPickView are summed from these rows alone, so reading an import opens no work
+     * file but the samples. The API role inserts them and holds no UPDATE of them: a line's facts never change.
+     */
+    month: text("month").notNull(),
+    marks: smallint("marks").notNull(),
+    described: smallint("described").notNull().default(0),
   },
   (t) => [
     primaryKey({ columns: [t.importJobId, t.ref] }),
+    check("import_picks_month", sql`${t.month} ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`),
+    // IMPORT_MARKS: four bits.
+    check("import_picks_marks", sql`${t.marks} between 0 and 15`),
+    // MEDIA_MAX_PER_POST.
+    check("import_picks_described", sql`${t.described} between 0 and 4`),
     // At most four descriptions (MEDIA_MAX_PER_POST) in IMPORT_RULES.altsMaxBytes, as the bytes of the jsonb's text form:
     // four AltText of 1,000 code points take up to 16,016 (Task 1's amendment). A CASE, so the length is read only of an array.
     check(

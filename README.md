@@ -10,10 +10,11 @@ Pseudonymous social platform with a narrow public rulebook and transparent moder
 ## Dev quick start
 ```bash
 pnpm install
-node scripts/gen-dev-env.mjs                # creates or completes infra/.env, apps/api/.env, apps/app/.env and apps/worker/.env, and derives apps/api/.env.test; values are random and never printed
+node scripts/gen-dev-env.mjs                # creates or completes infra/.env, apps/api/.env, apps/app/.env, apps/worker/.env and apps/importer/.env, and derives apps/api/.env.test; values are random and never printed
 docker compose -f infra/compose.yml -f infra/compose.dev.yml up -d postgres redis counts mailpit   # dev host ports 55432, 56379, 56380, 51025, 58025 (movable: DEV_*_PORT in infra/.env)
 pnpm --filter @korbat/api dev               # http://localhost:3000/api/health; reads apps/api/.env
 pnpm --filter @korbat/worker dev            # the image worker; reads apps/worker/.env and works on .data/media
+pnpm --filter @korbat/importer dev          # the importer of archives (3b); reads apps/importer/.env and works on .data/import, which the API's IMPORT_*_DIR name too
 pnpm --filter @korbat/app web               # http://localhost:8081
 pnpm --filter @korbat/admin dev             # the staff console at http://localhost:8090 (never 127.0.0.1); forwards /api/staff/* to the API above
 ```

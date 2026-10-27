@@ -57,9 +57,22 @@
     request_body @upload {
       max_size 25MB
     }
+    # 3b (design, section 7.3): a chunk of an import's archive, 8 MiB at most, which the API counts itself too. 9MB, in
+    # decimal megabytes, is the chunk and some slack (IMPORT_RULES.chunkBodyBytes).
+    @import_chunk {
+      method PUT
+      path_regexp ^/api/imports/[0-9a-f-]{36}/archive$
+    }
+    request_body @import_chunk {
+      max_size 9MB
+    }
     # Everything else is JSON, and small. The API caps it at 64 KiB too.
     @json {
       not path /api/media
+      not {
+        method PUT
+        path_regexp ^/api/imports/[0-9a-f-]{36}/archive$
+      }
     }
     request_body @json {
       max_size 64KB

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Creates or completes the local .env files from their committed examples: infra/.env,
- * apps/api/.env, apps/app/.env and apps/worker/.env.
+ * apps/api/.env, apps/app/.env, apps/worker/.env and (3b) apps/importer/.env.
  *
  * - `change-me-<word>`          -> 48 random hex characters (passwords)
  * - `change-me-key-<name>`      -> 32 random bytes, base64 (HMAC keys)
@@ -136,6 +136,8 @@ if (!existsSync(resolve(root, "infra/ntfy/server.yml"))) {
   console.log("infra/ntfy/server.yml: created from its example (development users and tokens)");
 }
 complete("apps/worker/.env.example", "apps/worker/.env", new Map(), new Map());
+// 3b: the importer run on the host (pnpm --filter @korbat/importer dev), on the folders apps/api/.env names for the API.
+complete("apps/importer/.env.example", "apps/importer/.env", new Map(), new Map());
 
 /** Rewrites apps/api/.env.test from apps/api/.env. Only where the data lives changes; every key stays the same. */
 function deriveTestEnv() {

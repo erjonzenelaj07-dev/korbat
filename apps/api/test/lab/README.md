@@ -375,3 +375,43 @@ lettered SQL files the labs themselves, and `out-*.txt` their raw outputs. It ra
 18.6 over the migrations 0000 to 0017, with stand-ins for statements that 3e and 3f have since changed, so it is the
 record of what was measured and is not run (3d design, section 12.3): Tasks 2, 6 and 7 turn each case it accepted and
 each refusal it measured into a test on the built code.
+
+# The intake of a large archive (3b, Task 4)
+
+`imports-intake.lab.ts` is the API's half of the large-archive lab of the import design (3b design, section 12.5): the
+intake of `import-drive` (section 7.5 step 2) over a `posts.jsonl` of 50,000 lines near its cap of 1 GiB runs within the
+API's 512m. The importer's half (an X archive of 1.86 GiB, a Mastodon outbox of 50,000 Notes, a CAR of 2,000,000 blocks)
+is apps/importer/test/lab's.
+
+The lab writes the file by code under the repository's `.data` (50,000 lines in the importer's own line format, each a
+post of 20,800 characters dated three hours after the one before from April 2006, so the month table spans seventeen
+years, every fifth a reply and every eleventh with a content warning), then runs the intake once in a process of its own,
+`imports-intake.child.ts` under `node --expose-gc --import tsx`, so that the peak is the intake's alone, and deletes the
+file. The social module's read of the keys an account already imported is a set that knows none: the lab measures the
+intake, not the database. Memory is `process.resourceUsage().maxRSS` after the intake and `process.memoryUsage().rss`
+before it, after a forced collection; time is `performance.now()` around `runIntake`.
+
+## Running it
+
+From `apps/api` (no database is needed):
+
+    node ../../node_modules/vitest/vitest.mjs run --config vitest.lab.config.ts test/lab/imports-intake.lab.ts
+
+It takes about a minute and writes 1 GB to `.data` while it runs. Each run appends one line of JSON to
+`.data/lab-import-intake.jsonl` at the repository's root (or the file `LAB_OUT` names).
+
+## The numbers of 2026-10-26
+
+Windows host, Node 24, the machine shared with other work.
+
+| lines | bytes | offered | months | pages | intake | process before | peak | peak above the start |
+|---|---|---|---|---|---|---|---|---|
+| 50,000 | 1,049,844,344 | 50,000 | 206 | 1,000 | 52.1 s | 78 MiB | 252 MiB | 174 MiB |
+
+- The scan the row stores is 25,702 bytes of JSON, a tenth of `import_jobs_scan`'s 262,144.
+- The intake holds a few typed arrays and the 50,000 keys (about 5 MB); the rest of the peak is V8 letting the parsed
+  lines of 21 KB each, a gigabyte of short-lived strings, wait for a collection. In the API's container, whose 512m the
+  runtime sizes its heap by, the intake's 174 MiB fit beside the API's own use; the lab holds the share under 256 MiB.
+- A first run dated the lines from 2010 on, so its last 850 lines fell after the import's creation plus a day and were
+  unreadable, as the intake's date rule says (offered 49,150); the lab's dates were moved, and the second run is the one
+  above.

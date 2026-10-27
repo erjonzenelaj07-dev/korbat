@@ -219,9 +219,23 @@ services:
       MEDIA_FORMATS: ${MEDIA_FORMATS:-jpeg,png,webp,gif,avif}
       MEDIA_MIN_FREE_BYTES: ${MEDIA_MIN_FREE_BYTES:-2147483648}
       MEDIA_RECONCILE: ${MEDIA_RECONCILE:-on}
+      # 3b: import from other platforms (README, Importing posts). Imports on unless off; images off unless on, which the
+      # API refuses while MEDIA_MATCH is off; the sources a new import may name (bluesky only by the owner's choice); the
+      # uploads and scans on the site at once; the imported images an hour (at most 600); the free space kept on
+      # import-archives beyond an archive and its scan. The API writes the archives and only reads the importer's output.
+      IMPORTS: ${API_IMPORTS:-on}
+      IMPORT_IMAGES: ${API_IMPORT_IMAGES:-off}
+      IMPORT_SOURCES: ${API_IMPORT_SOURCES:-x,mastodon}
+      IMPORT_MAX_ACTIVE: ${API_IMPORT_MAX_ACTIVE:-2}
+      IMPORT_IMAGES_PER_HOUR: ${API_IMPORT_IMAGES_PER_HOUR:-600}
+      IMPORT_MIN_FREE_BYTES: ${API_IMPORT_MIN_FREE_BYTES:-2147483648}
+      IMPORT_ARCHIVES_DIR: /import/archives
+      IMPORT_WORK_DIR: /import/work
     volumes:
       - media-uploads:/media/uploads
       - media-store:/media/store:ro
+      - import-archives:/import/archives
+      - import-work:/import/work:ro
     networks: [app, data]
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -263,6 +277,35 @@ services:
       - media-store:/media/store
     healthcheck:
       test: ["CMD", "node", "-e", "process.exit(Date.now() - JSON.parse(require('fs').readFileSync('/media/store/heartbeat', 'utf8')).at < 60000 ? 0 : 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+
+  # The importer (3b design, section 7.1; decision 1) parses the archives people upload, hostile input in three formats.
+  # Like the worker it has no network, no capabilities and no credentials: no database, no Valkey, no secret but the
+  # account key each job brings. It reads import-archives and writes import-work, and that is everything it can reach.
+  importer:
+    <<: *node-common
+    build:
+      context: ..
+      dockerfile: apps/importer/Dockerfile
+    network_mode: none
+    cap_drop: [ALL]
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 0.5
+    pids_limit: 32
+    tmpfs: ["/tmp:size=16m"]
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${API_LOG_LEVEL:-info}
+      IMPORT_ARCHIVES_DIR: /import/archives
+      IMPORT_WORK_DIR: /import/work
+    volumes:
+      - import-archives:/import/archives:ro
+      - import-work:/import/work
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(Date.now() - JSON.parse(require('fs').readFileSync('/import/work/heartbeat', 'utf8')).at < 60000 ? 0 : 1)"]
       interval: 15s
       timeout: 5s
       retries: 4
@@ -462,6 +505,11 @@ volumes:
   media-uploads:
   # The images korbat serves. Back it up together with the database.
   media-store:
+  # 3b: archives waiting for the importer, deleted when read and within 24 hours. In no backup, by decision: an archive
+  # holds the person's messages and other people's data.
+  import-archives:
+  # 3b: the importer's output, deleted within 72 hours. In no backup.
+  import-work:
   # 3d: the files of images sealed for good, moved out of the store by the quarantine service, on the host's encrypted
   # disk. It is in no backup, by decision: a restore never brings a destroyed file back. Owned by uid 1000, mode 0700, the
   # path the API's image makes (the README, Quarantine and Backups).

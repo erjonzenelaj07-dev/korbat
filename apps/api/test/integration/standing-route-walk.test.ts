@@ -1,5 +1,5 @@
 import { randomBytes, randomInt, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { sql } from "drizzle-orm";
@@ -10,6 +10,7 @@ import { closeDb, createDb, type Db } from "@korbat/db";
 import { createAccount } from "../../src/account";
 import { createApp } from "../../src/app";
 import { createAuth } from "../../src/auth";
+import { createImports, importSettingsFrom } from "../../src/imports";
 import { randomToken } from "../../src/auth/crypto";
 import { MemoryKv } from "../../src/auth/kv";
 import { DEV_CODE, devProvider } from "../../src/auth/verify/dev";
@@ -30,6 +31,9 @@ import { releaseForTest, removeFixtures, rowCounts } from "./moderation-fixtures
 vi.setConfig({ testTimeout: 240_000 });
 
 type App = ReturnType<typeof createApp>;
+
+/** 3b Task 4: the import tables, which the walk leaves as it found them too. */
+const IMPORT_TABLES = ["import_jobs", "import_picks", "import_keys"];
 
 /**
  * What a suspended or terminated account gets from each write route of the app (3e design, section 7.3): refused with 403
@@ -108,6 +112,12 @@ export const SUSPENDED_WRITES: Record<string, "refused" | "allowed"> = {
   "POST /api/moderation/uploads/:refusal/objection": "allowed",
   "POST /api/moderation/items/:item/reexamine": "allowed",
   "POST /api/moderation/report-mail/resume": "allowed",
+  // 3b Task 4 (design, section 8.5): starting an import is refused; a chunk only completes an upload that ends within 24
+  // hours and whose scan publishes nothing, a pick only chooses and a cancel only ends, so each is allowed.
+  "POST /api/imports": "refused",
+  "PUT /api/imports/:id/archive": "allowed",
+  "PUT /api/imports/:id/lines/:ref": "allowed",
+  "POST /api/imports/:id/cancel": "allowed",
 };
 
 /** The routes that end the session: called last, so that every other route is called with it. */
@@ -183,8 +193,25 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
       rateLimitStore,
       logger,
     });
-    app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social, media, account, moderation });
-    before = await rowCounts(apiDb);
+    // 3b Task 4: the imports module over two volumes of its own, with the importer's heartbeat fresh and room to spare, so
+    // that only the account's standing and age decide what its creation answers.
+    const imports = createImports({
+      apiDb,
+      archivesDir: path.join(root, "import-archives"),
+      workDir: path.join(root, "import-work"),
+      settings: importSettingsFrom(config),
+      auth: auth.forImports,
+      social: social.forImports,
+      rateLimitStore,
+      requireSession: auth.requireSession,
+      logger,
+      freeBytes: async () => 64 * 1024 ** 3,
+    });
+    await imports.prepare();
+    mkdirSync(path.join(root, "import-work"), { recursive: true });
+    writeFileSync(path.join(root, "import-work", "heartbeat"), JSON.stringify({ v: 1, at: Date.now() }));
+    app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social, media, account, moderation, imports });
+    before = await rowCounts(apiDb, IMPORT_TABLES);
   });
   afterAll(async () => {
     try {
@@ -283,6 +310,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
       "POST /api/moderation/items/:item/reexamine": [{ method: "POST", path: `/api/moderation/items/${item!.id}/reexamine`, json: {} }],
       // A refusal the account does not have: not_found, never account_suspended (the objection itself is moderation-uploads').
       "POST /api/moderation/uploads/:refusal/objection": [{ method: "POST", path: `/api/moderation/uploads/${randomUUID()}/objection`, json: { text: "Please look again." } }],
+      // 3b Task 4: a creation that would be taken but for the account: three days old, so the suspension answers before the
+      // age does (4.2's order), and the announced suspension's pass answers import_too_soon.
+      "POST /api/imports": [{ method: "POST", path: "/api/imports", json: { source: "mastodon", bytes: 1000 } }],
     };
     const callsOf = (route: string): Call[] => {
       const given = calls[route];
@@ -360,6 +390,6 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
   test("this file left no row behind: what it committed is removed, and the tables hold what they held before it", async () => {
     await closeDecisions();
     await removeFixtures(migrateDb, made.splice(0));
-    expect(await rowCounts(apiDb)).toEqual(before);
+    expect(await rowCounts(apiDb, IMPORT_TABLES)).toEqual(before);
   });
 });

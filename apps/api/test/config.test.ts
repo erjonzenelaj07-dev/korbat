@@ -334,6 +334,36 @@ describe("loadConfig", () => {
       }
     });
   });
+  // 3b (design, sections 7.7 and 12.2): import from other platforms.
+  describe("3b: the import settings", () => {
+    test("imports are on, images off, X and Mastodon the sources, two active at once, 600 images an hour, 2 GiB kept free, the two volumes under .data/import; a blank value is the default", () => {
+      const c = loadConfig(good);
+      expect([c.IMPORTS, c.IMPORT_IMAGES, c.IMPORT_SOURCES, c.IMPORT_MAX_ACTIVE, c.IMPORT_IMAGES_PER_HOUR, c.IMPORT_MIN_FREE_BYTES]).toEqual(["on", "off", ["x", "mastodon"], 2, 600, 2 * 1024 ** 3]);
+      expect([c.IMPORT_ARCHIVES_DIR, c.IMPORT_WORK_DIR]).toEqual(["../../.data/import/archives", "../../.data/import/work"]);
+      const blank = { IMPORTS: "", IMPORT_IMAGES: "", IMPORT_SOURCES: "", IMPORT_MAX_ACTIVE: "", IMPORT_IMAGES_PER_HOUR: "", IMPORT_MIN_FREE_BYTES: "" };
+      expect(loadConfig({ ...good, ...blank })).toMatchObject({ IMPORTS: "on", IMPORT_IMAGES: "off", IMPORT_SOURCES: ["x", "mastodon"], IMPORT_MAX_ACTIVE: 2, IMPORT_IMAGES_PER_HOUR: 600 });
+      expect(loadConfig({ ...good, IMPORTS: "off", IMPORT_MAX_ACTIVE: "1", IMPORT_MIN_FREE_BYTES: "0" })).toMatchObject({ IMPORTS: "off", IMPORT_MAX_ACTIVE: 1, IMPORT_MIN_FREE_BYTES: 0 });
+      expect(loadConfig({ ...good, IMPORT_ARCHIVES_DIR: "/import/archives", IMPORT_WORK_DIR: "/import/work" })).toMatchObject({ IMPORT_ARCHIVES_DIR: "/import/archives", IMPORT_WORK_DIR: "/import/work" });
+      for (const [name, value] of [["IMPORTS", "yes"], ["IMPORT_IMAGES", "true"], ["IMPORT_MAX_ACTIVE", "0"], ["IMPORT_MIN_FREE_BYTES", "-1"]] as const) {
+        expect(() => loadConfig({ ...good, [name]: value }), name).toThrow(new RegExp(name));
+      }
+    });
+    test("IMPORT_SOURCES names sources among x, mastodon and bluesky, comma-separated; an unknown one stops the process", () => {
+      expect(loadConfig({ ...good, IMPORT_SOURCES: "x,mastodon,bluesky" }).IMPORT_SOURCES).toEqual(["x", "mastodon", "bluesky"]);
+      expect(loadConfig({ ...good, IMPORT_SOURCES: " mastodon , mastodon " }).IMPORT_SOURCES).toEqual(["mastodon"]);
+      for (const refused of ["x,threads", "X", "reddit", ","]) expect(() => loadConfig({ ...good, IMPORT_SOURCES: refused }), refused).toThrow(/IMPORT_SOURCES/);
+    });
+    test("IMPORT_IMAGES_PER_HOUR is 0 to 600: it may only be lowered", () => {
+      expect(loadConfig({ ...good, IMPORT_IMAGES_PER_HOUR: "0" }).IMPORT_IMAGES_PER_HOUR).toBe(0);
+      expect(loadConfig({ ...good, IMPORT_IMAGES_PER_HOUR: "600" }).IMPORT_IMAGES_PER_HOUR).toBe(600);
+      for (const refused of ["601", "-1", "2.5"]) expect(() => loadConfig({ ...good, IMPORT_IMAGES_PER_HOUR: refused }), refused).toThrow(/IMPORT_IMAGES_PER_HOUR/);
+    });
+    test("IMPORT_IMAGES=on is refused while MEDIA_MATCH is off (decision 15), in every environment; beside a matcher it is taken", () => {
+      expect(() => loadConfig({ ...good, IMPORT_IMAGES: "on" })).toThrow(/IMPORT_IMAGES=on is refused while MEDIA_MATCH is off/);
+      expect(() => loadConfig({ ...good, IMPORT_IMAGES: "on", MEDIA_MATCH: "" })).toThrow(/IMPORT_IMAGES=on is refused while MEDIA_MATCH is off/);
+      expect(loadConfig({ ...good, IMPORT_IMAGES: "on", MEDIA_MATCH: "test", APP_SITE: "closed" })).toMatchObject({ IMPORT_IMAGES: "on", MEDIA_MATCH: "test" });
+    });
+  });
   describe("the WebAuthn relying party", () => {
     test("defaults to the host of APP_ORIGIN and the name korbat; an empty value, as compose passes it, counts as unset", () => {
       expect(loadConfig(good)).toMatchObject({ WEBAUTHN_RP_ID: "localhost", WEBAUTHN_RP_NAME: "korbat" });

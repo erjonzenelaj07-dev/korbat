@@ -5,6 +5,7 @@ import { createAccount } from "./account";
 import { createApp } from "./app";
 import { createAuth, verificationProviderFrom } from "./auth";
 import { loadConfig } from "./config";
+import { createImports, importSettingsFrom } from "./imports";
 import { redisJobLock } from "./lib/jobs";
 import { createLogger } from "./lib/logger";
 import { smtpMailer } from "./mail/smtp";
@@ -125,6 +126,24 @@ const account = createAccount({
 // Deletions the process did not finish (a crash after the auth step, a failed purge) are completed within five minutes.
 const stopPurge = account.startPurge(jobLock);
 
+// 3b: import from other platforms. The module owns the three import tables, writes import-archives and reads import-work
+// (the importer's output) only through openWorkFile; it asks the auth module whether an address is verified and the
+// social module which posts an account already imported. Its job, import-drive, reads finished scans, runs the intake,
+// applies the time limits and clears what a crash left, a round every five seconds.
+const imports = createImports({
+  apiDb,
+  archivesDir: config.IMPORT_ARCHIVES_DIR,
+  workDir: config.IMPORT_WORK_DIR,
+  settings: importSettingsFrom(config),
+  auth: auth.forImports,
+  social: social.forImports,
+  rateLimitStore,
+  requireSession: auth.requireSession,
+  logger,
+});
+await imports.prepare();
+const stopImports = imports.startJobs(jobLock);
+
 // The staff console's API; createApp mounts it only while CONSOLE_ORIGIN is set. Its credential work is the auth module's,
 // its case work the moderation module's.
 const staff = createStaff({ apiDb, auth: auth.forStaff, moderation: moderation.forStaff });
@@ -146,6 +165,7 @@ const app = createApp({
   staff,
   moderation,
   transparency,
+  imports,
 });
 
 const server = serve({ fetch: app.fetch, port: config.PORT, hostname: "0.0.0.0" }, (info) => {
@@ -164,6 +184,7 @@ async function shutdown(signal: string) {
   stopTransparency();
   stopExplore();
   stopPurge();
+  stopImports();
   stopModeration();
   server.close();
   // A statement, a receipt or a staff alert may be on its way to the relay: it gets five seconds to finish before the

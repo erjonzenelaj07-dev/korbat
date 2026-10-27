@@ -1,6 +1,6 @@
 import { isIP } from "node:net";
 import { z } from "zod";
-import { STATE_FACTS } from "@korbat/contracts";
+import { IMPORT_RULES, IMPORT_SOURCE_KINDS, STATE_FACTS } from "@korbat/contracts";
 import { parseFormats } from "@korbat/media-protocol";
 
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -312,6 +312,36 @@ const schema = z.object({
    */
   AUTOMATION_DPIA_MATCH: blankAsUnset.pipe(z.iso.date().optional()),
   AUTOMATION_DPIA_MATCH_ACTS: blankAsUnset.pipe(z.iso.date().optional()),
+  /**
+   * 3b (design, section 7.7): import from other platforms. `off` refuses every new import (imports_unavailable); running
+   * imports finish. On unless set to off; a blank value is the default.
+   */
+  IMPORTS: blankAsUnset.pipe(z.enum(["on", "off"]).default("on")),
+  /**
+   * Whether a new import brings images (decision 15): off unless on, and refused below while MEDIA_MATCH is off, since an
+   * imported image is published only once the comparison with known material has answered for it.
+   */
+  IMPORT_IMAGES: blankAsUnset.pipe(z.enum(["on", "off"]).default("off")),
+  /**
+   * The sources a new import may name, comma-separated (decision 16): x and mastodon unless set; bluesky joins only by the
+   * owner's choice, which the README explains. An unknown source stops the process at start.
+   */
+  IMPORT_SOURCES: blankAsUnset.pipe(
+    z
+      .string()
+      .default("x,mastodon")
+      .transform((value) => [...new Set(value.split(",").map((part) => part.trim()).filter(Boolean))])
+      .pipe(z.array(z.enum(IMPORT_SOURCE_KINDS, { message: `must name sources among ${IMPORT_SOURCE_KINDS.join(", ")}` })).min(1)),
+  ),
+  /** Imports in uploading or scanning on the site at once (4.2 step 3). */
+  IMPORT_MAX_ACTIVE: blankAsUnset.pipe(z.coerce.number<string>().int().min(1).max(100).default(IMPORT_RULES.maxActiveDefault)),
+  /** The feeder's site-wide pace of imported images an hour (7.4): 0 to 600, and it may only be lowered. */
+  IMPORT_IMAGES_PER_HOUR: blankAsUnset.pipe(z.coerce.number<string>().int().min(0).max(IMPORT_RULES.imagesPerHourMax).default(IMPORT_RULES.imagesPerHourDefault)),
+  /** Free space kept on import-archives beyond a new import's declared size and the 4 GiB its scan may write (7.7). */
+  IMPORT_MIN_FREE_BYTES: blankAsUnset.pipe(z.coerce.number<string>().int().nonnegative().default(IMPORT_RULES.minFreeBytesDefault)),
+  /** The two import volumes (7.1): the API writes the first and only reads the second. The defaults suit `pnpm dev` from apps/api. */
+  IMPORT_ARCHIVES_DIR: z.string().min(1).default("../../.data/import/archives"),
+  IMPORT_WORK_DIR: z.string().min(1).default("../../.data/import/work"),
 }).superRefine((c, ctx) => {
   const refuse = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
   // 3d (design, section 5, review ruling 11): in every environment, a test adapter never runs on a site people can reach.
@@ -337,6 +367,9 @@ const schema = z.object({
   if (c.MEDIA_MATCH !== "off" && c.MEDIA_MATCH !== "test" && c.AUTOMATION_R2_ACTS === "on" && c.AUTOMATION_DPIA_MATCH_ACTS === undefined) {
     refuse("AUTOMATION_DPIA_MATCH_ACTS", "AUTOMATION_DPIA_MATCH_ACTS is required when a source's match seals (AUTOMATION_R2_ACTS=on): the day the assessment covered the measure");
   }
+  // 3b (decision 15): imported images are published only once the comparison with known material answered for each, so
+  // they are refused while it is off; in every environment.
+  if (c.IMPORT_IMAGES === "on" && c.MEDIA_MATCH === "off") refuse("IMPORT_IMAGES", "IMPORT_IMAGES=on is refused while MEDIA_MATCH is off: imported images are imported only while a matcher checks them");
   // An adapter named without its settings stops the process at start, as every missing setting does.
   if (c.EDGE_PURGE === "cloudflare") {
     for (const name of ["EDGE_ZONE_ID", "EDGE_API_TOKEN", "EDGE_HOST"] as const) if (c[name] === undefined) refuse(name, `${name} is required when EDGE_PURGE is cloudflare`);

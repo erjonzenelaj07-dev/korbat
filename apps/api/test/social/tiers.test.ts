@@ -26,6 +26,13 @@ describe("account tiers", () => {
       { bucket: "upload-day", max: 500, windowMs: DAY_MS },
     ]);
   });
+  test("3b: an import's chunks, acts and picks, 600, 20 and 3,000 an hour, at any age", () => {
+    for (const age of [0, 10 * DAY_MS]) {
+      expect(limitsFor("import-chunk", age)).toEqual([{ bucket: "import-chunk", max: 600, windowMs: HOUR_MS }]);
+      expect(limitsFor("import-act", age)).toEqual([{ bucket: "import-act", max: 20, windowMs: HOUR_MS }]);
+      expect(limitsFor("import-pick", age)).toEqual([{ bucket: "import-pick", max: 3_000, windowMs: HOUR_MS }]);
+    }
+  });
   test("engagement and graph limits do not depend on age, and follows have two windows", () => {
     for (const age of [0, 10 * DAY_MS]) {
       expect(limitsFor("like", age)[0]!.max).toBe(100);

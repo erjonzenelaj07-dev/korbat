@@ -1749,7 +1749,10 @@ describe("import from other platforms 3b", () => {
       ["images_kept", "integer", true],
       ["images_left_out", "integer", true],
       ["posts_removed", "integer", true],
+      // 3b Task 4 (migration 0046): whether the import brings images, decided at its creation and never changed.
+      ["images", "boolean", true],
     ]);
+    expect(column("import_jobs", "images")?.default).toBe(false);
     // The API makes the id (it names the import's folders): no default. The insert trigger forces the rest.
     expect(column("import_jobs", "id")?.primary).toBe(true);
     expect(column("import_jobs", "id")?.hasDefault).toBe(false);
@@ -1815,12 +1818,20 @@ describe("import from other platforms 3b", () => {
       ["ref", "integer", true],
       ["left_out", "boolean", true],
       ["alts", "jsonb", false],
+      // 3b Task 4 (migration 0046): the picked line's month, marks and described images, from which the picks' counts are summed.
+      ["month", "text", true],
+      ["marks", "smallint", true],
+      ["described", "smallint", true],
     ]);
     expect(column("import_picks", "left_out")?.default).toBe(false);
+    expect(column("import_picks", "described")?.default).toBe(0);
     const keys = byName.get("import_picks")!.primaryKeys;
     expect(keys.map((k) => k.columns.map((c) => c.name))).toEqual([["import_job_id", "ref"]]);
     expect(foreignKeys("import_picks")).toEqual([["import_job_id", "import_jobs", "cascade"]]);
-    expect(checks("import_picks")).toEqual(["import_picks_alts"]);
+    expect(checks("import_picks")).toEqual(["import_picks_alts", "import_picks_described", "import_picks_marks", "import_picks_month"]);
+    expect(checkSql("import_picks", "import_picks_month")).toBe(`"import_picks"."month" ~ '^[0-9]{4}-(0[1-9]|1[0-2])$'`);
+    expect(checkSql("import_picks", "import_picks_marks")).toBe(`"import_picks"."marks" between 0 and 15`);
+    expect(checkSql("import_picks", "import_picks_described")).toBe(`"import_picks"."described" between 0 and 4`);
     expect(checkSql("import_picks", "import_picks_alts")).toBe(
       `case jsonb_typeof("import_picks"."alts") when 'array' then jsonb_array_length("import_picks"."alts") <= 4 and octet_length("import_picks"."alts"::text) <= 16384 else "import_picks"."alts" is null end`,
     );

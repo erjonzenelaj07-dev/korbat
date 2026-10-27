@@ -24,8 +24,8 @@ const AUTH_SCHEMA_FILE = "auth.ts";
 const AUTH_POOL_ALLOWED = new Set(["config.ts", "index.ts", "cli/grant-role.ts", "cli/staff.ts"]);
 const AUTH_KEYS_ALLOWED = new Set(["config.ts"]);
 
-/** Modules that may only be entered through their index file. 3d Task 4 adds the seventh, transparency. */
-const MODULES = ["auth", "social", "media", "account", "staff", "moderation", "transparency"] as const;
+/** Modules that may only be entered through their index file. 3d Task 4 adds the seventh, transparency; 3b Task 4 the eighth, imports. */
+const MODULES = ["auth", "social", "media", "account", "staff", "moderation", "transparency", "imports"] as const;
 
 function walk(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -87,6 +87,7 @@ const insideMedia = (path: string) => path.startsWith("media/");
 const insideAccount = (path: string) => path.startsWith("account/");
 const insideStaff = (path: string) => path.startsWith("staff/");
 const insideModeration = (path: string) => path.startsWith("moderation/");
+const insideImports = (path: string) => path.startsWith("imports/");
 
 function findViolations(files: SourceFile[], publicNames: Set<string>, authNames: Set<string>): string[] {
   const violations: string[] = [];
@@ -126,7 +127,8 @@ function findViolations(files: SourceFile[], publicNames: Set<string>, authNames
     // The staff module (role korbat_api) reads and writes the public audit log; staff keys, staff sessions and enrolments
     // are credentials, the auth module's alone (3a design, section 5). The moderation module owns the moderation tables on
     // the same role: a notifier's contact and the staff links live in the auth schema, out of its reach (3c design, section 5).
-    if (insideSocial(path) || insideMedia(path) || insideStaff(path) || insideModeration(path)) {
+    // 3b: the imports module too, which asks the auth module whether an address is verified (design, section 4.2).
+    if (insideSocial(path) || insideMedia(path) || insideStaff(path) || insideModeration(path) || insideImports(path)) {
       for (const name of dbImports(source)) {
         if (name === "*") violations.push(`${path}: namespace import of @korbat/db (import public-schema names explicitly)`);
         else if (authNames.has(name)) violations.push(`${path}: imports auth-schema ${name} from @korbat/db`);
@@ -310,7 +312,9 @@ describe("the freeze's source pins", () => {
 const STANDING_PREDICATE = {
   // social/repo.ts, 3e Task 6: Explore's round applies the predicate to the candidates' authors and to the engagers at the
   // round's time, and the page and the chip to the authors at the read's (explorePage, listedInExplore).
-  liveNotSuspended: { "lib/standing.ts": 1, "media/repo.ts": 2, "profiles/store.ts": 3, "social/repo.ts": 6 },
+  // imports/repo.ts, 3b Task 4 (design, section 8.5): the one statement that creates an import, as media/repo.ts's upload
+  // row names it (its import and its use).
+  liveNotSuspended: { "imports/repo.ts": 2, "lib/standing.ts": 1, "media/repo.ts": 2, "profiles/store.ts": 3, "social/repo.ts": 6 },
   // social/repo.ts, 3e Task 6: the author's Explore status reads whether the author is suspended (exploreFacts). lib/standing.ts,
   // 3e's review: the closing judgment reads both halves.
   suspendedAt: { "lib/standing.ts": 3, "social/repo.ts": 7 },
@@ -318,7 +322,8 @@ const STANDING_PREDICATE = {
   // 3e's review (database1): the writes that end with the closing judgment: the social repository's (judgeActing), the
   // upload's row, and the intake of a report under a rule. The profile store's badge and the profile's edit end with
   // their UPDATE, made once the row is held.
-  closingJudgment: { "lib/standing.ts": 1, "media/repo.ts": 2, "moderation/intake.ts": 2, "social/repo.ts": 2 },
+  // 3b Task 4: and the creation of an import (imports/repo.ts, its import and its use).
+  closingJudgment: { "imports/repo.ts": 2, "lib/standing.ts": 1, "media/repo.ts": 2, "moderation/intake.ts": 2, "social/repo.ts": 2 },
 };
 const STANDING_COLUMNS_ALLOWED = new Set(["lib/standing.ts", "social/repo.ts", "moderation/standing-repo.ts"]);
 const STANDING_COLUMNS = ["suspended_from", "suspended_until", "reports_restricted_until", "suspendedFrom", "suspendedUntil", "reportsRestrictedUntil"];
@@ -533,6 +538,40 @@ function findComposeViolations(compose: string, dev: string): string[] {
     if (volumes.join("|") !== "- media-store:/media/store|- media-quarantine:/media/quarantine") violations.push(`compose.yml: quarantine mounts ${volumes.join(", ")}`);
   }
   if (!services.get("worker")?.includes("network_mode: none")) violations.push("compose.yml: worker has a network");
+  violations.push(...findImporterViolations(services, composeServices(dev)));
+  return violations;
+}
+
+/** A service's lines that are not comments: what Compose reads of it. */
+const serviceLines = (block: string): string[] => block.split(LF).filter((line) => !line.trim().startsWith("#"));
+/** The lines of a service that name one of the two import volumes. */
+const importMounts = (block: string): string[] => serviceLines(block).filter((line) => line.includes("import-archives") || line.includes("import-work")).map((line) => line.trim());
+
+/**
+ * 3b (design, section 7.1; decision 1): the importer parses archives people upload, hostile input. Like the worker it has
+ * no network and no capability; it reads import-archives read-only and writes import-work, and the API mounts the two
+ * the other way round. No other service names either volume, and the development file names neither.
+ */
+function findImporterViolations(services: Map<string, string>, dev: Map<string, string>): string[] {
+  const violations: string[] = [];
+  const expected: Record<string, string> = {
+    importer: "- import-archives:/import/archives:ro|- import-work:/import/work",
+    api: "- import-archives:/import/archives|- import-work:/import/work:ro",
+  };
+  for (const [name, block] of services) {
+    const mounts = importMounts(block);
+    if (mounts.length === 0 && expected[name] === undefined) continue;
+    if (expected[name] === undefined) violations.push(`compose.yml: ${name} names an import volume`);
+    else if (mounts.join("|") !== expected[name]) violations.push(`compose.yml: ${name} mounts the import volumes otherwise than ${expected[name]}`);
+  }
+  for (const [name, block] of dev) {
+    if (importMounts(block).length > 0) violations.push(`compose.dev.yml: ${name} names an import volume`);
+  }
+  const importer = services.get("importer");
+  if (!importer) return [...violations, "compose.yml: no service importer"];
+  const lines = serviceLines(importer).map((line) => line.trim());
+  for (const line of ["network_mode: none", "cap_drop: [ALL]"]) if (!lines.includes(line)) violations.push(`compose.yml: importer lacks ${line}`);
+  for (const key of ["networks:", "ports:", "env_file:", "secrets:"]) if (lines.some((line) => line.startsWith(key))) violations.push(`compose.yml: importer has ${key}`);
   return violations;
 }
 
@@ -560,7 +599,7 @@ describe("the quarantine's boundary (3d Task 1)", () => {
   test("only quarantine (read-write) and handover (read-only) mount media-quarantine; the mover is bare and the worker keeps no network", () => {
     const compose = readFileSync(join(REPO_ROOT, "infra", "compose.yml"), "utf8");
     const dev = readFileSync(join(REPO_ROOT, "infra", "compose.dev.yml"), "utf8");
-    expect([...composeServices(compose).keys()]).toEqual(expect.arrayContaining(["api", "migrate", "worker", "handover", "quarantine"]));
+    expect([...composeServices(compose).keys()]).toEqual(expect.arrayContaining(["api", "migrate", "worker", "importer", "handover", "quarantine"]));
     expect(findComposeViolations(compose, dev)).toEqual([]);
   });
 
@@ -578,6 +617,24 @@ describe("the quarantine's boundary (3d Task 1)", () => {
       "compose.dev.yml: api names media-quarantine",
       "compose.yml: quarantine has environment:",
     ]);
+  });
+
+  test("3b: catches an importer with a network or a writable archive volume, an import volume in another service or in the development file", () => {
+    const compose = readFileSync(join(REPO_ROOT, "infra", "compose.yml"), "utf8");
+    const dev = readFileSync(join(REPO_ROOT, "infra", "compose.dev.yml"), "utf8");
+    const broken = compose
+      .replace(`      - import-archives:/import/archives:ro${LF}`, `      - import-archives:/import/archives${LF}`)
+      .replace(`      dockerfile: apps/importer/Dockerfile${LF}    network_mode: none${LF}`, `      dockerfile: apps/importer/Dockerfile${LF}    networks: [app]${LF}`)
+      .replace(`      - media-uploads:/media/uploads:ro${LF}      - media-store:/media/store${LF}`, `      - media-uploads:/media/uploads:ro${LF}      - media-store:/media/store${LF}      - import-work:/import/work:ro${LF}`);
+    const devBroken = dev.replace(`  api:${LF}`, `  api:${LF}    volumes: [import-archives:/import/archives]${LF}`);
+    expect(findComposeViolations(broken, devBroken)).toEqual([
+      "compose.yml: worker names an import volume",
+      "compose.yml: importer mounts the import volumes otherwise than - import-archives:/import/archives:ro|- import-work:/import/work",
+      "compose.dev.yml: api names an import volume",
+      "compose.yml: importer lacks network_mode: none",
+      "compose.yml: importer has networks:",
+    ]);
+    expect(findComposeViolations(compose.replace(`${LF}  importer:${LF}`, `${LF}  importer2:${LF}`), dev)).toEqual(["compose.yml: importer2 names an import volume", "compose.yml: no service importer"]);
   });
 });
 

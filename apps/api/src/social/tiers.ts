@@ -1,3 +1,5 @@
+import { IMPORT_RULES } from "@korbat/contracts";
+
 /**
  * Write limits by account age (2a spec, section 6). Sub-project 3 replaces the age check with
  * reputation without changing the buckets or the enforcement.
@@ -10,7 +12,9 @@ export const NEW_ACCOUNT_MS = 24 * HOUR_MS;
 /** Reposting and quoting need an account at least this old. */
 export const REPOST_MIN_AGE_MS = 48 * HOUR_MS;
 
-export type WriteAction = "post" | "reply" | "quote" | "repost" | "like" | "bookmark" | "follow" | "block" | "mute" | "upload";
+/** 3b (design, section 7.6): an import's chunks, its acts (cancel; confirm, stop and undo in later tasks) and its picks. */
+export type ImportAction = "import-chunk" | "import-act" | "import-pick";
+export type WriteAction = "post" | "reply" | "quote" | "repost" | "like" | "bookmark" | "follow" | "block" | "mute" | "upload" | ImportAction;
 
 export interface WriteLimit {
   /** Counter name; several actions may share one (quotes count as posts). */
@@ -52,5 +56,13 @@ export function limitsFor(action: WriteAction, accountAgeMs: number): WriteLimit
         { bucket: "upload", max: fresh ? 20 : 120, windowMs: HOUR_MS },
         { bucket: "upload-day", max: fresh ? 60 : 500, windowMs: DAY_MS },
       ];
+    // 3b (design, section 7.6): the imports module counts these through this table too, at any age (an import needs an
+    // account of seven days anyway). A 2 GiB archive is 256 chunks; 600 an hour leave room for retries.
+    case "import-chunk":
+      return [{ bucket: "import-chunk", max: IMPORT_RULES.chunksPerHour, windowMs: HOUR_MS }];
+    case "import-act":
+      return [{ bucket: "import-act", max: IMPORT_RULES.actsPerHour, windowMs: HOUR_MS }];
+    case "import-pick":
+      return [{ bucket: "import-pick", max: IMPORT_RULES.picksPerHour, windowMs: HOUR_MS }];
   }
 }

@@ -975,6 +975,11 @@ export async function removeFixtures(migrateDb: Db, profileIds: readonly string[
     await tx.execute(sql`update post_media set hold_until = null where owner_id = any(${profiles}) and post_id is null and hold_until is not null`);
     await tx.execute(sql`delete from post_media where owner_id = any(${profiles})`);
     await tx.execute(sql`delete from posts where author_id = any(${profiles})`);
+    // 3b: the accounts' imports (their picks go with them) and import keys, which name the profiles without an on delete
+    // clause; after the posts and images that may name an import. The migrator passes import_jobs_delete and
+    // import_keys_delete, which refuse others while the profile is live.
+    await tx.execute(sql`delete from import_jobs where owner_id = any(${profiles})`);
+    await tx.execute(sql`delete from import_keys where owner_id = any(${profiles})`);
     await tx.execute(sql`delete from profiles where id = any(${profiles})`);
   });
 }

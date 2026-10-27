@@ -1330,6 +1330,23 @@ export function createSocialRepo(db: Db) {
       return row ? { authorId: row.author_id, state: row.state, quoteOfId: row.quote_of_id } : null;
     },
 
+    // ------------------------------------------------------------ imports (3b)
+
+    /**
+     * 3b (design, sections 7.5 step 2 and 9.1; decision 24): which of these import keys (64 lowercase hex each, the
+     * HMAC of section 5.4) the account's posts carry now, by posts_import_key_idx. The intake counts such a line
+     * already_imported and the preview leaves it out. A tombstone keeps no key (6.5), and one an older tombstone still
+     * carries is passed over here, so only posts that exist count. Nothing is locked.
+     */
+    async importedKeys(ownerId: string, keys: readonly string[]): Promise<Set<string>> {
+      if (keys.length === 0) return new Set();
+      const found = await rows<{ key: string }>(sql`
+        select encode(p.import_key, 'hex') as key from posts p
+         where p.author_id = ${ownerId}::uuid and p.state <> 'deleted_by_author'
+           and p.import_key = any(select decode(k, 'hex') from unnest(string_to_array(${keys.join(",")}, ',')) k)`);
+      return new Set(found.map((row) => row.key));
+    },
+
     // ------------------------------------------------------------ deletion
 
     /**
