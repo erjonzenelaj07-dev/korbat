@@ -2,7 +2,7 @@ import { z } from "zod";
 import { DisplayName, HandleInput } from "./auth";
 import { HiddenMedia, MEDIA_MAX_PER_POST, MediaAttachment, MediaView } from "./media";
 import { RULE_IDS } from "./moderation";
-import { FORBIDDEN_FORMAT, visibleLength } from "./text";
+import { FORBIDDEN_CONTROL, FORBIDDEN_FORMAT, normalizePostBody, postLength, visibleLength } from "./text";
 
 /**
  * Every code the social endpoints add to ErrorEnvelope.error.code (plus the shared ones: invalid_request, not_found, rate_limited).
@@ -25,18 +25,8 @@ export const HandleParam = z
 
 export const POST_MAX_LENGTH = 1000;
 
-/** Length in code points, which is what Postgres char_length counts. */
-export function postLength(body: string): number {
-  return Array.from(body).length;
-}
-
-/** Unicode NFC, CR LF to LF, at most two consecutive line breaks, trimmed. The server and the composer use the same rule. */
-export function normalizePostBody(raw: string): string {
-  return raw.normalize("NFC").replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-/** Any control character other than tab and line feed. */
-const FORBIDDEN_CONTROL = /[^\P{Cc}\t\n]/u;
+// 3b Task 1: postLength, normalizePostBody and FORBIDDEN_CONTROL live in ./text, so that imports.ts can read the body rules
+// without loading this module, which reads moderation.ts at load.
 
 /** A post body as stored: normalized, 1 to 1000 code points, some of them visible, no control or disguising characters. */
 export const PostBody = z

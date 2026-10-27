@@ -32,6 +32,9 @@ export * from "./auth";
 // 3d Task 6: the automated decision's numbers and closed lists. It imports nothing, so every module below can read it.
 export * from "./automation";
 export * from "./explore";
+// 3b Task 1: the import's contracts and numbers. It imports only ./media and ./text, so the modules that name ImportSource
+// (social.ts, moderation.ts, staff.ts, account.ts) can read it while they load.
+export * from "./imports";
 export * from "./media";
 // Evaluated before ./staff, and importing nothing from it: staff.ts can read this module's constants while it loads.
 export * from "./moderation";
