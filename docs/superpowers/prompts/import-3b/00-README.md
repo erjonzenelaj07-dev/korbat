@@ -74,3 +74,26 @@ python docs/superpowers/prompts/import-3b/verify_prompts.py
 ```
 
 Expected: `prompts reproduce the repository exactly`.
+
+## Execution findings (2026-10-27)
+
+The eight prompts were replayed into this repository by the fast path the owner chose for 3d: each task's files were written from its prompt by `write_blocks.py`, the install step run where a task changes the lockfile, and the task committed with the dry run's message and the stray-file check; then the gates ran once: Task 8's, on a database upgraded from 0042, with Task 7's browser checks of the console and the app and the web export, the stack rebuilt with the importer and the smoke test through Caddy. All passed.
+
+| Task | Commit |
+|---|---|
+| 1 | `b4a9e06` |
+| 2 | `d51f4ca` |
+| 3 | `14b230e` |
+| 4 | `63ecc33` |
+| 5 | `a60bac0` |
+| 6 | `5c37150` |
+| 7 | `d6f57de` |
+| 8 | `ebc8778` |
+
+- **Identical to the dry run.** Each commit changes the same paths as its dry-run commit, and after every task the tree outside the migrations folder is byte-identical to the dry run's, the lockfile included. In that folder the snapshots and the journal carry their own ids and times, and `0045_import_readers.sql` ends with a final newline (the prompt's block form); its statements are the same. `verify_prompts.py` reproduces all 272 files.
+- **What the machine needed.** Another program listened on port 8080 on every interface, so the run set `NODE_OPTIONS=--dns-result-order=ipv4first`; Windows reserved the ports 58017 to 58116 and 58136 to 58235, so the development Mailpit was published on 58125 for the run and put back afterwards.
+- **The smoke test creates one import per run,** and an address may start five a day (`IMPORT_RULES`): a sixth run within 24 hours fails at its import step with `rate_limited`. Wait out the window; never clear a live stack's limit to pass a test.
+- **The importer's labs name their image and volume `korbat2b-importer-build` and `korbat2b-importer-lab`,** after the dry run's compose project; the names are local to the machine and any other name works.
+- **A sleep during the gates.** The laptop entered standby during the run, and Docker's machine froze with it (the API logged nothing, not even its health checks, for hours). The app's browser check passed 51 of 51 across the sleep, in 72 minutes; the smoke test failed one check, `delete/start` answered `reauth_required` because more than the five minutes of `REAUTH_WINDOW_MS` passed between its sign-up and its deletion. Run again two minutes after the wake, it failed only on Explore's ranking, whose five-minute timer had frozen with the machine. The six stack gates (down, build, up, the test database, the smoke test, stop) were run again with the machine awake and passed. Neither failure is in the code: a smoke test that spans a sleep is run again from a fresh start.
+- **Load.** The whole integration suite took close to its hour on a machine shared with other development servers; the gate allows an hour, and halves with `--shard=1/2` and `--shard=2/2` are the fallback.
+- **The review that shaped the design.** Before Task 1, two reviewers (build fit; people and values) upheld 48 findings, 6 of them high, applied before the design was committed; the dry run's 116 amendments are in the design's section 15.
