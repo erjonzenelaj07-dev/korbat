@@ -9,7 +9,7 @@ import { FollowButton } from "../src/components/social/ProfileList";
 import { WhoSeesThisBody } from "../src/components/social/WhoSeesThis";
 import { DEFAULT_APPEARANCE, setAppearance } from "../src/lib/appearance";
 import { REPORT_WORDS } from "../src/lib/moderation-words";
-import { countLabel, deleteWithLeave, failedWords, flipped, followFailedWords, restored, settled, threadStats, toggleEngagement, toggleFollow, type ToggleKind } from "../src/lib/post-actions";
+import { countLabel, deleteWithLeave, failedWords, flipped, followFailedWords, restored, settled, threadStats, toggleCountsHidden, toggleEngagement, toggleFollow, type ToggleKind } from "../src/lib/post-actions";
 import { reach } from "../src/lib/reach";
 import { createLanes, laneKey } from "../src/lib/social";
 import { fullDate, postedWhen, timeAgo } from "../src/lib/time";
@@ -255,7 +255,10 @@ describe("the menus, drawn open (6.9, decision 12)", () => {
     }
     session.state = me(ADA.id);
     const own = html(<PostMenuPanel post={post()} onDelete={() => undefined} onWhoSees={() => undefined} />);
-    expect(items(own).buttons).toEqual([UI_WORDS["post.whoSees"], UI_WORDS["post.copyLink"], UI_WORDS["post.delete"]]);
+    // 2d (decision 26, 10.6): the author's menu gains Hide like and repost counts, or Show them once hidden, before Delete.
+    expect(items(own).buttons).toEqual([UI_WORDS["post.whoSees"], UI_WORDS["post.copyLink"], UI_WORDS["post.hideCounts"], UI_WORDS["post.delete"]]);
+    const hidden = html(<PostMenuPanel post={post({ countsHidden: true })} onDelete={() => undefined} onWhoSees={() => undefined} />);
+    expect(items(hidden).buttons).toEqual([UI_WORDS["post.whoSees"], UI_WORDS["post.copyLink"], UI_WORDS["post.showCounts"], UI_WORDS["post.delete"]]);
     expect(items(own).links).toEqual([]);
     // Who sees this carries its one-line summary under its label.
     expect(textOf(own)).toContain(reach(post(), me(ADA.id).me).summary);
@@ -504,5 +507,45 @@ describe("the provenance label (3b, 10.6)", () => {
     const out = html(<WhoSeesThisBody post={post({ imported: LABEL, author: BEN })} me={null} explore={null} />);
     expect(textOf(out)).toContain(IMPORT_WORDS["import.reach"]);
     expect(out).toMatch(/data-sheet-focus[^>]*>Anyone who searches the words of an imported post/);
+  });
+});
+
+describe("2d: mentions and hidden counts on the card (4.5, decision 26, 10.6)", () => {
+  test("a stored mention links, an unstored one and an imported post's stay text", () => {
+    const body = "Thanks @ada and @ben, see you at the harbour.";
+    const links = (view: PostView) => anchors(html(<PostCard post={view} />)).filter((link) => textOf(link.inner).startsWith("@")).map((link) => link.href);
+    expect(links(post({ author: BEN, body, mentions: ["ada"] }))).toEqual(["/u/ada"]);
+    expect(links(post({ author: BEN, body, mentions: [] }))).toEqual([]);
+    expect(links(post({ author: BEN, body, mentions: [], imported: { source: "x", at: "2019-03-03", shortened: false } }))).toEqual([]);
+  });
+
+  test("Who sees this tells the author that the counts are hidden, and nobody else", () => {
+    const hidden = post({ countsHidden: true });
+    expect(reach(hidden, me(ADA.id).me).lines.map((line) => line.text)).toContain(UI_WORDS["reach.countsHidden"]);
+    expect(reach(post(), me(ADA.id).me).lines.map((line) => line.text)).not.toContain(UI_WORDS["reach.countsHidden"]);
+    expect(reach(hidden, me(id(950)).me).lines.map((line) => line.text)).not.toContain(UI_WORDS["reach.countsHidden"]);
+    expect(UI_WORDS["reach.countsHidden"]).toBe("Like and repost counts are hidden from everyone but you.");
+  });
+
+  test("the More menu's switch answers at once, takes the server's answer, and a refusal puts it back", async () => {
+    const lanes = createLanes();
+    let view = post({ countsHidden: false });
+    const apply = (update: (current: PostView) => PostView) => void (view = update(view));
+    const client = { setCountsHidden: vi.fn(async (_id: string, hidden: boolean) => ({ countsHidden: hidden })) };
+    const result = await toggleCountsHidden(client, lanes, view, apply);
+    expect(result).toEqual({ status: "answered", hidden: true });
+    expect(client.setCountsHidden).toHaveBeenCalledWith(id(1), true);
+    expect(view.countsHidden).toBe(true);
+    const refusing = { setCountsHidden: vi.fn(async () => Promise.reject(new Error("refused"))) };
+    let shown = false;
+    const seen = (update: (current: PostView) => PostView) => {
+      view = update(view);
+      if (view.countsHidden === false) shown = true;
+    };
+    const refused = await toggleCountsHidden(refusing, lanes, view, seen);
+    expect(refused.status).toBe("refused");
+    // The change showed at once (hidden to shown) and was put back.
+    expect(shown).toBe(true);
+    expect(view.countsHidden).toBe(true);
   });
 });

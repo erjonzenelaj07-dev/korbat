@@ -47,6 +47,8 @@ export const UI_WORDS = {
   /** The navigation landmark's name and its items, the same words at every width (7.1). */
   "nav.label": "Main",
   "nav.home": "Home",
+  /** 2d (decision 24, 10.1): second, after Home, for an account; the item never carries a dot, a number or another word. */
+  "nav.activity": "Activity",
   "nav.bookmarks": "Bookmarks",
   "nav.profile": "Profile",
   "nav.settings": "Settings",
@@ -101,6 +103,12 @@ export const UI_WORDS = {
   "post.saved": "Saved",
   /** The delete question (6.6), word for word as PostCard.tsx had it. */
   "post.deleteQuestion": "Delete this post?",
+  /** 2d (decision 26, 10.6): the composer's switch, the author's More menu item and its toasts. */
+  "post.hideCounts.option": "Hide like and repost counts",
+  "post.hideCounts": "Hide like and repost counts",
+  "post.showCounts": "Show like and repost counts",
+  "post.countsHidden": "Like and repost counts hidden",
+  "post.countsShown": "Like and repost counts shown",
   /** The reply context and the quoted post's tombstones, word for word as PostCard.tsx had them. */
   "post.replyingTo": "Replying to ",
   "post.replyingHidden": "Replying to a post you can't see",
@@ -134,6 +142,8 @@ export const UI_WORDS = {
   "reach.how": "How Explore works",
   "reach.summary.public": "Public, signed in or not",
   "reach.summary.private": "Only you and korbat's moderators",
+  /** 2d (decision 26, 10.6): the author's line while the post's like and repost counts are hidden. */
+  "reach.countsHidden": "Like and repost counts are hidden from everyone but you.",
   /** A post's images and the lightbox (6.7), word for word as MediaGrid.tsx, HiddenImage.tsx and MediaViewer.tsx had them. */
   "media.open": "Open image: {alt}",
   "media.showAlt": "Show image descriptions",
@@ -226,9 +236,18 @@ export const UI_WORDS = {
   "feed.gap": "Show more new posts",
   "feed.end.following": "That's everything in Following.",
   "feed.end.latest": "That's everything in Latest.",
-  "feed.empty.following.title": "Your Following feed is empty",
-  "feed.empty.following.body": "Nothing here yet. Follow someone, or switch to Latest or Explore.",
-  "feed.empty.following.action": "Open Latest",
+  /**
+   * 2d (decision 25, 10.7): the Getting started panel, in the place of Following's empty state for an account, which it
+   * replaces; feed.start.settings shows under 768 px, where Settings is on the profile (10.1).
+   */
+  "feed.start.title": "Getting started",
+  "feed.start.body": "Following shows posts from the accounts you follow, newest first. Here is how to find some.",
+  "feed.start.latest": "Read Latest: every public post, newest first",
+  "feed.start.explore": "See Explore, and how it picks",
+  "feed.start.handle": "Go to a profile by its handle",
+  "feed.start.profile": "Set up your profile: a name, a bio and, if you like, a picture",
+  "feed.start.settings": "On a phone, Settings is on your profile.",
+  "feed.start.rules": "Read the rules",
   "feed.empty.latest.title": "Nothing posted yet",
   "feed.empty.latest.body": "No posts yet.",
   "feed.loadMore": "Load more",
@@ -267,7 +286,8 @@ export const UI_WORDS = {
     "Neither of you will see the other's posts or profile while signed in, and you will unfollow each other. Posts on korbat are public, so a block does not hide them from someone who signs out. You can undo this in your privacy settings.",
   "profile.cancel": "Cancel",
   "profile.signIn": "Sign in to follow this account.",
-  "profile.settings": "Security and privacy settings",
+  /** 2d (decision 24, 10.1): the own profile's button opens the Settings index, the phone's only way there. */
+  "profile.settings": "Settings",
   "profile.missing": "This account is not available",
   "profile.tabs": "Profile",
   "profile.tab.posts": "Posts",
@@ -334,6 +354,9 @@ export type UiWord = keyof typeof UI_WORDS;
 export const TITLE_WORDS = {
   "title.notFound": "Page not found - korbat",
   "title.bookmarks": "Bookmarks - korbat",
+  /** 2d (10.2, 10.8): Activity and its settings page. */
+  "title.activity": "Activity - korbat",
+  "title.settingsActivity": "Activity - Settings - korbat",
   "title.followers": "Followers - korbat",
   "title.following": "Following - korbat",
   "title.home": "Home - korbat",

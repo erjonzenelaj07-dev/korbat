@@ -107,6 +107,14 @@ afterEach(() => {
 const KINDS: LayoutKind[] = ["phone", "tablet", "desktop", "wide"];
 
 describe("the navigation (sections 7.1 to 7.3)", () => {
+  // 2d (decision 24, 10.1): Activity second; the phone's tab bar keeps four items and reaches Settings from the profile.
+  const SIGNED_IN_ITEMS: Record<LayoutKind, string[]> = {
+    phone: ["/", "/activity", "/bookmarks", "/u/ada"],
+    tablet: ["/", "/activity", "/bookmarks", "/u/ada", "/settings"],
+    desktop: ["/", "/activity", "/bookmarks", "/u/ada", "/settings"],
+    wide: ["/", "/activity", "/bookmarks", "/u/ada", "/settings"],
+  };
+
   test("at every layout the nav is a landmark named Main whose items are real anchors, in today's order and hrefs, with one current item", () => {
     for (const kind of KINDS) {
       shell.kind = kind;
@@ -116,7 +124,7 @@ describe("the navigation (sections 7.1 to 7.3)", () => {
       expect(out, kind).toContain(`data-layout="${kind}"`);
       const nav = inside(out, /<nav\b[^>]*aria-label="Main"[^>]*>/);
       expect(nav, kind).not.toBe("");
-      expect(anchors(nav).map(hrefOf), kind).toEqual(["/", "/bookmarks", "/u/ada", "/settings"]);
+      expect(anchors(nav).map(hrefOf), kind).toEqual(SIGNED_IN_ITEMS[kind]);
       const current = anchors(nav).filter((tag) => tag.includes('aria-current="page"'));
       expect(current, kind).toHaveLength(1);
       expect(current[0], kind).toContain('href="/bookmarks"');
@@ -124,9 +132,36 @@ describe("the navigation (sections 7.1 to 7.3)", () => {
       // (Its pill and bar are classes, which a static render does not draw: the browser check measures them.)
       const items = nav.split(/(?=<a\b)/).slice(1);
       expect(items.filter((item) => item.includes('stroke-width="2.25"')).map((item) => hrefOf(item)), kind).toEqual(["/bookmarks"]);
-      expect(items.filter((item) => item.includes('stroke-width="1.75"')).map((item) => hrefOf(item)), kind).toEqual(["/", "/u/ada", "/settings"]);
+      expect(items.filter((item) => item.includes('stroke-width="1.75"')).map((item) => hrefOf(item)), kind).toEqual(SIGNED_IN_ITEMS[kind].filter((href) => href !== "/bookmarks"));
       expect(textOf(nav), kind).toContain(UI_WORDS["nav.bookmarks"]);
     }
+  });
+
+  test("2d (decision 4, 10.1): Activity's item is its icon and its label alone, at every layout and on every page, Activity's own included", () => {
+    for (const kind of KINDS) {
+      for (const pathname of ["/", "/activity", "/settings/activity"]) {
+        shell.kind = kind;
+        shell.state = signedIn();
+        shell.pathname = pathname;
+        const nav = inside(html(<AppShell>{null}</AppShell>), /<nav\b[^>]*>/);
+        const item = nav.split(/(?=<a\b)/).find((part) => hrefOf(part) === "/activity") ?? "";
+        expect(item, `${kind} ${pathname}`).toContain("lucide-bell");
+        // Nothing counts or badges: the item says its label and nothing else, no number, no dot, no other word.
+        expect(textOf(inside(item, /<a\b[^>]*>/)), `${kind} ${pathname}`).toBe(UI_WORDS["nav.activity"]);
+        expect(item, `${kind} ${pathname}`).not.toMatch(/aria-label=|aria-describedby=/);
+        expect(nav.match(/<a\b/g), `${kind} ${pathname}`).toHaveLength(SIGNED_IN_ITEMS[kind].length);
+      }
+    }
+  });
+
+  test("on a phone the settings pages mark no nav item current: Settings is reached from the profile, and the settings row says where the reader is", () => {
+    shell.kind = "phone";
+    shell.state = signedIn();
+    shell.pathname = "/settings/activity";
+    const nav = inside(html(<AppShell>{null}</AppShell>), /<nav\b[^>]*>/);
+    expect(anchors(nav).filter((tag) => tag.includes('aria-current="page"'))).toEqual([]);
+    shell.pathname = "/activity";
+    expect(anchors(inside(html(<AppShell>{null}</AppShell>), /<nav\b[^>]*>/)).filter((tag) => tag.includes('aria-current="page"')).map(hrefOf)).toEqual(["/activity"]);
   });
 
   test("signed out the nav holds Home and Sign in; while the session loads it holds Home alone, so Sign in never flashes", () => {

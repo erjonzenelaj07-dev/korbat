@@ -2,21 +2,24 @@ import { Pressable, View } from "react-native";
 import { Link } from "expo-router";
 import { IMPORT_WORDS } from "@/lib/import-words";
 import { CASES_WORDS } from "@/lib/moderation-words";
+import { ACTIVITY_SETTINGS_WORDS } from "@/lib/settings-words";
 import { UI_WORDS } from "@/lib/ui-words";
 import { cn } from "@/theme/cn";
 import type { IconName } from "./icons";
 import { FOCUS_RING, HOVER_WASH } from "./kit/interaction";
 import { Text } from "./kit/Text";
 
-export type SettingsPage = "appearance" | "security" | "privacy" | "profile" | "account" | "import" | "cases";
+export type SettingsPage = "appearance" | "activity" | "security" | "privacy" | "profile" | "account" | "import" | "cases";
 
 /**
  * The settings pages in their order, with their names and icons (UI design, sections 4.7 and 8.8): Appearance first
  * (UI Task 8, the owner's ruling 10), so the page a newcomer looks for comes first, in this row and in the Settings
  * index (app/settings/index.tsx), which lists the same pages as rows.
  */
-export const SETTINGS_PAGES: { page: SettingsPage; label: string; icon: IconName; row?: string }[] = [
+export const SETTINGS_PAGES: { page: SettingsPage; label: string; icon: IconName; row?: string; hint?: string }[] = [
   { page: "appearance", label: UI_WORDS["appearance.nav"], icon: "appearance" },
+  // 2d (10.8): Activity after Appearance, with its hint under the index's row.
+  { page: "activity", label: ACTIVITY_SETTINGS_WORDS.nav, icon: "activity", hint: ACTIVITY_SETTINGS_WORDS.hint },
   { page: "security", label: UI_WORDS["settings.security"], icon: "security" },
   { page: "privacy", label: UI_WORDS["settings.privacy"], icon: "privacy" },
   { page: "profile", label: UI_WORDS["settings.profile"], icon: "edit-profile" },

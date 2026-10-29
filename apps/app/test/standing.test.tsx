@@ -28,6 +28,8 @@ vi.mock("expo-router", () => ({
   usePathname: () => "/",
 }));
 vi.mock("@/lib/session", () => ({ useSession: () => ({ state: { status: "signed-out" }, refresh: async () => undefined }) }));
+// 2d (10.4): the kit's Avatar draws a picture through expo-image, whose native module does not load in Node.
+vi.mock("expo-image", () => ({ Image: () => null }));
 // react-native-reanimated is mocked once for every test file in test/setup.ts.
 vi.mock("@marsidev/react-turnstile", async () => {
   const { createElement } = await import("react");

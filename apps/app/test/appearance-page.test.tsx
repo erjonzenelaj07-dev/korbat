@@ -40,6 +40,8 @@ vi.mock("expo-router", () => ({
   usePathname: () => shell.pathname,
 }));
 vi.mock("@/lib/session", () => ({ useSession: () => ({ state: shell.state, refresh: async () => shell.state }) }));
+// 2d (10.4): the kit's Avatar draws a picture through expo-image, whose native module does not load in Node.
+vi.mock("expo-image", () => ({ Image: () => null }));
 // The title goes into the document's head through expo-router/head; here it is drawn in place, so a test can read it.
 vi.mock("expo-router/head", () => ({ default: ({ children }: { children: ReactNode }) => createElement("template", { "data-head": "" }, children) }));
 
@@ -252,6 +254,8 @@ describe("the Settings index (section 8.8, ruling 10)", () => {
     expect(out).not.toMatch(/<nav [^>]*aria-label="Settings"/);
     const rows: [string, string, keyof typeof ICONS][] = [
       ["/settings/appearance", UI_WORDS["appearance.nav"], "appearance"],
+      // 2d Task 5 (10.8): Activity after Appearance, its hint under its label.
+      ["/settings/activity", `${ACTIVITY_SETTINGS_WORDS.nav} ${ACTIVITY_SETTINGS_WORDS.hint}`, "activity"],
       ["/settings/security", UI_WORDS["settings.security"], "security"],
       ["/settings/privacy", UI_WORDS["settings.privacy"], "privacy"],
       ["/settings/profile", UI_WORDS["settings.profile"], "edit-profile"],
@@ -327,3 +331,4 @@ describe("what a choice of the page is", () => {
 
 // 3b Task 7 appends below, so no line above moves: the Settings index's Import posts row (3b design, section 10.1).
 import { IMPORT_WORDS } from "../src/lib/import-words";
+import { ACTIVITY_SETTINGS_WORDS } from "../src/lib/settings-words";

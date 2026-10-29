@@ -9,13 +9,17 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { THEMES, type ThemeName } from "../../src/theme/tokens";
 import { TITLE_WORDS, UI_WORDS, fill } from "../../src/lib/ui-words";
 import { THEME_FADE } from "../../src/theme/motion";
-import { CASES_WORDS, DECISION_WORDS, STATUS_SHEET_WORDS } from "../../src/lib/moderation-words";
+import { CASES_WORDS, DECISION_WORDS, STATUS_SHEET_WORDS, UPLOAD_TEXTS } from "../../src/lib/moderation-words";
 import { RULES_PAGE } from "../../src/lib/public-pages";
 import { IMPORT_WORDS } from "../../src/lib/import-words";
-import { IMPORT_RULES } from "@korbat/contracts";
+import { ACTIVITY_DEFAULTS, IMPORT_RULES } from "@korbat/contracts";
+import { ACTIVITY_WORDS } from "../../src/lib/activity-words";
+import { ACTIVITY_SETTINGS_WORDS, AVATAR_WORDS } from "../../src/lib/settings-words";
 import { appSiteHeadersFromCaddyfile } from "./caddyfile";
 import {
+  ACTIVITY_SEEN,
   ADA,
+  AVATAR_UPLOAD_ID,
   createFixtureApi,
   DECISION_ID,
   GRACE,
@@ -38,6 +42,7 @@ import {
   postIdOf,
   RELEASE_ID,
   REMOVED_CHIP,
+  solidWebp,
   UPLOAD_ID,
   writtenIdOf,
   type FixtureApi,
@@ -298,6 +303,10 @@ const ROUTES = [
   // 3b Task 7: the import's two screens, the start and one import.
   "/settings/import",
   `/settings/import/${IMPORT_READY}`,
+  // 2d Task 5: Activity, its Conversations tab and its settings page.
+  "/activity",
+  "/activity?tab=conversations",
+  "/settings/activity",
   "/signin",
   "/code",
   "/password",
@@ -417,13 +426,16 @@ async function layoutStep(width: number, height: number, kind: string): Promise<
         const layout = (await visit_.page.evaluate(LAYOUT_SCRIPT)) as Layout;
         // A page in PublicFrame has no shell: no layout kind, no nav and no context column.
         expect(layout.kind, page.name).toBe(page.frame ? null : kind);
-        expect(layout.current, page.name).toEqual(page.current === null ? [] : [page.current]);
+        // 2d (decision 24, 10.1): the phone's tab bar has no Settings item, so its settings pages mark no item current; the
+        // settings row under each one's title says where the reader is, and Settings is reached from the profile.
+        const current = kind === "phone" && page.current === "/settings" ? null : page.current;
+        expect(layout.current, page.name).toEqual(current === null ? [] : [current]);
         // The context column from 1024 px only.
         expect(layout.context, page.name).toBe(!page.frame && width >= 1024);
         expect(layout.scroll, `${page.name}: no horizontal scroll`).toBeLessThanOrEqual(0);
         expect(await clippedLabels(visit_.page, page.scope), page.name).toEqual([]);
         if (width < 768) expect(await phoneProblems(visit_.page, page.scope), page.name).toEqual([]);
-        if (page.current !== null) {
+        if (current !== null) {
           // The current item: the accent-wash pill and a 3 px accent bar, so it is marked by shape as well as colour.
           const colours = THEMES[theme as ThemeName];
           expect(layout.marks.some((mark) => mark.bg === rgb(colours["accent-wash"])), `${page.name}: the pill`).toBe(true);
@@ -702,7 +714,7 @@ describe("the app in Chromium, under the app site's policy", () => {
       const focused = `(() => { const e = document.activeElement; const s = getComputedStyle(e); const r = e.getBoundingClientRect(); return { tag: e.tagName.toLowerCase(), href: e.getAttribute("href"), role: e.getAttribute("role"), inMain: !!e.closest("main"), isMain: e.tagName === "MAIN", inNav: !!e.closest('nav[aria-label="Main"]'), outline: s.outlineStyle, width: parseFloat(s.outlineWidth), w: r.width, h: r.height }; })()`;
       type Focus = { tag: string; href: string | null; role: string | null; inMain: boolean; isMain: boolean; inNav: boolean; outline: string; width: number; w: number; h: number };
       const stops: Focus[] = [];
-      for (let i = 0; i < 7; i++) {
+      for (let i = 0; i < 8; i++) {
         await visit_.page.keyboard.press("Tab");
         stops.push((await visit_.page.evaluate(focused)) as Focus);
         if (i === 0) await screenshot(visit_.page, "keyboard-1280-dark-skip");
@@ -712,15 +724,16 @@ describe("the app in Chromium, under the app site's policy", () => {
       // The skip link shows itself while it holds the focus, at a control's size.
       expect(stops[0]!.w).toBeGreaterThanOrEqual(44);
       expect(stops[0]!.h).toBeGreaterThanOrEqual(44);
-      expect(stops.slice(1, 5).map((stop) => (stop.inNav ? stop.href : null))).toEqual(["/", "/bookmarks", "/u/ada", "/settings"]);
+      // 2d Task 5 (decision 24): Activity second.
+      expect(stops.slice(1, 6).map((stop) => (stop.inNav ? stop.href : null))).toEqual(["/", "/activity", "/bookmarks", "/u/ada", "/settings"]);
       // Task 6: the nav ends with New post, a button and no link.
-      expect(stops[5]!.inNav).toBe(true);
-      expect(stops[5]!.role).toBe("button");
-      expect(stops[5]!.href).toBeNull();
-      expect(stops[6]!.inMain).toBe(true);
+      expect(stops[6]!.inNav).toBe(true);
+      expect(stops[6]!.role).toBe("button");
+      expect(stops[6]!.href).toBeNull();
+      expect(stops[7]!.inMain).toBe(true);
       // Every stop draws korbat's ring, 2 px: the shell's, and the first stop inside Home's column, Home's own tab (Task 5).
-      expect(stops[6]!.role).toBe("tab");
-      for (const stop of stops.slice(0, 7)) {
+      expect(stops[7]!.role).toBe("tab");
+      for (const stop of stops.slice(0, 8)) {
         expect(stop.outline, JSON.stringify(stop)).not.toBe("none");
         expect(stop.width, JSON.stringify(stop)).toBeGreaterThanOrEqual(2);
       }
@@ -880,6 +893,20 @@ describe("the app in Chromium, under the app site's policy", () => {
     const visit_ = await open({ width: 360, height: 740, appearance: { theme: "light" } });
     try {
       await visit(visit_.page, "/");
+      // 2d Task 5: on a loaded machine the feed's rows can be drawn after the network's idle moment, and their images and
+      // the mono face would then be asked for offline (the export from before Task 5 met it too). The rows are drawn in
+      // batches: once their number has held for a second, the images they asked for and the fonts they use are in before
+      // the connection goes (an image left to load lazily is not asked for, so it is not waited for).
+      await visit_.page.locator('main [role="article"]').first().waitFor();
+      let rows = -1;
+      for (let i = 0; i < 20; i++) {
+        const now = await visit_.page.locator('main [role="article"]').count();
+        if (now === rows) break;
+        rows = now;
+        await pause(1000);
+      }
+      await until(visit_.page, `[...document.images].filter((image) => image.loading !== "lazy").every((image) => image.complete)`, "the drawn rows' images");
+      await visit_.page.evaluate("document.fonts.ready.then(() => true)");
       const banner = visit_.page.locator('main [role="status"]', { hasText: UI_WORDS["offline.title"] });
       expect(await banner.count()).toBe(0);
       await visit_.context.setOffline(true);
@@ -1154,7 +1181,8 @@ describe("the app in Chromium, under the app site's policy", () => {
       const ada = postArticle(page, 3);
       await ada.locator(MORE).click();
       await menu.waitFor({ state: "visible" });
-      expect(await menu.locator('[role="button"]').allInnerTexts()).toEqual([expect.stringContaining(UI_WORDS["post.whoSees"]), UI_WORDS["post.copyLink"], UI_WORDS["post.delete"]]);
+      // 2d Task 5 (10.6): the author's menu holds Hide like and repost counts before Delete.
+      expect(await menu.locator('[role="button"]').allInnerTexts()).toEqual([expect.stringContaining(UI_WORDS["post.whoSees"]), UI_WORDS["post.copyLink"], UI_WORDS["post.hideCounts"], UI_WORDS["post.delete"]]);
       expect(await menu.locator("a").count()).toBe(0);
       await menu.getByRole("button", { name: UI_WORDS["post.delete"] }).click();
       const question = ada.locator('[role="dialog"]');
@@ -1871,6 +1899,9 @@ describe("the app in Chromium, under the app site's policy", () => {
         try {
           await visit(page, "/u/ada");
           const chip = statusChip(page);
+          // 2d Task 5: the profile asks for its posts only once the profile has answered, which a loaded machine can leave
+          // after the network's idle moment: the chip is waited for before it is read (the export before Task 5 met it too).
+          await chip.first().waitFor();
           // The chip: a button that opens a dialog, named by its own words, with a 44 px target.
           const tag = (await page.evaluate(`(() => { const e = [...document.querySelectorAll('[aria-haspopup="dialog"]')].find((x) => x.textContent.trim() === ${JSON.stringify(REMOVED_CHIP)}); return e ? { role: e.getAttribute("role"), popup: e.getAttribute("aria-haspopup"), name: e.textContent.trim(), height: e.offsetHeight } : null; })()`)) as {
             role: string | null;
@@ -2031,7 +2062,7 @@ describe("the app in Chromium, under the app site's policy", () => {
   /** The appearance this browser keeps, as lib/appearance.ts writes it. */
   const STORED = `JSON.parse(localStorage.getItem("korbat.appearance") || "null")`;
 
-  test("35. the nav's Settings opens the Settings index, current there and on every page below; its seven rows, Appearance first, and no settings row; signed out the nav's Appearance opens Appearance without the row, and /settings goes to sign-in", async () => {
+  test("35. the nav's Settings opens the Settings index, current there and on every page below; its eight rows, Appearance first, and no settings row; signed out the nav's Appearance opens Appearance without the row, and /settings goes to sign-in", async () => {
     const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
     const page = visit_.page;
     // A client navigation keeps the screen it left mounted, hidden, with a shell of its own: only what is shown counts.
@@ -2046,6 +2077,7 @@ describe("the app in Chromium, under the app site's policy", () => {
       expect(await page.evaluate(currentItem)).toEqual(["/settings"]);
       expect(await page.evaluate(`[...document.querySelectorAll('[data-screen="settings"] a')].map((link) => link.getAttribute("href"))`)).toEqual([
         "/settings/appearance",
+        "/settings/activity", // 2d Task 5: Activity after Appearance (10.8).
         "/settings/security",
         "/settings/privacy",
         "/settings/profile",
@@ -2660,6 +2692,430 @@ describe("the app in Chromium, under the app site's policy", () => {
       imports.dropUntilRead.clear();
       imports.refuseOnce.clear();
       await visit_.context.close();
+    }
+  });
+
+  // 2d Task 5 (2d design, section 10.9) appends steps 52 to 57 below, so the steps above keep their numbers.
+
+  /** Activity's state as the fixture starts it: two entries new against the stored marker, nothing newer, the defaults. */
+  const resetActivity = () => {
+    fixtures.state.activity = { seenAt: ACTIVITY_SEEN, seen: [], newer: 0, fresh: 0, settings: { ...ACTIVITY_DEFAULTS }, saves: [] };
+  };
+  /** The names of the shown articles of the main column, in order. */
+  const ARTICLE_NAMES = `[...document.querySelectorAll('main [role="article"][aria-label]')].filter((e) => e.getClientRects().length > 0).map((e) => e.getAttribute("aria-label"))`;
+  /** The shown h2s of the main column, in order. */
+  const H2S = `[...document.querySelectorAll("main h2")].filter((e) => e.getClientRects().length > 0).map((e) => e.textContent)`;
+  /** The aria-label of the focused element, and the key of the list row it is in. */
+  const FOCUSED_NAME = `document.activeElement ? document.activeElement.getAttribute("aria-label") : null`;
+  const FOCUSED_ROW = `(() => { const row = document.activeElement && document.activeElement.closest("[data-row]"); return row ? row.getAttribute("data-row") : null; })()`;
+  /** A fixture entry's id, as fixture-api.ts numbers them. */
+  const entryId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
+  test("52. Activity at 360, 768 and 1280 in Light, Dim and Dark: its tabs, headings and rows, each entry's name, the seen marker, the pill and the focus after it and after Load more, a follow group's three links; no other route asks for Activity and nothing on the nav or in the title changes; at 360 Settings is reached from the profile", async () => {
+    // No route but Activity asks for it: Home, Bookmarks, a profile and Settings, each left open past a poll's wait.
+    const quiet = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
+    try {
+      await quiet.page.clock.install();
+      const from = fixtures.state.requests.length;
+      for (const route of ["/", "/bookmarks", "/u/ada", "/settings", "/post/" + POST_ID]) {
+        await visit(quiet.page, route);
+        await quiet.page.clock.fastForward(95_000);
+        await pause(200);
+      }
+      expect(fixtures.state.requests.slice(from).filter((request) => request.path.startsWith("/api/activity"))).toEqual([]);
+      await clean(quiet);
+    } finally {
+      await quiet.context.close();
+    }
+
+    for (const [width, height] of [
+      [360, 740],
+      [768, 1024],
+      [1280, 900],
+    ] as const) {
+      for (const theme of ["light", "dim", "dark"] as const) {
+        resetActivity();
+        const visit_ = await open({ width, height, appearance: { theme } });
+        const page = visit_.page;
+        try {
+          await visit(page, "/activity");
+          await page.locator('main [role="article"]').first().waitFor();
+          expect(await page.evaluate("document.title")).toBe(TITLE_WORDS["title.activity"]);
+          expect(await page.locator("h1:visible").innerText()).toBe(ACTIVITY_WORDS["activity.title"]);
+          expect(await page.locator('[role="tablist"]:visible').getAttribute("aria-label")).toBe(ACTIVITY_WORDS["activity.tabs"]);
+          expect(await page.locator('[role="tab"][aria-selected="true"]:visible').innerText()).toBe(ACTIVITY_WORDS["activity.tab.all"]);
+          // The two new entries first, under "New since you last looked", then "Earlier"; each article named by its line and time.
+          expect(await page.evaluate(H2S)).toEqual([ACTIVITY_WORDS["activity.divider"], ACTIVITY_WORDS["activity.earlier"]]);
+          const names = (await page.evaluate(ARTICLE_NAMES)) as string[];
+          expect(names.slice(0, 2).every((name) => name.startsWith("New, "))).toBe(true);
+          // The times are the fixtures' (minutes before the walk started), so only the words before them are pinned here.
+          expect(names[0]).toMatch(/^New, Grace Hopper replied to your post, [0-9]+[mhd] ago$/);
+          expect(names[1]).toMatch(/^New, Linus mentioned you, [0-9]+[mhd] ago$/);
+          expect(names[2]).toMatch(/^Grace Hopper and 4 others followed you, [0-9]+[mhd] ago$/);
+          expect(names.slice(2).some((name) => name.startsWith("New, "))).toBe(false);
+          // The marker went once, with the newest entry's time to the microsecond.
+          await expect.poll(() => fixtures.state.activity.seen.length).toBe(1);
+          expect(fixtures.state.activity.seen[0]! > ACTIVITY_SEEN).toBe(true);
+          expect(fixtures.state.activity.seen[0]).toMatch(/[.][0-9]{6}Z$/);
+          // The nav's Activity item is its label alone, and the title names no count.
+          expect(await page.locator('nav[aria-label="Main"] a[href="/activity"]').innerText()).toBe(UI_WORDS["nav.activity"]);
+          expect(await page.evaluate(SIDEWAYS)).toBeLessThanOrEqual(0);
+          expect(await clippedLabels(page, ALL)).toEqual([]);
+          if (width < 768) expect(await phoneProblems(page, ALL)).toEqual([]);
+          expect(await contrast(page, "main")).toEqual([]);
+          await screenshot(page, `activity-${width}-${theme}`);
+          await clean(visit_);
+        } finally {
+          await visit_.context.close();
+        }
+      }
+    }
+
+    // At 1280: the follow group's links, Conversations in the address, Load more and the pill with the focus after each.
+    resetActivity();
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
+    const page = visit_.page;
+    try {
+      await page.clock.install();
+      await visit(page, "/activity");
+      const group = page.locator('main [role="article"][aria-label^="Grace Hopper and 4 others"]');
+      await group.waitFor();
+      expect(await group.locator("a").evaluateAll((links) => links.map((link) => [link.getAttribute("aria-label") || link.textContent, link.getAttribute("href")]))).toEqual([
+        ["Grace Hopper", "/u/grace"],
+        ["Linus", "/u/linus"],
+        ["Mary Somerville", "/u/mary"],
+        [ACTIVITY_WORDS["activity.follow.all"], "/u/ada/followers"],
+      ]);
+      // Each of them a 44 px target; the pictures are the fixture's squares, drawn.
+      for (const box of await group.locator("a").evaluateAll((links) => links.map((link) => link.getBoundingClientRect().height))) expect(box).toBeGreaterThanOrEqual(44);
+      await until(page, `[...document.querySelectorAll('main [role="article"] img')].some((img) => img.complete && img.naturalWidth === 128)`, "an avatar drawn");
+      // A post entry's one action is Reply, which opens the thread with its reply card.
+      const reply = page.locator(`main [role="article"][aria-label^="New, Grace Hopper replied"]`);
+      const actions = (await reply.getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label")))) as string[];
+      expect(actions).toHaveLength(1);
+      expect(actions[0]).toMatch(/^Reply/);
+      // Load more, at the end of the first page: the focus goes to the first entry it brought, the 31st, an older reply.
+      const loadMore = page.getByRole("button", { name: UI_WORDS["feed.loadMore"] });
+      // The list draws its rows in batches as it scrolls: on a loaded machine the end can take a while to come into the window.
+      for (let i = 0; i < 60 && (await loadMore.count()) === 0; i++) {
+        await scrollList(page, 100_000);
+        await pause(400);
+      }
+      await loadMore.click();
+      await until(page, `${FOCUSED_ROW} === "e:${entryId(1340)}"`, "the first entry Load more brought focused");
+      expect(await page.evaluate(FOCUSED_NAME)).toMatch(/^Grace Hopper replied to your post, /);
+      await page.getByText(fill(ACTIVITY_WORDS["activity.end"], { days: 90 })).waitFor();
+      // The pill: three newer entries after the poll's 30 s; the nav and the title stay as they are.
+      fixtures.state.activity.newer = 3;
+      fixtures.state.activity.fresh = 3;
+      const navBefore = await page.locator('nav[aria-label="Main"]').innerText();
+      await page.clock.fastForward(31_000);
+      const pill = page.locator("[data-pill]");
+      await pill.waitFor({ state: "visible" });
+      expect(await pill.innerText()).toBe("3 new");
+      expect(await pill.getAttribute("aria-label")).toBe("3 new above, go to the first one");
+      expect(await page.locator('nav[aria-label="Main"]').innerText()).toBe(navBefore);
+      expect(await page.evaluate("document.title")).toBe(TITLE_WORDS["title.activity"]);
+      expect(fixtures.state.requests.some((request) => request.path.startsWith("/api/activity/newer?tab=all&since="))).toBe(true);
+      await pause(400);
+      await screenshot(page, "activity-pill-1280-light");
+      await pill.click();
+      // The first page again at the top, the newest of the three first, and the focus on it.
+      await until(page, `${FOCUSED_ROW} === "e:${entryId(1383)}"`, "the first entry of the new first page focused");
+      expect(await page.evaluate(FOCUSED_NAME)).toMatch(/^New, Grace Hopper replied to your post, /);
+      expect(fixtures.state.activity.seen.length).toBe(2);
+      // Conversations keeps replies, mentions and quotes, and stays in the address.
+      await page.getByRole("tab", { name: ACTIVITY_WORDS["activity.tab.conversations"] }).click();
+      await until(page, `location.search === "?tab=conversations"`, "the tab in the address");
+      await page.reload();
+      await page.locator('main [role="article"]').first().waitFor();
+      expect(await page.locator('[role="tab"][aria-selected="true"]:visible').innerText()).toBe(ACTIVITY_WORDS["activity.tab.conversations"]);
+      expect(((await page.evaluate(ARTICLE_NAMES)) as string[]).some((name) => name.includes("followed you") || name.includes("decision"))).toBe(false);
+      await clean(visit_);
+    } finally {
+      fixtures.state.activity.newer = 0;
+      fixtures.state.activity.fresh = 0;
+      await visit_.context.close();
+    }
+
+    // At 360 the tab bar has four items, and Settings is the profile's button, found by its name.
+    const phone = await open({ width: 360, height: 740, appearance: { theme: "light" } });
+    try {
+      await visit(phone.page, "/u/ada");
+      expect(await phone.page.evaluate(`[...document.querySelectorAll('nav[aria-label="Main"] a')].map((link) => link.getAttribute("href"))`)).toEqual(["/", "/activity", "/bookmarks", "/u/ada"]);
+      await phone.page.getByRole("button", { name: UI_WORDS["profile.settings"], exact: true }).click();
+      await until(phone.page, `location.pathname === "/settings"`, "the Settings index from the profile");
+      await phone.page.waitForLoadState("networkidle");
+      expect(await phone.page.locator("h1:visible").innerText()).toBe(UI_WORDS["settings.title"]);
+      await clean(phone);
+    } finally {
+      await phone.context.close();
+    }
+  });
+
+  test("53. Settings, Activity: four radio groups by keyboard, each one tab stop; arrowing across a group sends one request, with one toast, once it is still or the focus leaves it", async () => {
+    resetActivity();
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
+    const page = visit_.page;
+    try {
+      await visit(page, "/settings/activity");
+      await page.getByRole("radiogroup").first().waitFor();
+      expect(await page.evaluate("document.title")).toBe(TITLE_WORDS["title.settingsActivity"]);
+      expect(await page.getByRole("radiogroup").count()).toBe(4);
+      // The settings row marks Activity current.
+      expect(await page.evaluate(`[...document.querySelectorAll('nav[aria-label="Settings"] a[aria-current="page"]')].filter((link) => link.getClientRects().length > 0).map((link) => link.getAttribute("href"))`)).toEqual(["/settings/activity"]);
+      const replies = page.getByRole("radiogroup", { name: ACTIVITY_SETTINGS_WORDS.replies });
+      await replies.getByRole("radio", { name: ACTIVITY_SETTINGS_WORDS.everyone }).focus();
+      // Three arrows across the group: the choice moves at once, and one request goes when it has been still for 800 ms.
+      for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowDown");
+      expect(await replies.getByRole("radio", { name: ACTIVITY_SETTINGS_WORDS.off }).getAttribute("aria-checked")).toBe("true");
+      expect(fixtures.state.activity.saves).toEqual([]);
+      await until(page, `document.querySelectorAll("[data-sonner-toast]").length > 0`, "the toast", 5000);
+      expect(fixtures.state.activity.saves).toEqual([{ ...ACTIVITY_DEFAULTS, replies: "off" }]);
+      expect(await page.locator("[data-sonner-toast]").last().innerText()).toBe(ACTIVITY_SETTINGS_WORDS.saved);
+      // One arrow in the follows group, then Tab away at once: saved as the focus leaves, still one request.
+      await page.getByRole("radiogroup", { name: ACTIVITY_SETTINGS_WORDS.follows }).getByRole("radio", { name: ACTIVITY_SETTINGS_WORDS.on }).focus();
+      await page.keyboard.press("ArrowDown");
+      await page.keyboard.press("Tab");
+      await expect.poll(() => fixtures.state.activity.saves.length, { timeout: 500 }).toBe(2);
+      expect(fixtures.state.activity.saves).toEqual([
+        { ...ACTIVITY_DEFAULTS, replies: "off" },
+        { ...ACTIVITY_DEFAULTS, replies: "off", follows: false },
+      ]);
+      expect(await clippedLabels(page, ALL)).toEqual([]);
+      await screenshot(page, "settings-activity-1280-light");
+      await clean(visit_);
+    } finally {
+      await visit_.context.close();
+    }
+    for (const theme of ["light", "dark"] as const) {
+      const narrow = await open({ width: 360, height: 740, appearance: { theme } });
+      try {
+        await visit(narrow.page, "/settings/activity");
+        await narrow.page.getByRole("radiogroup").first().waitFor();
+        expect(await clippedLabels(narrow.page, ALL)).toEqual([]);
+        expect(await phoneProblems(narrow.page, ALL)).toEqual([]);
+        expect(await contrast(narrow.page, "main")).toEqual([]);
+        await screenshot(narrow.page, `settings-activity-360-${theme}`);
+        await clean(narrow);
+      } finally {
+        await narrow.context.close();
+      }
+    }
+  });
+
+  /** Picks a file in the browser's file dialog, which `button` opens. */
+  async function pickFile(page: Page, button: string, name: string, buffer: Buffer): Promise<void> {
+    const chooser = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: button, exact: true }).click();
+    await (await chooser).setFiles({ name, mimeType: "image/webp", buffer });
+  }
+  /** A portrait the picker is given: 300 by 600, one colour. */
+  const PORTRAIT = solidWebp(300, [0xb4, 0x3c, 0x1e], 600);
+  const PREVIEW = `(() => { const img = [...document.querySelectorAll("main img")].find((e) => (e.getAttribute("alt") || "").startsWith(${JSON.stringify(AVATAR_WORDS.preview)})); return img ? { alt: img.getAttribute("alt"), position: getComputedStyle(img).objectPosition, fit: getComputedStyle(img).objectFit } : null; })()`;
+
+  test("54. the avatar picker: a fixture image chosen, its part kept by the preview, uploaded as kind avatar with the crop, the status line, then the header and a post card show it; a refused, a failed and a reset upload as error lines that take the focus; the removal's question; the focus after each", async () => {
+    const upload = fixtures.state.upload;
+    fixtures.state.avatar = null;
+    Object.assign(upload, { outcome: "ready", polls: 0, reset: false, queries: [] });
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
+    const page = visit_.page;
+    try {
+      await visit(page, "/settings/profile");
+      await page.getByRole("heading", { name: AVATAR_WORDS.section }).waitFor();
+      expect(await page.getByRole("button", { name: AVATAR_WORDS.remove }).count()).toBe(0);
+      await pickFile(page, AVATAR_WORDS.choose, "portrait.webp", PORTRAIT);
+      // A portrait: Top, Middle and Bottom, Middle first; the preview covers the disc at the part kept, named by it.
+      const keep = page.getByRole("radiogroup", { name: AVATAR_WORDS.keep });
+      await keep.waitFor();
+      expect(await keep.getByRole("radio").allInnerTexts()).toEqual([AVATAR_WORDS.top, AVATAR_WORDS.middle, AVATAR_WORDS.bottom]);
+      await until(page, `(${PREVIEW}) && (${PREVIEW}).alt === ${JSON.stringify(fill(AVATAR_WORDS.previewPart, { part: AVATAR_WORDS.middle }))}`, "the preview at Middle");
+      await keep.getByRole("radio", { name: AVATAR_WORDS.top }).click();
+      await until(page, `(${PREVIEW}).alt === ${JSON.stringify(fill(AVATAR_WORDS.previewPart, { part: AVATAR_WORDS.top }))}`, "the preview at Top");
+      const preview = (await page.evaluate(PREVIEW)) as { position: string; fit: string };
+      expect(preview.fit).toBe("cover");
+      expect(preview.position).toMatch(/^50% 0(%|px)$/);
+      await screenshot(page, "avatar-preview-1280-light");
+      // Use this picture: the status line says it uploads, then that it is prepared; then the toast and the focus.
+      fixtures.state.delayMs = 400;
+      await page.getByRole("button", { name: AVATAR_WORDS.use }).click();
+      await page.locator('[role="status"]').getByText(AVATAR_WORDS.uploading).waitFor();
+      fixtures.state.delayMs = 0;
+      await page.locator('[role="status"]').getByText(AVATAR_WORDS.processing).waitFor();
+      await page.locator("[data-sonner-toaster]").getByText(AVATAR_WORDS.updated).waitFor({ state: "visible" });
+      await until(page, `${FOCUSED} === ${JSON.stringify(AVATAR_WORDS.change)}`, "Choose another picture focused");
+      expect(upload.queries).toEqual(["?kind=avatar&crop=start"]);
+      // The header (96 px: the large file) and Ada's own post cards (40 px: the small one) show it.
+      await visit(page, "/u/ada");
+      await until(page, `[...document.querySelectorAll("[data-profile-header] img")].some((img) => img.complete && img.naturalWidth === 400 && img.src.endsWith("/large.webp"))`, "the header's picture");
+      await until(page, `[...document.querySelectorAll('[role="article"] img')].some((img) => img.complete && img.naturalWidth === 128 && img.src.includes(${JSON.stringify(AVATAR_UPLOAD_ID)}))`, "a card's picture");
+      await screenshot(page, "avatar-profile-1280-light");
+
+      // A refused, a failed and a reset upload: each an error line that takes the focus.
+      for (const [outcome, reset, words] of [
+        ["refused", false, UPLOAD_TEXTS.refused],
+        ["failed", false, AVATAR_WORDS.failed],
+        ["ready", true, AVATAR_WORDS.resetRecently],
+      ] as const) {
+        Object.assign(upload, { outcome, reset });
+        await visit(page, "/settings/profile");
+        await pickFile(page, AVATAR_WORDS.change, "portrait.webp", PORTRAIT);
+        await page.getByRole("button", { name: AVATAR_WORDS.use }).click();
+        await page.locator('[role="alert"]').getByText(words).waitFor();
+        await until(page, `(document.activeElement && document.activeElement.textContent || "").includes(${JSON.stringify(words)})`, `${outcome} focused`);
+        if (outcome === "refused") {
+          // Its Why link is next in order, to the refusal's notice.
+          await page.keyboard.press("Tab");
+          expect(await page.evaluate(`document.activeElement.getAttribute("href")`)).toBe(`/settings/cases/uploads/${UPLOAD_ID}`);
+          // A refused upload is shown to nobody: its preview went with it, and the chooser is back.
+          expect(await page.evaluate(PREVIEW)).toBeNull();
+          expect(await page.getByRole("button", { name: AVATAR_WORDS.use }).count()).toBe(0);
+          await screenshot(page, "avatar-refused-1280-light");
+          continue;
+        }
+        // Cancel drops the file, and the focus goes back to the chooser.
+        await page.getByRole("button", { name: AVATAR_WORDS.cancel }).click();
+        await until(page, `${FOCUSED} === ${JSON.stringify(AVATAR_WORDS.change)}`, "the chooser focused after Cancel");
+      }
+      Object.assign(upload, { outcome: "ready", reset: false });
+
+      // Remove picture asks first; Remove deletes it, says so, and the focus is on Choose a picture.
+      await page.getByRole("button", { name: AVATAR_WORDS.remove }).click();
+      await until(page, `${DIALOG_NAME} === ${JSON.stringify(AVATAR_WORDS.confirmTitle)}`, "the removal's question");
+      expect(await page.locator('[role="dialog"]').innerText()).toContain(AVATAR_WORDS.confirmBody);
+      await screenshot(page, "avatar-remove-1280-light");
+      await page.locator('[role="dialog"]').getByRole("button", { name: AVATAR_WORDS.confirm, exact: true }).click();
+      await page.locator("[data-sonner-toaster]").getByText(AVATAR_WORDS.removed).waitFor({ state: "visible" });
+      await page.locator('[role="dialog"]').waitFor({ state: "detached" });
+      await until(page, `${FOCUSED} === ${JSON.stringify(AVATAR_WORDS.choose)}`, "Choose a picture focused");
+      expect(fixtures.state.avatar).toBeNull();
+      expect(visit_.watcher.take().filter((line) => !/status of 409/.test(line))).toEqual([]);
+      expect(fixtures.state.problems.splice(0)).toEqual([]);
+    } finally {
+      fixtures.state.delayMs = 0;
+      fixtures.state.avatar = null;
+      Object.assign(upload, { outcome: "ready", reset: false });
+      await visit_.context.close();
+    }
+    // At 360 the card's controls are 44 px and nothing is cut.
+    for (const theme of ["light", "dark"] as const) {
+      const narrow = await open({ width: 360, height: 740, appearance: { theme } });
+      try {
+        await visit(narrow.page, "/settings/profile");
+        await narrow.page.getByRole("heading", { name: AVATAR_WORDS.section }).waitFor();
+        expect(await clippedLabels(narrow.page, ALL)).toEqual([]);
+        expect(await phoneProblems(narrow.page, ALL)).toEqual([]);
+        expect(await contrast(narrow.page, "main")).toEqual([]);
+        await screenshot(narrow.page, `avatar-card-360-${theme}`);
+        await clean(narrow);
+      } finally {
+        await narrow.context.close();
+      }
+    }
+  });
+
+  test("55. mentions: a stored one links to its profile in accent ink with no underline; one that was not stored, and an imported post's, are text", async () => {
+    resetActivity();
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
+    const page = visit_.page;
+    try {
+      await visit(page, "/activity");
+      const reply = page.locator(`main [role="article"][aria-label^="New, Grace Hopper replied"]`);
+      await reply.waitFor();
+      // The reply's context names @ada too; the body's mention is the second link to her.
+      expect(await reply.locator('a[href="/u/ada"]').count()).toBe(2);
+      const mention = reply.locator('a[href="/u/ada"]').nth(1);
+      expect(await mention.innerText()).toBe("@ada");
+      expect(await mention.evaluate((link) => getComputedStyle(link).textDecorationLine)).toBe("none");
+      expect(await mention.evaluate((link) => getComputedStyle(link).color)).toBe(rgb(THEMES.light["accent-ink"]));
+      expect(await reply.innerText()).toContain("@nobody_here");
+      expect(await reply.locator('a[href="/u/nobody_here"]').count()).toBe(0);
+      await visit(page, "/u/grace?tab=imported");
+      await page.locator('[role="article"]').first().waitFor();
+      expect(await page.locator('[role="article"]').first().innerText()).toContain("@ada");
+      expect(await page.locator('[role="article"] a[href="/u/ada"]').count()).toBe(0);
+      await clean(visit_);
+    } finally {
+      await visit_.context.close();
+    }
+  });
+
+  test("56. Getting started at 360: a new account's empty Following shows the panel with Latest, Explore, the handle box, the profile's settings with where Settings is, and the rules; the handle box opens a profile", async () => {
+    fixtures.state.emptyFollowing = true;
+    for (const theme of ["light", "dark"] as const) {
+      const visit_ = await open({ width: 360, height: 740, appearance: { theme } });
+      const page = visit_.page;
+      try {
+        await visit(page, "/");
+        await page.getByRole("heading", { name: UI_WORDS["feed.start.title"] }).waitFor();
+        const main = page.locator("main");
+        for (const words of [UI_WORDS["feed.start.body"], UI_WORDS["feed.start.handle"], UI_WORDS["feed.start.settings"], UI_WORDS["shell.how1"]]) expect(await main.innerText()).toContain(words);
+        expect(await page.getByRole("button", { name: UI_WORDS["feed.start.latest"] }).count()).toBe(1);
+        for (const [words, href] of [
+          [UI_WORDS["feed.start.explore"], "/explore/about"],
+          [UI_WORDS["feed.start.profile"], "/settings/profile"],
+          [UI_WORDS["feed.start.rules"], "/rules"],
+        ] as const) {
+          expect(await main.getByRole("link", { name: words }).getAttribute("href")).toBe(href);
+        }
+        expect(await clippedLabels(page, ALL)).toEqual([]);
+        expect(await phoneProblems(page, ALL)).toEqual([]);
+        expect(await contrast(page, "main")).toEqual([]);
+        await screenshot(page, `getting-started-360-${theme}`);
+        if (theme === "light") {
+          await main.getByRole("textbox", { name: UI_WORDS["handle.field"] }).fill("@grace");
+          await page.keyboard.press("Enter");
+          await until(page, `location.pathname === "/u/grace"`, "the profile by its handle");
+          await page.waitForLoadState("networkidle");
+        }
+        await clean(visit_);
+      } finally {
+        await visit_.context.close();
+      }
+    }
+    fixtures.state.emptyFollowing = false;
+  });
+
+  test("57. hiding counts: the author's More menu hides a post's like and repost counts, with its toast; the author still reads them, Who sees this says so, and another reader gets no number", async () => {
+    const MORE = `[role="button"][aria-label="${UI_WORDS["post.more"]}"]`;
+    fixtures.state.hiddenCounts.clear();
+    const visit_ = await open({ width: 1280, height: 900, appearance: { theme: "light" } });
+    const page = visit_.page;
+    try {
+      await visit(page, "/?tab=latest");
+      const own = postArticle(page, 3).first();
+      await own.locator(MORE).click();
+      const menu = page.locator("[data-menu]");
+      await menu.waitFor({ state: "visible" });
+      await menu.getByRole("button", { name: UI_WORDS["post.hideCounts"] }).click();
+      await page.locator("[data-sonner-toaster]").getByText(UI_WORDS["post.countsHidden"]).waitFor({ state: "visible" });
+      expect(fixtures.state.hiddenCounts.has(postIdOf(3))).toBe(true);
+      // The author keeps the numbers; the menu now offers to show them, and Who sees this says they are hidden.
+      expect(await own.getByRole("button", { name: /^Like, [0-9]+ likes?$/ }).count()).toBe(1);
+      await own.locator(MORE).click();
+      await menu.waitFor({ state: "visible" });
+      expect(await menu.getByRole("button", { name: UI_WORDS["post.showCounts"] }).count()).toBe(1);
+      await menu.getByRole("button", { name: new RegExp(`^${UI_WORDS["post.whoSees"]}`) }).click();
+      await page.locator('[role="dialog"]').getByText(UI_WORDS["reach.countsHidden"]).waitFor();
+      await page.keyboard.press("Escape");
+      await page.locator('[role="dialog"]').waitFor({ state: "detached" });
+      await clean(visit_);
+    } finally {
+      await visit_.context.close();
+    }
+    const other = await open({ width: 1280, height: 900, signedIn: false, appearance: { theme: "light" } });
+    try {
+      await visit(other.page, "/?tab=latest");
+      const card = postArticle(other.page, 3).first();
+      await card.waitFor();
+      expect(await card.getByRole("button", { name: UI_WORDS["post.like.none"], exact: true }).count()).toBe(1);
+      expect(await card.getByRole("button", { name: UI_WORDS["post.reposts.none"], exact: true }).count()).toBe(1);
+      expect(await card.locator('[role="button"]').evaluateAll((buttons) => buttons.map((button) => button.textContent).join(" "))).not.toMatch(/[0-9]/);
+      await screenshot(other.page, "counts-hidden-other-1280-light");
+      await clean(other);
+    } finally {
+      fixtures.state.hiddenCounts.clear();
+      await other.context.close();
     }
   });
 });

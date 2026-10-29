@@ -28,7 +28,7 @@ export function ProfileRow({ item, action }: { item: ProfileListItem; action?: R
     <ListRow
       label={item.displayName}
       href={`/u/${item.handle}`}
-      leading={<Avatar account={item} size={40} />}
+      leading={<Avatar account={item} size={40} src={item.avatar} />}
       badge={item.verified ? <VerifiedChip /> : undefined}
       detail={
         <>

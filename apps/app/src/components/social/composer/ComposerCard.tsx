@@ -99,7 +99,7 @@ export function ComposerCard({ replyTo, onPosted, startOpen = false, handle }: {
   };
 
   const label = replyTo ? UI_WORDS["composer.collapsedReply"] : UI_WORDS["composer.collapsed"];
-  const avatar = me ? <Avatar account={{ id: me.user.id, displayName: me.profile?.displayName ?? me.profile?.handle ?? "" }} size={40} /> : null;
+  const avatar = me ? <Avatar account={{ id: me.user.id, displayName: me.profile?.displayName ?? me.profile?.handle ?? "" }} size={40} src={me.avatar} /> : null;
 
   return (
     <Animated.View style={[{ borderRadius: CORNER, overflow: "hidden" }, style]} onLayout={(event) => (outer.current = event.nativeEvent.layout.height)}>

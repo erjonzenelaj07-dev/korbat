@@ -6,7 +6,7 @@ import { cloneElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { ICONS } from "../src/components/icons";
-import { Avatar, monogram } from "../src/components/kit/Avatar";
+import { Avatar, avatarFile, monogram } from "../src/components/kit/Avatar";
 import { EmptyState } from "../src/components/kit/EmptyState";
 import { ErrorState, isOffline, retryWhenOnline } from "../src/components/kit/ErrorState";
 import { IconButton } from "../src/components/kit/IconButton";
@@ -32,6 +32,12 @@ import { UI_WORDS } from "../src/lib/ui-words";
 vi.mock("expo-router", () => ({
   Link: ({ href, children }: { href: string; children: ReactElement }) => cloneElement(children, { href } as object),
 }));
+
+// 2d (10.4): Avatar draws an uploaded picture through expo-image, whose native module does not load in Node: an img here.
+vi.mock("expo-image", async () => {
+  const { createElement } = await import("react");
+  return { Image: ({ source, transition }: { source: { uri: string }; transition?: number }) => createElement("img", { "data-uri": source.uri, "data-transition": transition, alt: "" }) };
+});
 
 const SRC = path.resolve(import.meta.dirname, "..", "src");
 const html = (element: ReactElement): string => renderToStaticMarkup(element);
@@ -104,6 +110,35 @@ describe("Avatar (6.5)", () => {
     expect(monogram(accented)).toBe(`E${String.fromCharCode(0x301)}`);
     expect(monogram("  bea")).toBe("B");
     expect(monogram("")).toBe("");
+  });
+
+  test("2d (10.4): with src it draws the picture, the small file at 32 and 40 px and the large at 64 and 96, with no transition, still hidden", () => {
+    const src = { small: "/api/media/m/small.webp", large: "/api/media/m/large.webp" };
+    const account = { id: "a", displayName: "Ada" };
+    for (const [size, file] of [
+      [32, src.small],
+      [40, src.small],
+      [64, src.large],
+      [96, src.large],
+    ] as const) {
+      const out = html(<Avatar account={account} size={size} src={src} />);
+      expect(out, String(size)).toContain(`data-uri="${file}"`);
+      expect(out, String(size)).toContain('data-transition="0"');
+      expect(/^<div[^>]*>/.exec(out)?.[0], String(size)).toContain('aria-hidden="true"');
+      expect(out, String(size)).toContain(`width:${size}px;height:${size}px`);
+      // The picture stands in the monogram's place: no letter is drawn under it.
+      expect(textOf(out), String(size)).toBe("");
+    }
+  });
+
+  test("2d (10.4): without src, or once the picture failed to load, the monogram is drawn in the same disc", () => {
+    const src = { small: "/api/media/m/small.webp", large: "/api/media/m/large.webp" };
+    expect(avatarFile(src, 40, false)).toBe(src.small);
+    expect(avatarFile(src, 96, false)).toBe(src.large);
+    expect(avatarFile(src, 40, true)).toBeNull();
+    expect(avatarFile(null, 40, false)).toBeNull();
+    expect(avatarFile(undefined, 64, false)).toBeNull();
+    expect(textOf(html(<Avatar account={{ id: "a", displayName: "ada" }} src={null} />))).toBe("A");
   });
 
   test("draws the size it is given", () => {

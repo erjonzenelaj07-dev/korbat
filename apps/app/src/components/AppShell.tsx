@@ -34,9 +34,12 @@ import { StandingBanner } from "./StandingBanner";
  * as components/social/ComposeHost.tsx), a 640 px dialog at these widths, unless the screen gives `onNewPost`: Home
  * gives the one that opens and focuses its own card in the list.
  *
- * The nav is a landmark named "Main" with the same items and hrefs at every width (Home, Bookmarks, Profile, Settings for
- * an account; Home, Sign in and Appearance signed out, UI Task 8, since Appearance is the one settings page open to
- * everyone). The current item keeps aria-current="page" on its anchor and is marked by
+ * The nav is a landmark named "Main" (Home, Bookmarks, Profile, Settings for an account; Home, Sign in and Appearance
+ * signed out, UI Task 8, since Appearance is the one settings page open to everyone). 2d (decision 24, 10.1) puts
+ * Activity second for an account and ends the rule of the same items at every width for the phone alone: its tab bar
+ * keeps four items, Home, Activity, Bookmarks and Profile, since a fifth breaks "Bookmarks" in the word at 360 px, and
+ * Settings is reached from the profile's Settings button; there no item is current on a settings page, whose own row
+ * says where the reader is. The current item keeps aria-current="page" on its anchor and is marked by
  * more than colour: an accent-wash pill, a 3 px accent bar (above the icon in the tab bar, at the item's start in the
  * rail and full nav) and its icon at the strong stroke. Focus order on the web is the skip link (shown while focused),
  * the nav, the main column, the context column. The page's body never scrolls; each screen's list scrolls in the main
@@ -59,18 +62,21 @@ const HOME: NavItem = { label: UI_WORDS["nav.home"], href: "/", icon: "home" };
  * The nav's items. While the session loads only Home shows, the one item both sets share: the rest join once /me answers,
  * so a signed-in reader never sees Sign in flash, nor a signed-out one Bookmarks.
  */
-function navItems(status: Status, handle: string | undefined): NavItem[] {
+function navItems(status: Status, handle: string | undefined, phone: boolean): NavItem[] {
   if (status === "loading") return [HOME];
   if (status === "signed-out") {
     return [HOME, { label: UI_WORDS["nav.signin"], href: "/signin", icon: "sign-in" }, { label: UI_WORDS["appearance.nav"], href: "/settings/appearance", icon: "appearance" }];
   }
-  return [
+  const items: NavItem[] = [
     HOME,
+    // 2d: its label alone, in every state: nothing on it says that something is new (decision 4).
+    { label: UI_WORDS["nav.activity"], href: "/activity", icon: "activity" },
     { label: UI_WORDS["nav.bookmarks"], href: "/bookmarks", icon: "bookmarks" },
     { label: UI_WORDS["nav.profile"], href: handle ? `/u/${handle}` : "/handle", icon: "profile" },
-    // Settings opens the Settings index (UI Task 8, the owner's ruling 10) and stays current on every page below it.
-    { label: UI_WORDS["nav.settings"], href: "/settings", icon: "settings", match: "/settings" },
   ];
+  // Settings opens the Settings index (UI Task 8, the owner's ruling 10) and stays current on every page below it.
+  if (!phone) items.push({ label: UI_WORDS["nav.settings"], href: "/settings", icon: "settings", match: "/settings" });
+  return items;
 }
 
 /** Whether a path is the prefix's page or below it: /u/ada/followers is under /u/ada, /u/adam is not. */
@@ -205,7 +211,7 @@ function TabBar({ items, pathname, onHomeAgain }: NavProps) {
 /**
  * The nav from 768 px: the rail (80 px, the "k" monogram, icons over 12 px labels) or, from 1280 px, the full nav (240 px,
  * the wordmark, labels beside the icons). Under them, signed in, New post: a button and no link, so the nav's links stay
- * the four of section 7.1. A rail item spans the rail, as a tab bar item spans its quarter, with its ring drawn inside:
+ * those of section 7.1 (five from 2d). A rail item spans the rail, as a tab bar item spans its quarter, with its ring drawn inside:
  * Bookmarks and Appearance need all of the 80 px at the Default and Larger text, and a 64 px item broke them in the word.
  */
 function SideNav({ items, pathname, onHomeAgain, full, newPost }: NavProps & { full: boolean; newPost?: () => void }) {
@@ -299,8 +305,8 @@ function Shell({ kind, children, floating, compose, onNewPost }: { kind: LayoutK
   const handle = signedIn ? state.me.profile?.handle : undefined;
   // 3e (design, section 9.1): above every signed-in screen while /me's standing holds a measure.
   const banner = signedIn ? <StandingBanner standing={state.me.standing} /> : null;
-  const items = navItems(state.status, handle);
   const phone = kind === "phone";
+  const items = navItems(state.status, handle, phone);
   const newPost = signedIn ? (onNewPost ?? openNewPost) : undefined;
   // The phone's floating control: the screen's own, or the compose button where the screen asks for it.
   const shownFloating = floating ?? (compose && newPost ? <ComposeButton onPress={newPost} /> : null);

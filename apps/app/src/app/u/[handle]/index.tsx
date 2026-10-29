@@ -197,7 +197,7 @@ export default function ProfileScreen() {
   const header = (
     <View>
       <View {...dataAttribute("profile-header")} className="gap-3 px-4 pb-2 pt-6">
-        <Avatar account={profile} size={wide ? 96 : 64} />
+        <Avatar account={profile} size={wide ? 96 : 64} src={profile.avatar} />
         <View className="gap-0.5">
           <View className="flex-row flex-wrap items-center gap-x-2">
             {/* The display name is the screen's h1; it wraps rather than pushing the page sideways. */}
@@ -229,7 +229,7 @@ export default function ProfileScreen() {
           ) : null}
           {own ? (
             <View className="-mt-6">
-              {/* UI Task 8: the Settings index, as the nav's Settings item opens it. */}
+              {/* UI Task 8: the Settings index, as the nav's Settings item opens it; 2d (10.1): "Settings", the phone's way there. */}
               <Button label={UI_WORDS["profile.settings"]} onPress={() => router.push("/settings")} tone="secondary" full={false} />
             </View>
           ) : (

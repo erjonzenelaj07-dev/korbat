@@ -160,6 +160,26 @@ describe("the discard question (6.15, 8.6)", () => {
   });
 });
 
+describe("2d: the options and the mentions line (4.5, 10.3, 10.6)", () => {
+  test("one option above the send bar: Hide like and repost counts, a named switch, off by default, sent as hideCounts", () => {
+    shell.state = signedIn();
+    const out = html(<Composer onCancel={() => undefined} />);
+    const input = /<input[^>]*role="switch"[^>]*>/.exec(out)?.[0] ?? "";
+    expect(input).toContain(`aria-label="${UI_WORDS["post.hideCounts.option"]}"`);
+    expect(input).not.toContain("checked");
+    expect(out.indexOf(UI_WORDS["post.hideCounts.option"])).toBeLessThan(out.indexOf(UI_WORDS["composer.action.post"]));
+    expect(read("components", "social", "Composer.tsx")).toContain("hideCounts,");
+  });
+
+  test("while the text names a handle by MENTION_TOKEN, the line under the field says who is told; nothing is looked up", () => {
+    const source = read("components", "social", "Composer.tsx");
+    expect(source).toContain('hasMention(state.text) ? (');
+    expect(source).toContain('ACTIVITY_WORDS["activity.composer.mentions"]');
+    // No account is looked up while typing (decision 13): the composer asks no profile.
+    expect(source).not.toMatch(/social\.profile\(|\/api\/profiles/);
+  });
+});
+
 describe("after sending (6.15, 5.4)", () => {
   test("the toast names what was sent and offers View, which opens the post", () => {
     for (const [kind, words] of [
@@ -259,7 +279,8 @@ describe("New post (7.2, 7.3)", () => {
       shell.pathname = "/bookmarks";
       const out = html(<AppShell>{null}</AppShell>);
       const nav = /<nav\b[^>]*aria-label="Main"[^>]*>[\s\S]*<\/nav>/.exec(out)?.[0] ?? "";
-      expect(anchors(nav).map((tag) => /href="([^"]*)"/.exec(tag)?.[1]), kind).toEqual(["/", "/bookmarks", "/u/ada", "/settings"]);
+      // 2d (decision 24): Activity second.
+      expect(anchors(nav).map((tag) => /href="([^"]*)"/.exec(tag)?.[1]), kind).toEqual(["/", "/activity", "/bookmarks", "/u/ada", "/settings"]);
       const at = nav.indexOf('aria-label="New post"') >= 0 ? nav.indexOf('aria-label="New post"') : nav.lastIndexOf(">New post<");
       expect(at, kind).toBeGreaterThan(nav.lastIndexOf('href="/settings"'));
       shell.state = { status: "signed-out" };

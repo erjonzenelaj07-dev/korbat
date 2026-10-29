@@ -107,6 +107,33 @@ export async function toggleFollow(
   return { status: "refused", on, error: outcome.error };
 }
 
+export type CountsResult = { status: "busy" } | { status: "answered"; hidden: boolean } | { status: "refused"; error: unknown };
+
+/**
+ * 2d (decision 26, 10.6): the author's Hide or Show like and repost counts from the post's More menu, as every action of
+ * the post: the switch at once, the request in its own lane, the server's answer, or the old state back on a refusal (a
+ * suspended author showing them again, 3e). The author keeps reading the numbers either way: only the flag changes here.
+ */
+export async function toggleCountsHidden(
+  client: { setCountsHidden: (id: string, hidden: boolean) => Promise<{ countsHidden: boolean }> },
+  lanes: Lanes,
+  post: PostView,
+  apply: (update: (current: PostView) => PostView) => void,
+): Promise<CountsResult> {
+  const hidden = !post.countsHidden;
+  const outcome = await lanes.run(laneKey.post(post.id, "counts"), async () => {
+    apply((current) => ({ ...current, countsHidden: hidden }));
+    return client.setCountsHidden(post.id, hidden);
+  });
+  if (outcome.status === "busy") return outcome;
+  if (outcome.status === "answered") {
+    apply((current) => ({ ...current, countsHidden: outcome.answer.countsHidden }));
+    return { status: "answered", hidden: outcome.answer.countsHidden };
+  }
+  apply((current) => ({ ...current, countsHidden: post.countsHidden }));
+  return { status: "refused", error: outcome.error };
+}
+
 export type DeleteResult = { status: "busy" } | { status: "deleted" } | { status: "refused"; error: unknown };
 
 /**

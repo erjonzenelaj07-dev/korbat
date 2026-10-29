@@ -13,6 +13,7 @@ import { createPlaceKeeper, openingRow, readPlace, type Place, type PlaceKeeper,
 import { useShellScroll } from "@/lib/shell-scroll";
 import { social, type Page } from "@/lib/social";
 import { UI_WORDS } from "@/lib/ui-words";
+import { GettingStarted } from "@/components/activity/GettingStarted";
 import { FeedRowView, feedRowVersion, type PostPlace } from "./FeedRows";
 import { NewPostsPill } from "./NewPostsPill";
 import { timelineKey } from "./PagedList";
@@ -388,10 +389,8 @@ export function FeedList({
     // The reader's own new post fades in where it lands (new-own-post, 220 ms; at once under reduced motion).
     return key === own.current && !motion.reduced ? <Animated.View entering={FadeIn.duration(220)}>{card}</Animated.View> : card;
   };
-  const empty =
-    feed === "following"
-      ? { title: UI_WORDS["feed.empty.following.title"], body: UI_WORDS["feed.empty.following.body"], action: { label: UI_WORDS["feed.empty.following.action"], onPress: onShowLatest } }
-      : { title: UI_WORDS["feed.empty.latest.title"], body: UI_WORDS["feed.empty.latest.body"] };
+  // 2d (decision 25, 10.7): an account's empty Following is the Getting started panel, which goes once Following has a post.
+  const empty = feed === "following" ? <GettingStarted onShowLatest={onShowLatest} /> : { title: UI_WORDS["feed.empty.latest.title"], body: UI_WORDS["feed.empty.latest.body"] };
 
   return (
     <View className="flex-1">

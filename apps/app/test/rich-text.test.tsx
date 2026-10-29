@@ -50,8 +50,8 @@ function post(extra: Partial<PostView> = {}): PostView {
 }
 
 describe("RichText", () => {
-  test("in a native post a mention is a link to the profile, and every outside link carries rel nofollow ugc noopener noreferrer", () => {
-    const out = html(<RichText body={BODY} />);
+  test("in a native post a stored mention is a link to the profile, and every outside link carries rel nofollow ugc noopener noreferrer", () => {
+    const out = html(<RichText body={BODY} mentions={["ada", "grace_h"]} />);
     const links = anchors(out);
     expect(links.map(hrefOf)).toEqual(["/u/ada", "/u/grace_h", "https://example.org/notes", "http://example.com/x"]);
     for (const tag of links.filter((link) => hrefOf(link).startsWith("http"))) {
@@ -60,20 +60,30 @@ describe("RichText", () => {
     }
   });
 
-  test("with mentions off, @ada stays text, while an account @ada exists, and the outside links keep their rel", () => {
-    const out = html(<RichText body={BODY} mentions={false} />);
+  test("with no stored mention, @ada stays text, while an account @ada exists, and the outside links keep their rel", () => {
+    const out = html(<RichText body={BODY} mentions={[]} />);
     expect(anchors(out).map(hrefOf)).toEqual(["https://example.org/notes", "http://example.com/x"]);
     expect(out).toContain("@ada");
     for (const tag of anchors(out)) expect(tag).toContain(`rel="${REL}"`);
   });
 
-  test("an imported post's card draws its body with mentions off: no /u/ada link but the author's own", () => {
+  test("2d (4.5): a token links exactly when its lowercased handle is in the list; a run longer than 20 characters never links", () => {
+    expect(anchors(html(<RichText body={BODY} mentions={["grace_h"]} />)).map(hrefOf)).toEqual(["/u/grace_h", "https://example.org/notes", "http://example.com/x"]);
+    expect(anchors(html(<RichText body="Hello @Ada." mentions={["ada"]} />)).map(hrefOf)).toEqual(["/u/ada"]);
+    const long = "@abcdefghijklmnopqrstuvwxyz and ada@example.org";
+    expect(anchors(html(<RichText body={long} mentions={["abcdefghijklmnopqrst", "example"]} />))).toEqual([]);
+    // The text is never rewritten: the post still says what its author typed.
+    expect(html(<RichText body="Hello @Ada." mentions={["ada"]} />)).toContain("@Ada");
+  });
+
+  test("an imported post's card draws its body with no mention linked: no /u/ada link but the author's own", () => {
     const imported = post({ author: ADA, imported: { source: "x", at: "2019-03-03", shortened: false } });
     const out = html(<PostCard post={imported} />);
     // The author line links Ada's profile once, the avatar's hidden link once: the body's @ada links nothing.
     expect(anchors(out).filter((tag) => hrefOf(tag) === "/u/ada")).toHaveLength(2);
     expect(anchors(out).filter((tag) => hrefOf(tag) === "/u/grace_h")).toEqual([]);
-    const native = html(<PostCard post={post({ author: ADA })} />);
+    // 2d (4.5): the card passes the post's own list; a native post links the mentions the API says link for this reader.
+    const native = html(<PostCard post={post({ author: ADA, mentions: ["ada"] })} />);
     expect(anchors(native).filter((tag) => hrefOf(tag) === "/u/ada")).toHaveLength(3);
   });
 

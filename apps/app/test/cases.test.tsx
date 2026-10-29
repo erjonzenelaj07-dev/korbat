@@ -276,7 +276,8 @@ describe("the notice status page", () => {
 describe("Cases, under Settings", () => {
   test("the settings row has Cases, whose screens live in a folder of their own inside the settings layout", () => {
     const out = html(<SettingsNav current="cases" />);
-    expect(hrefs(out)).toEqual(["/settings/appearance", "/settings/security", "/settings/privacy", "/settings/profile", "/settings/account", "/settings/import", "/settings/cases"]); // 3b Task 7: Import after Account.
+    // 3b Task 7: Import after Account. 2d Task 5: Activity after Appearance.
+    expect(hrefs(out)).toEqual(["/settings/appearance", "/settings/activity", "/settings/security", "/settings/privacy", "/settings/profile", "/settings/account", "/settings/import", "/settings/cases"]);
     const current = (out.match(/<a\b[^>]*>/g) ?? []).filter((tag) => tag.includes('aria-current="page"'));
     expect(current).toHaveLength(1);
     expect(current[0]).toContain('href="/settings/cases"');

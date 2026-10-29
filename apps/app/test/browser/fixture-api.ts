@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
+  ActivityEntry,
+  ActivityPage,
+  ActivitySettings,
+  ACTIVITY_DEFAULTS,
+  ACTIVITY_PAGE_SIZE,
   IMPORT_RULES,
   ImportPickView,
   ImportView,
@@ -54,6 +59,44 @@ import type { z } from "zod";
 
 /** A WebP of 2 by 2 pixels (lossless, 38 bytes) in the accent violet: a real image, which the browser decodes under the policy. */
 export const FIXTURE_WEBP = Buffer.from("UklGRh4AAABXRUJQVlA4TBEAAAAvAUAAAAfQmWrVuv+BiOh/AAA=", "base64");
+
+/**
+ * 2d Task 5 (design, section 10.9): a lossless WebP of one colour, `size` pixels wide (and `height` high, a square unless
+ * told), written by code: the VP8L
+ * header (the signature, the size less one in 14 bits each, no alpha, version 0), no transform, no colour cache, no meta
+ * codes, then five prefix codes of one symbol each (green, red, blue, alpha, distance), so every pixel costs no bits and
+ * the file is 32 bytes whatever its size. The avatars' two files, small.webp (128 px) and large.webp (400 px), are these.
+ */
+export function solidWebp(size: number, [r, g, b]: [number, number, number], height = size): Buffer {
+  const bits: number[] = [];
+  const put = (value: number, count: number) => {
+    for (let i = 0; i < count; i++) bits.push((value >> i) & 1);
+  };
+  put(size - 1, 14);
+  put(height - 1, 14);
+  put(0, 4);
+  put(0, 3);
+  for (const symbol of [g, r, b, 255]) {
+    put(1, 1);
+    put(0, 1);
+    put(1, 1);
+    put(symbol, 8);
+  }
+  put(0b0001, 4);
+  const data = Buffer.alloc(1 + Math.ceil(bits.length / 8));
+  data[0] = 0x2f;
+  bits.forEach((bit, i) => {
+    data[1 + (i >> 3)]! |= bit << (i & 7);
+  });
+  const padded = data.length + (data.length % 2);
+  const file = Buffer.alloc(20 + padded);
+  file.write("RIFF", 0, "ascii");
+  file.writeUInt32LE(12 + padded, 4);
+  file.write("WEBPVP8L", 8, "ascii");
+  file.writeUInt32LE(data.length, 16);
+  data.copy(file, 20);
+  return file;
+}
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
@@ -489,6 +532,72 @@ function importedPosts(signedIn: boolean): PostView[] {
   ];
 }
 
+/**
+ * 2d Task 5 (design, sections 5.5, 5.7 and 10.9): Ada's Activity. Every time has six fractional digits, as the API's;
+ * the seen marker sits between the two newest entries and the rest, so two are new; a reply whose words name a stored
+ * mention (@ada) and one that is not (@nobody_here); a mention, a quote, a day of follows by five accounts (three named)
+ * and a moderation entry of each kind; then older replies, so the first page of 30 ends on a day of follows and Load more
+ * reads the rest. `fresh` entries are newer than all of them, as the poll's count says, and come with the next first page.
+ */
+export const MARY: Author = { id: id(4), handle: "mary", displayName: "Mary Somerville", verified: false, avatar: null };
+/** Grace's and Linus's pictures (two WebP squares the fixture writes), on Activity's entries only, so earlier steps keep their monograms. */
+export const AVATAR_OF: Record<string, { id: string; colour: [number, number, number] }> = {
+  [GRACE.id]: { id: id(960), colour: [0x6d, 0x28, 0xd9] },
+  [LINUS.id]: { id: id(961), colour: [0x0e, 0x7c, 0x66] },
+};
+/** Ada's upload in the picker (step 54), and its colour once it is her picture. */
+export const AVATAR_UPLOAD_ID = id(962);
+const ADA_COLOUR: [number, number, number] = [0xb4, 0x3c, 0x1e];
+const withAvatar = (author: Author): Author => {
+  const own = AVATAR_OF[author.id];
+  return own ? { ...author, avatar: { small: `/api/media/${own.id}/small.webp`, large: `/api/media/${own.id}/large.webp` } } : author;
+};
+
+/** An Activity time: the minute `minutes` before the walk started, with six fractional digits. */
+const micro = (minutes: number) => ago(minutes).replace(/[.]([0-9]{3})Z$/, ".$1321Z");
+/** Ada's post the replies answer. */
+const ADA_POST = { id: id(103), authorHandle: ADA.handle };
+export const ACTIVITY_REPLY_ID = id(1201);
+export const ACTIVITY_DECISION_POST = id(1202);
+export const ACTIVITY_RELEASE_ID = id(1203);
+export const ACTIVITY_UPLOAD_ID = id(1204);
+export const ACTIVITY_LOST_ID = id(1205);
+/** The marker as stored before the walk opens Activity: after the two newest entries' times. */
+export const ACTIVITY_SEEN = micro(30);
+
+function activityEntries(signedIn: boolean, fresh: number): ActivityEntry[] {
+  const reply = (n: number, minutes: number, extra: Partial<PostView> = {}) =>
+    ({ type: "post", kind: "reply", key: `e:${id(1300 + n)}`, at: micro(minutes), new: false, post: post(n, signedIn, { id: id(1400 + n), author: withAvatar(GRACE), createdAt: ago(minutes), replyTo: ADA_POST, ...extra }) }) as ActivityEntry;
+  const day = (minutes: number) => micro(minutes).slice(0, 10);
+  const entries: ActivityEntry[] = [];
+  for (let j = fresh; j >= 1; j--) entries.push(reply(80 + j, 1 / 60 / (j + 1), { body: `A new reply, number ${j}, written while Activity was open.` }));
+  entries.push(
+    reply(1, 5, { id: ACTIVITY_REPLY_ID, body: "Thanks @ada for the notes, and say hello to @nobody_here.", mentions: ["ada"] }),
+    { type: "post", kind: "mention", key: `e:${id(1302)}`, at: micro(9), new: false, post: post(2, signedIn, { id: id(1402), author: withAvatar(LINUS), createdAt: ago(9), body: "Reading @ada's essay on the engines this morning.", mentions: ["ada"] }) },
+    { type: "follows", key: `f:${day(60)}`, at: micro(60), new: false, count: 5, actors: [withAvatar(GRACE), withAvatar(LINUS), MARY] },
+    { type: "post", kind: "quote", key: `e:${id(1303)}`, at: micro(120), new: false, post: post(4, signedIn, { id: id(1403), author: withAvatar(GRACE), createdAt: ago(120), body: "Worth reading twice.", media: [], quoteOf: { ...post(3, signedIn), quoteOf: null } }) },
+    { type: "moderation", kind: "decision", key: `d:${DECISION_ID}`, at: micro(180), new: false, target: "account", id: DECISION_ID, postId: null, postCreatedAt: null },
+    { type: "moderation", kind: "decision", key: `d:${POST_DECISION_ID}`, at: micro(240), new: false, target: "post", id: POST_DECISION_ID, postId: REMOVED_POST_ID, postCreatedAt: ago(60 * 24 * 3) },
+    { type: "moderation", kind: "release", key: `r:${RELEASE_ID}`, at: micro(300), new: false, target: "account", id: RELEASE_ID, postId: null, postCreatedAt: null },
+    { type: "moderation", kind: "upload", key: `u:${UPLOAD_ID}`, at: micro(360), new: false, target: "account", id: UPLOAD_ID, postId: null, postCreatedAt: null },
+    { type: "moderation", kind: "lost", key: `l:${ACTIVITY_LOST_ID}`, at: micro(420), new: false, target: "post", id: ACTIVITY_LOST_ID, postId: POST_ID, postCreatedAt: ago(7) },
+  );
+  // Older replies, a day apart from the follows, to fill the first page; its 30th entry is a day of follows by one account.
+  for (let n = 5; entries.length < fresh + ACTIVITY_PAGE_SIZE - 1; n++) entries.push(reply(n, 600 + n * 10));
+  entries.push({ type: "follows", key: `f:${day(60 * 24 * 3)}`, at: micro(60 * 24 * 3), new: false, count: 1, actors: [withAvatar(LINUS)] });
+  for (let n = 40; n < 46; n++) entries.push(reply(n, 60 * 24 * 4 + n));
+  return entries;
+}
+
+/** A page of Activity as GET /api/activity answers it, each entry new against the stored marker, checked by the contract. */
+function activityPage(tab: string | null, cursor: string | null, signedIn: boolean, fresh: number, seenAt: string | null): ActivityPage {
+  const all = activityEntries(signedIn, fresh).filter((entry) => tab !== "conversations" || entry.type === "post");
+  const from = cursor === null ? 0 : Number.parseInt(cursor.replace(/^p/, ""), 10);
+  const to = Math.min(all.length, from + ACTIVITY_PAGE_SIZE);
+  const items = all.slice(from, to).map((entry) => ({ ...entry, new: seenAt === null || entry.at > seenAt }));
+  return parse(ActivityPage, { items, nextCursor: to < all.length ? `p${to}` : null, seenAt }, "activity page");
+}
+
 /** An import's routes (9.2) as the walk needs them, over the state the steps set. */
 interface ImportFixtureState {
   scanReady: boolean;
@@ -607,6 +716,17 @@ export interface FixtureState {
   written: PostView[];
   /** 3b Task 7: the imports' switches, the new import's archive and chunks, and the ready import's picks. */
   imports: ImportFixtureState;
+  /**
+   * 2d Task 5: Activity's stored marker and every marker the app sent; the newer count the poll reads, and the entries a
+   * next first page brings; the settings and every save; Following empty, as a new account's is; Ada's picture, how her
+   * next upload ends ("ready", "refused" or "failed"), whether setting it is refused as a picture a moderator reset, and
+   * every upload's query; the posts whose counts their author hid.
+   */
+  activity: { seenAt: string | null; seen: string[]; newer: number; fresh: number; settings: ActivitySettings; saves: ActivitySettings[] };
+  emptyFollowing: boolean;
+  avatar: { small: string; large: string } | null;
+  upload: { outcome: "ready" | "refused" | "failed"; polls: number; reset: boolean; queries: string[] };
+  hiddenCounts: Set<string>;
 }
 
 export interface FixtureApi {
@@ -630,7 +750,22 @@ const OTHERS = 2;
 const FLAGS = { like: "liked", repost: "reposted", bookmark: "bookmarked" } as const;
 
 export function createFixtureApi(): FixtureApi {
-  const state: FixtureState = { signedIn: false, problems: [], requests: [], refuse: new Set(), delayMs: 0, newPosts: 0, timelineDelayMs: 0, written: [], imports: newImportState() };
+  const state: FixtureState = {
+    signedIn: false,
+    problems: [],
+    requests: [],
+    refuse: new Set(),
+    delayMs: 0,
+    newPosts: 0,
+    timelineDelayMs: 0,
+    written: [],
+    imports: newImportState(),
+    activity: { seenAt: ACTIVITY_SEEN, seen: [], newer: 0, fresh: 0, settings: { ...ACTIVITY_DEFAULTS }, saves: [] },
+    emptyFollowing: false,
+    avatar: null,
+    upload: { outcome: "ready", polls: 0, reset: false, queries: [] },
+    hiddenCounts: new Set(),
+  };
   /** The written posts that are not replies, as timeline rows: the API puts the reader's own posts on top of both feeds. */
   const writtenRows = (): TimelineItem[] => state.written.filter((view) => view.replyTo === null).map((view) => ({ kind: "post" as const, post: view }));
   /** The written replies to one post, oldest first, as the replies route lists them. */
@@ -641,8 +776,25 @@ export function createFixtureApi(): FixtureApi {
   /** The answer to one GET, or null when no fixture knows the path. */
   function get(path: string, query: URLSearchParams): Answer | null {
     const cursor = query.get("cursor");
-    if (path === "/api/me") return state.signedIn ? ok(me()) : { status: 401, json: { error: { code: "unauthenticated", message: "Sign in to continue." } } };
+    if (path === "/api/me") return state.signedIn ? ok({ ...me(), avatar: state.avatar }) : { status: 401, json: { error: { code: "unauthenticated", message: "Sign in to continue." } } };
+    // 2d Task 5: a new account's Following is empty, and Home shows Getting started.
+    if (path === "/api/timeline/following" && state.emptyFollowing) return ok(parse(TimelinePage, { items: [], nextCursor: null }, "empty following"));
     if (path === "/api/timeline/following" || path === "/api/timeline/latest") return ok(timeline(cursor, query.get("limit"), state.signedIn, state.newPosts, writtenRows()));
+    // 2d Task 5: Activity's reads (9.2).
+    if (path === "/api/activity") return ok(activityPage(query.get("tab"), cursor, state.signedIn, state.activity.fresh, state.activity.seenAt));
+    if (path === "/api/activity/newer") return ok({ count: state.activity.newer });
+    if (path === "/api/activity/settings") return ok(parse(ActivitySettings, state.activity.settings, "activity settings"));
+    if (path === `/api/media/${AVATAR_UPLOAD_ID}`) {
+      // The upload is processing at the first ask, and settled at the next, as the worker would leave it.
+      state.upload.polls += 1;
+      if (state.upload.polls < 2) return ok({ id: AVATAR_UPLOAD_ID, status: "processing" });
+      if (state.upload.outcome === "refused") return ok({ id: AVATAR_UPLOAD_ID, status: "refused", refusalId: UPLOAD_ID });
+      if (state.upload.outcome === "failed") return ok({ id: AVATAR_UPLOAD_ID, status: "failed", error: "corrupt_image" });
+      return ok({ id: AVATAR_UPLOAD_ID, status: "ready", width: 400, height: 400 });
+    }
+    const avatarFile = /^\/api\/media\/([0-9a-f-]{36})\/(small|large)\.webp$/.exec(path);
+    const owner = avatarFile ? (avatarFile[1] === AVATAR_UPLOAD_ID ? ADA_COLOUR : Object.values(AVATAR_OF).find((avatar) => avatar.id === avatarFile[1])?.colour) : undefined;
+    if (avatarFile && owner) return { status: 200, raw: solidWebp(avatarFile[2] === "small" ? 128 : 400, owner), type: "image/webp" };
     if (path === "/api/timeline/explore") {
       const items = posts(1, 10).map((view) => ({ kind: "post" as const, post: view }));
       return ok(parse(ExplorePage, { items, nextCursor: null, computedAt: ago(5), signInForMore: !state.signedIn }, "explore"));
@@ -748,7 +900,20 @@ export function createFixtureApi(): FixtureApi {
   }
 
   /** The answer to one POST the walk causes by reading: a report's status, and the passkey autofill's options on sign-in. */
-  function post_(path: string, body: Buffer): Answer | null {
+  function post_(path: string, body: Buffer, search = ""): Answer | null {
+    // 2d Task 5: the seen marker, kept as the API keeps it (the later of the two), and an avatar's upload with its query.
+    if (path === "/api/activity/seen") {
+      const asked = JSON.parse(body.toString("utf8") || "{}") as { at?: string };
+      if (typeof asked.at !== "string") return null;
+      state.activity.seen.push(asked.at);
+      if (state.activity.seenAt === null || asked.at > state.activity.seenAt) state.activity.seenAt = asked.at;
+      return { status: 204 };
+    }
+    if (path === "/api/media") {
+      state.upload.queries.push(search);
+      state.upload.polls = 0;
+      return ok({ id: AVATAR_UPLOAD_ID, status: "processing" });
+    }
     // Signing out ends the session: /api/me answers 401 from here on (UI Task 5, the session's end).
     if (path === "/api/auth/signout") {
       state.signedIn = false;
@@ -789,6 +954,50 @@ export function createFixtureApi(): FixtureApi {
     return null;
   }
 
+  /**
+   * 2d Task 5: the writes of 9.2 the walk makes: Activity's settings (PUT), the avatar set (PUT, or avatar_reset while the
+   * switch says so) and removed (DELETE), and a post's counts hidden or shown by its author (PATCH).
+   */
+  function change(method: string, path: string, body: Buffer): Answer | null {
+    const asked = JSON.parse(body.toString("utf8") || "{}") as Record<string, unknown>;
+    if (path === "/api/activity/settings" && method === "PUT") {
+      const settings = parse(ActivitySettings, asked as ActivitySettings, "saved settings");
+      state.activity.saves.push(settings);
+      state.activity.settings = settings;
+      return ok(settings);
+    }
+    if (path === "/api/me/avatar" && method === "PUT") {
+      if (state.upload.reset) return { status: 409, json: { error: { code: "avatar_reset", message: "A moderator removed this picture from your profile less than 30 days ago, so it cannot be your profile picture again yet." } } };
+      state.avatar = { small: `/api/media/${AVATAR_UPLOAD_ID}/small.webp`, large: `/api/media/${AVATAR_UPLOAD_ID}/large.webp` };
+      return ok({ avatar: state.avatar });
+    }
+    if (path === "/api/me/avatar" && method === "DELETE") {
+      state.avatar = null;
+      return ok({ avatar: null });
+    }
+    const counts = /^\/api\/posts\/([0-9a-f-]{36})\/counts$/.exec(path);
+    if (counts && method === "PATCH") {
+      if (asked.hidden === true) state.hiddenCounts.add(counts[1]!);
+      else state.hiddenCounts.delete(counts[1]!);
+      return ok({ countsHidden: asked.hidden === true });
+    }
+    return null;
+  }
+
+  /** Walks an answer: Ada's views carry her picture, and a post whose counts are hidden gives others no number for them. */
+  function adjust(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(adjust);
+    if (value === null || typeof value !== "object") return value;
+    const object = Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, adjust(inner)])) as Record<string, unknown>;
+    if (object.id === ADA.id && "avatar" in object && "handle" in object) object.avatar = state.avatar;
+    if (typeof object.id === "string" && "countsHidden" in object && state.hiddenCounts.has(object.id)) {
+      object.countsHidden = true;
+      const author = object.author as { id?: string } | undefined;
+      if (!(state.signedIn && author?.id === ADA.id)) object.counts = { ...(object.counts as object), likes: null, reposts: null };
+    }
+    return object;
+  }
+
   return {
     state,
     postStatus: (asked) => (asked === POST_ID || asked === id(103) || state.written.some((view) => view.id === asked) ? 204 : 404),
@@ -805,8 +1014,11 @@ export function createFixtureApi(): FixtureApi {
         }
         if (imported !== null) answer = imported;
         else if (method === "GET") answer = get(url.pathname, url.searchParams);
-        else if (method === "POST") answer = post_(url.pathname, body) ?? action(method, url.pathname);
-        else if (method === "DELETE") answer = action(method, url.pathname);
+        else if (method === "POST") answer = post_(url.pathname, body, url.search) ?? action(method, url.pathname);
+        else if (method === "DELETE") answer = change(method, url.pathname, body) ?? action(method, url.pathname);
+        else if (method === "PUT" || method === "PATCH") answer = change(method, url.pathname, body);
+        // 2d Task 5: Ada's picture on every view of her, and a post's hidden counts as each reader receives them.
+        if (answer?.json !== undefined) answer = { ...answer, json: adjust(answer.json) };
         // An action's answer waits as long as the step asks, so the step sees the card change before it lands; from UI
         // Task 7 so does a decision's, so a step sees the details sheet's skeletons before the blocks.
         const held = method !== "GET" || url.pathname.startsWith("/api/moderation/decisions/");

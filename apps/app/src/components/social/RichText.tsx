@@ -1,11 +1,13 @@
+import type { ReactNode } from "react";
 import { Linking, Platform, Text as Inline } from "react-native";
 import { Link } from "expo-router";
+import { MENTION_TOKEN } from "@korbat/contracts";
 import { FOCUS_RING } from "@/components/kit/interaction";
 import { Text, type TextVariant } from "@/components/kit/Text";
 import { POST_LINK_REL, externalLink } from "@/lib/links";
 
-/** Links and @handles become real links; everything else is plain text. Bodies are never rendered as markup. */
-const TOKEN = /(https?:\/\/[^\s<>"']+|(?<![A-Za-z0-9_])@[A-Za-z0-9_]{3,20})/g;
+/** Outside links become real links; everything else is plain text. Bodies are never rendered as markup. */
+const URL_TOKEN = /(https?:\/\/[^\s<>"']+)/g;
 
 /**
  * A link inside running text (UI design, sections 4.4 and 6.6): accent-ink, which against the body's ink is under 3:1, so
@@ -18,33 +20,44 @@ const UNDERLINED = "underline decoration-1 underline-offset-2 web:hover:decorati
 
 /**
  * A post's words (or a quoted post's, in the body variant), with its links and mentions as real anchors. The pieces are
- * React Native's own Text inside the kit's, so they take its face, size and step and change only their colour.
+ * React Native's own Text inside the kit's, so they take its face, size and step and change only their colour. Every
+ * outside link carries POST_LINK_REL (3b, decision 21).
  *
- * 3b Task 7 (design, sections 5.3 and 10.6, decision 21): `mentions` false keeps every @name as plain text, for an
- * imported post, whose names belong to another platform and must never link to the korbat account that happens to hold
- * the same handle; and every outside link carries POST_LINK_REL.
+ * 2d (design, sections 4.3 and 4.5): `mentions` is the post's own list, the handles the API stored that link for this
+ * reader (PostView.mentions). A token of the contracts' MENTION_TOKEN, with its right boundary, links to /u/<handle>,
+ * in accent ink with its "@" and no underline, exactly when its lowercased handle is in that list; any other @name stays
+ * plain text: one not stored, one renamed or blocked since, and every one of an imported post, whose list is empty. The
+ * text is never rewritten. The token's one capture group is the handle, so split() hands each handle back between the
+ * text around it; a fresh copy is made, since the contracts' object carries the g flag and its place.
  */
-export function RichText({ body, variant = "post", mentions = true }: { body: string; variant?: TextVariant; mentions?: boolean }) {
-  const parts = body.split(TOKEN);
-  return (
-    <Text variant={variant}>
-      {parts.map((part, index) => {
-        if (/^https?:\/\//.test(part)) {
-          return (
-            <Inline key={index} className={`text-accent-ink ${UNDERLINED} ${INLINE}`} {...externalLink(part, POST_LINK_REL)} onPress={Platform.OS === "web" ? undefined : () => void Linking.openURL(part)}>
-              {part}
-            </Inline>
-          );
-        }
-        if (mentions && /^@[A-Za-z0-9_]{3,20}$/.test(part)) {
-          return (
-            <Link key={index} href={`/u/${part.slice(1).toLowerCase()}`} asChild>
-              <Inline className={`text-accent-ink web:hover:underline ${INLINE}`}>{part}</Inline>
-            </Link>
-          );
-        }
-        return <Inline key={index}>{part}</Inline>;
-      })}
-    </Text>
-  );
+export function RichText({ body, variant = "post", mentions = [] }: { body: string; variant?: TextVariant; mentions?: readonly string[] }) {
+  const pieces: ReactNode[] = [];
+  body.split(URL_TOKEN).forEach((part, index) => {
+    if (index % 2 === 1) {
+      pieces.push(
+        <Inline key={`u${index}`} className={`text-accent-ink ${UNDERLINED} ${INLINE}`} {...externalLink(part, POST_LINK_REL)} onPress={Platform.OS === "web" ? undefined : () => void Linking.openURL(part)}>
+          {part}
+        </Inline>,
+      );
+      return;
+    }
+    part.split(new RegExp(MENTION_TOKEN.source, "g")).forEach((piece, at) => {
+      const key = `t${index}-${at}`;
+      if (at % 2 === 0) {
+        if (piece !== "") pieces.push(<Inline key={key}>{piece}</Inline>);
+        return;
+      }
+      const handle = piece.toLowerCase();
+      pieces.push(
+        mentions.includes(handle) ? (
+          <Link key={key} href={`/u/${handle}`} asChild>
+            <Inline className={`text-accent-ink web:hover:underline ${INLINE}`}>{`@${piece}`}</Inline>
+          </Link>
+        ) : (
+          <Inline key={key}>{`@${piece}`}</Inline>
+        ),
+      );
+    });
+  });
+  return <Text variant={variant}>{pieces}</Text>;
 }

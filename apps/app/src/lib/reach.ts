@@ -42,7 +42,17 @@ function importedLines(post: PostView): ReachLine[] {
   return [{ text: IMPORT_WORDS["import.reach"] }, { text: provenanceWords(post.imported, post.createdAt), mark: "provenance" }];
 }
 
+/**
+ * 2d (decision 26, 10.6): while the author hid the post's like and repost counts, their sheet says so, before the last
+ * line; nobody else is told, since everyone else simply receives no number.
+ */
 export function reach(post: PostView, me: MeResponse | null, explore?: ExploreStatusKind | null): Reach {
+  const found = reachOf(post, me, explore);
+  if (me !== null && post.author.id === me.user.id && post.countsHidden) found.lines.splice(found.lines.length - 1, 0, { text: UI_WORDS["reach.countsHidden"] });
+  return found;
+}
+
+function reachOf(post: PostView, me: MeResponse | null, explore?: ExploreStatusKind | null): Reach {
   const own = me !== null && post.author.id === me.user.id;
   const publicLine: ReachLine = { text: UI_WORDS["reach.public"] };
   if (!own) return { lines: [publicLine, ...importedLines(post), NEVER], summary: UI_WORDS["reach.summary.public"], asksExplore: false };

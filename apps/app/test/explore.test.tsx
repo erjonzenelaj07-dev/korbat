@@ -235,11 +235,13 @@ describe("Home's tabs and their addresses", () => {
     expect(home).toContain("<FeedList");
   });
 
-  test("a tab is chosen through the address, every link to a tab names one Home has, and Following's empty text points to Latest and Explore", () => {
+  test("a tab is chosen through the address, every link to a tab names one Home has, and Following's empty panel points to Latest and Explore", () => {
     const home = read("app", "index.tsx");
     expect(home).toContain("useLocalSearchParams<{ tab?: string }>()");
     expect(home).toContain("const select = (tab: Tab) => router.setParams({ tab });");
-    expect(read("lib", "ui-words.ts")).toContain('"feed.empty.following.body": "Nothing here yet. Follow someone, or switch to Latest or Explore.",');
+    // 2d (decision 25, 10.7): the Getting started panel took the empty state's place; its first two rows are Latest and Explore.
+    expect(read("lib", "ui-words.ts")).toContain('"feed.start.latest": "Read Latest: every public post, newest first",');
+    expect(read("lib", "ui-words.ts")).toContain('"feed.start.explore": "See Explore, and how it picks",');
     const links = sourceFiles().flatMap((file) => [...file.text.matchAll(/"\/\?tab=([a-z]+)"/g)].map((match) => ({ file: file.name, tab: match[1] ?? "" })));
     // How Explore works leads back to the Explore tab; Popular now, which did too, left the shell (UI design, decision 14).
     expect(links.map((link) => link.file).sort()).toEqual(["app/explore/about.tsx"]);

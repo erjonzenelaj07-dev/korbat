@@ -44,7 +44,13 @@ export const SECURITY_WORDS = {
 export const PRIVACY_WORDS = {
   explore: "Explore",
   explain:
-    "A block hides you and the other account from each other while signed in and refuses their interactions. Posts on korbat are public, so anyone who signs out can still read them. A mute only hides an account from your timelines, and they are never told.",
+    "A block hides you and the other account from each other while signed in and refuses their interactions. Posts on korbat are public, so anyone who signs out can still read them. A mute hides an account from your timelines and your Activity, and they are never told.",
+  /** 2d (decision 21, 10.8): the Link previews card, off until the person turns it on, and the note on search engines. */
+  previews: "Link previews",
+  previewsSwitch: "Show a preview when someone shares a link to my posts or profile",
+  previewsExplain:
+    "When this is on, a link to your post or profile shared on another site shows your display name, your handle, the post's text or your bio and its first image or your profile picture, as anyone signed out sees them, and that site may keep its copy after you delete the post, where korbat cannot remove it.",
+  search: "korbat asks search engines not to list your posts and your profile, and turns away every crawler but the link-preview fetchers.",
   /** The name of the Blocked and Muted tab list (6.10 requires one). */
   tabs: "Blocked and muted accounts",
   blocked: "Blocked",
@@ -74,4 +80,57 @@ export const ACCOUNT_WORDS = {
   exportNative: "Export your data from the web app.",
   deleteMore: "Your likes, reposts, bookmarks, follows, blocks and mutes are removed too. Your handle stays reserved, so nobody can take it. This cannot be undone.",
   deleteSent: (email: string) => `We emailed a code to ${email}.`,
+} as const;
+
+/** 2d (decisions 7 and 8, 10.8): Settings, Activity, and its row in the Settings index. */
+export const ACTIVITY_SETTINGS_WORDS = {
+  nav: "Activity",
+  hint: "Who can reach you in Activity",
+  intro:
+    "Choose what shows in your Activity. korbat never tells you about replies, mentions, quotes or follows anywhere else: no email, no push and no badge. Decisions about your posts and account also come by email.",
+  replies: "Replies to your posts",
+  mentions: "Mentions of you",
+  quotes: "Quotes of your posts",
+  follows: "New followers",
+  everyone: "Everyone",
+  older: "Accounts older than 2 days",
+  following: "Accounts you follow",
+  off: "Off",
+  on: "On",
+  muted: "Accounts you mute or block never show in your Activity.",
+  fromNow: "A change applies from now on. It does not bring back what was not shown.",
+  saved: "Saved",
+  failed: "Your choice could not be saved. Try again.",
+} as const;
+
+/**
+ * 2d (decision 14, 7.7 and 10.5): the profile picture's card on Settings, Profile. `previewPart` names the preview by the
+ * part kept; `resetRecently` is the API's avatar_reset sentence word for word (apps/api/src/media/context.ts).
+ */
+export const AVATAR_WORDS = {
+  section: "Profile picture",
+  explain:
+    "Your picture is public: anyone can see it, signed in or not, and link previews show it on other sites if you turn them on in Privacy. A picture of you can identify you. korbat keeps only the square you choose and removes the photo's location and camera details.",
+  choose: "Choose a picture",
+  change: "Choose another picture",
+  remove: "Remove picture",
+  keep: "Which part to keep",
+  top: "Top",
+  middle: "Middle",
+  bottom: "Bottom",
+  left: "Left",
+  right: "Right",
+  preview: "Preview of your profile picture",
+  previewPart: "Preview of your profile picture, {part} part kept",
+  use: "Use this picture",
+  cancel: "Cancel",
+  uploading: "Uploading your picture...",
+  processing: "Preparing your picture...",
+  updated: "Profile picture updated",
+  removed: "Profile picture removed",
+  failed: "This picture could not be used. Try another one.",
+  resetRecently: "A moderator removed this picture from your profile less than 30 days ago, so it cannot be your profile picture again yet.",
+  confirmTitle: "Remove your profile picture?",
+  confirmBody: "korbat deletes it. You can choose a picture again at any time.",
+  confirm: "Remove",
 } as const;

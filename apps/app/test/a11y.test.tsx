@@ -355,3 +355,27 @@ describe("no file this sub-project added or rewrote is left on a legacy list (UI
     expect([...LEGACY_COLOUR_FILES]).toEqual([]);
   });
 });
+
+// 2d Task 5 appends below, so the lines above keep the numbers other tasks cite.
+/**
+ * 2d's new screens and components (design, sections 10.2, 10.7 and 10.8): each is in src, so the source scan above reads
+ * it, and holds no bare sentence; their words are in lib/activity-words.ts, lib/ui-words.ts and lib/settings-words.ts.
+ */
+const ENGAGEMENT_FILES: readonly string[] = [
+  "app/activity.tsx",
+  "app/settings/activity.tsx",
+  "components/activity/FollowsEntry.tsx",
+  "components/activity/GettingStarted.tsx",
+  "components/activity/ModerationEntry.tsx",
+  "components/activity/PostEntry.tsx",
+];
+
+describe("2d's new files are scanned (design, section 12.5)", () => {
+  test("each is in src, the scan reads it, and none holds a bare sentence", () => {
+    expect(ENGAGEMENT_FILES.filter((name) => !existsSync(path.join(SRC, ...name.split("/"))))).toEqual([]);
+    for (const name of ENGAGEMENT_FILES) {
+      expect(bareSentences(name, readFileSync(path.join(SRC, ...name.split("/")), "utf8")), name).toEqual([]);
+    }
+    expect(filesWithBareSentences().filter((name) => ENGAGEMENT_FILES.includes(name))).toEqual([]);
+  });
+});

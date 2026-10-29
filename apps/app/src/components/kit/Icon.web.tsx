@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import ArrowLeft from "lucide-react/dist/esm/icons/arrow-left.mjs";
 import ArrowUp from "lucide-react/dist/esm/icons/arrow-up.mjs";
 import BadgeCheck from "lucide-react/dist/esm/icons/badge-check.mjs";
+import Bell from "lucide-react/dist/esm/icons/bell.mjs";
 import Bookmark from "lucide-react/dist/esm/icons/bookmark.mjs";
 import ChevronLeft from "lucide-react/dist/esm/icons/chevron-left.mjs";
 import ChevronRight from "lucide-react/dist/esm/icons/chevron-right.mjs";
@@ -91,6 +92,7 @@ const COMPONENTS: Record<IconName, LucideIcon> = {
   info: Info,
   retry: RotateCw,
   import: Import,
+  activity: Bell,
 };
 
 /** Lucide's 24 px drawing has a stroke of 2; korbat draws 1.75, scaled with the icon, and 2.25 when strong. */

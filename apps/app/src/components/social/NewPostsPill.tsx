@@ -17,7 +17,8 @@ import { CaughtUpCheck } from "./FeedRows";
  * upwards in time order. The count falls as rows come into view; at zero it says "You're all caught up" for two seconds
  * (opacity only) and leaves. It comes in from 8 px above and leaves by fading (pill-show: 200 ms in, 150 ms out; reduced,
  * opacity only), and a screen reader hears "N new posts above" once, when it first shows, never on later counts. Like
- * every floating layer it keeps a border in forced colours (section 4.6).
+ * every floating layer it keeps a border in forced colours (section 4.6). 2d (10.2): Activity's pill is this one with its
+ * own words passed in, "1 new", "{n} new" or "20+ new" (`wordsFor`), and its name's template (`label`).
  */
 
 /** How long "You're all caught up" stays once the count reaches zero. */
@@ -36,6 +37,8 @@ export function NewPostsPill({
   top,
   headerY,
   onPress,
+  wordsFor = pillWords,
+  label = UI_WORDS["feed.pill.label"],
 }: {
   count: number;
   more?: boolean;
@@ -44,6 +47,8 @@ export function NewPostsPill({
   /** The header's slide on a phone: the pill moves up with it when it hides. */
   headerY?: SharedValue<number>;
   onPress: () => void;
+  wordsFor?: (count: number, more: boolean) => string;
+  label?: string;
 }) {
   const motion = useMotion();
   // What shows: the count, "You're all caught up" for two seconds after it reached zero, or nothing.
@@ -53,7 +58,7 @@ export function NewPostsPill({
   const had = useRef(count > 0);
   useEffect(() => {
     if (count > 0) {
-      if (!had.current) setAnnounced(fill(UI_WORDS["feed.pill.announce"], { visible: pillWords(count, more) }));
+      if (!had.current) setAnnounced(fill(UI_WORDS["feed.pill.announce"], { visible: wordsFor(count, more) }));
       had.current = true;
       setPhase("count");
       setMounted(true);
@@ -86,7 +91,7 @@ export function NewPostsPill({
   // While it fades out the pill keeps the words it last showed.
   const shownWords = useRef("");
   if (phase === "caughtUp") shownWords.current = UI_WORDS["feed.caughtUp"];
-  else if (phase === "count" && count > 0) shownWords.current = pillWords(count, more);
+  else if (phase === "count" && count > 0) shownWords.current = wordsFor(count, more);
   const words = shownWords.current;
   return (
     <>
@@ -98,7 +103,7 @@ export function NewPostsPill({
             <Pressable
               {...dataAttribute("pill")}
               accessibilityRole="button"
-              aria-label={phase === "caughtUp" ? words : fill(UI_WORDS["feed.pill.label"], { visible: words })}
+              aria-label={phase === "caughtUp" ? words : fill(label, { visible: words })}
               disabled={phase !== "count"}
               onPress={onPress}
               {...pressDelay(0)}

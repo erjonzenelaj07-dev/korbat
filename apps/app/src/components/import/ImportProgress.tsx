@@ -60,6 +60,7 @@ export function ViewLink({ label, href }: { label: string; href: Href }) {
 export function AskSheet({
   open,
   title,
+  description,
   confirm,
   keep,
   busy,
@@ -70,6 +71,8 @@ export function AskSheet({
 }: {
   open: boolean;
   title: string;
+  /** 2d (10.5): a sentence under the question, as Sheet's description (the avatar's removal says what goes). */
+  description?: string;
   confirm: string;
   keep: string;
   busy: boolean;
@@ -79,7 +82,7 @@ export function AskSheet({
   onClosed: () => void;
 }) {
   return (
-    <Sheet open={open} onClose={onClose} onClosed={onClosed} title={title}>
+    <Sheet open={open} onClose={onClose} onClosed={onClosed} title={title} description={description}>
       <View className="px-5 pb-4">
         <ErrorText message={error} />
         <View className="flex-row flex-wrap gap-x-2">

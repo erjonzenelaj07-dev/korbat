@@ -22,7 +22,7 @@ import { importedLabel, importedShort } from "@/lib/import-words";
 import { chipText } from "@/lib/moderation";
 import { CHIP_WORDS } from "@/lib/moderation-words";
 import { useMotion } from "@/lib/motion";
-import { countLabel, deleteWithLeave, failedWords, shownCount, threadStats, toggleEngagement, type ToggleKind } from "@/lib/post-actions";
+import { countLabel, deleteWithLeave, failedWords, shownCount, threadStats, toggleCountsHidden, toggleEngagement, type ToggleKind } from "@/lib/post-actions";
 import { useSession } from "@/lib/session";
 import { isSuspendedRefusal } from "@/lib/standing";
 import { lanes, laneKey, social } from "@/lib/social";
@@ -320,6 +320,10 @@ const PENDING_MS = 400;
  * In a feed (section 10) the article says its place, `position` from 1 and `setSize` (-1 while more can load); a list's
  * first two rows pass `priority`, so their images load first (11.2); and a thread's ancestors are `joined`: compact,
  * without a divider, and linked to the post below by a 2 px line-low thread line through their avatars (8.3).
+ *
+ * 2d (5.5.3, 10.2): `quiet` is the static card an Activity entry draws: the post as every card shows it, its body the
+ * open target and its time the one link to it, with Reply its only action and no More, inside the entry's own article,
+ * which names it (so the card is no article of its own and has no divider).
  */
 export function PostCard({
   post: initial,
@@ -331,6 +335,7 @@ export function PostCard({
   priority = false,
   joined = false,
   onReply,
+  quiet = false,
 }: {
   post: PostView;
   repostedBy?: Author;
@@ -342,6 +347,7 @@ export function PostCard({
   joined?: boolean;
   /** What Reply does instead of opening the thread: the thread's own focused post opens its reply card (Task 6). */
   onReply?: () => void;
+  quiet?: boolean;
 }) {
   const { state } = useSession();
   const me = state.status === "signed-in" ? state.me.user.id : null;
@@ -422,6 +428,17 @@ export function PostCard({
     });
   }
 
+  // 2d (decision 26, 10.6): the author's Hide or Show counts, at once, with its toast, and the old state back on a refusal.
+  function counts() {
+    void toggleCountsHidden(social, lanes, post, setPost).then((result) => {
+      if (result.status === "answered") toast.show({ message: result.hidden ? UI_WORDS["post.countsHidden"] : UI_WORDS["post.countsShown"] });
+      else if (result.status === "refused") {
+        if (isSuspendedRefusal(result.error)) setRefused(true);
+        else toast.show({ message: errorMessage(result.error), tone: "rollback" });
+      }
+    });
+  }
+
   // The card fades (post-removed, 150 ms; at once under reduced motion) before its list lets it go.
   const opacity = useSharedValue(1);
   const leave = () =>
@@ -488,34 +505,38 @@ export function PostCard({
     // It wraps rather than cutting More off at the largest text on the narrowest phone.
     <View className="-ml-2.5 mt-1 flex-row flex-wrap items-center">
       <IconButton icon="reply" label={countLabel("reply", post.counts.replies, hideCounts)} count={shownCount("reply", post.counts.replies, hideCounts)} onPress={reply} />
-      <Menu
-        label={countLabel("repost", post.counts.reposts, hideCounts)}
-        title={UI_WORDS["post.repost"]}
-        icon="repost"
-        items={repostMenuItems(post, me !== null, () => toggle("repost"))}
-        trigger={{ pressed: viewer.reposted, disc: viewer.reposted, tone: viewer.reposted ? "accent" : "low", count: shownCount("repost", post.counts.reposts, hideCounts), busy: busy.repost === true, feedback: feedback.repost }}
-      />
-      <IconButton
-        icon="like"
-        label={countLabel("like", post.counts.likes, hideCounts)}
-        count={shownCount("like", post.counts.likes, hideCounts)}
-        pressed={viewer.liked}
-        filled={viewer.liked}
-        busy={busy.like === true}
-        feedback={feedback.like}
-        onPress={() => toggle("like")}
-      />
-      <IconButton
-        icon="bookmarks"
-        label={viewer.bookmarked ? UI_WORDS["post.saved"] : UI_WORDS["post.save"]}
-        tone={viewer.bookmarked ? "accent" : "low"}
-        filled={viewer.bookmarked}
-        busy={busy.bookmark === true}
-        feedback={feedback.bookmark}
-        onPress={() => toggle("bookmark")}
-      />
-      <View className="flex-1" />
-      <PostMenu post={post} onDelete={() => setConfirmingDelete(true)} triggerRef={moreRef} />
+      {quiet ? null : (
+        <>
+          <Menu
+            label={countLabel("repost", post.counts.reposts, hideCounts)}
+            title={UI_WORDS["post.repost"]}
+            icon="repost"
+            items={repostMenuItems(post, me !== null, () => toggle("repost"))}
+            trigger={{ pressed: viewer.reposted, disc: viewer.reposted, tone: viewer.reposted ? "accent" : "low", count: shownCount("repost", post.counts.reposts, hideCounts), busy: busy.repost === true, feedback: feedback.repost }}
+          />
+          <IconButton
+            icon="like"
+            label={countLabel("like", post.counts.likes, hideCounts)}
+            count={shownCount("like", post.counts.likes, hideCounts)}
+            pressed={viewer.liked}
+            filled={viewer.liked}
+            busy={busy.like === true}
+            feedback={feedback.like}
+            onPress={() => toggle("like")}
+          />
+          <IconButton
+            icon="bookmarks"
+            label={viewer.bookmarked ? UI_WORDS["post.saved"] : UI_WORDS["post.save"]}
+            tone={viewer.bookmarked ? "accent" : "low"}
+            filled={viewer.bookmarked}
+            busy={busy.bookmark === true}
+            feedback={feedback.bookmark}
+            onPress={() => toggle("bookmark")}
+          />
+          <View className="flex-1" />
+          <PostMenu post={post} onDelete={() => setConfirmingDelete(true)} onCounts={counts} triggerRef={moreRef} />
+        </>
+      )}
     </View>
   );
 
@@ -526,7 +547,7 @@ export function PostCard({
         {/* The avatar opens the profile too, but the name is the one keyboard and screen-reader target. */}
         <Link href={`/u/${post.author.handle}`} asChild>
           <Pressable tabIndex={-1} aria-hidden className="h-11 w-11 items-center justify-center rounded-full">
-            <Avatar account={post.author} size={40} />
+            <Avatar account={post.author} size={40} src={post.author.avatar} />
           </Pressable>
         </Link>
         <View className="min-w-0 flex-1">
@@ -552,8 +573,8 @@ export function PostCard({
           {/* A post may consist of images only, and then there is no text. */}
           {post.body ? (
             <View className="mt-1.5">
-              {/* 3b (5.3, 10.6): an imported post's @names belong to another platform and never link. */}
-              <RichText body={post.body} variant={large ? "post-large" : "post"} mentions={post.imported === null} />
+              {/* 2d (4.5): only the mentions the API stored and links for this reader; an imported post's list is always empty (3b). */}
+              <RichText body={post.body} variant={large ? "post-large" : "post"} mentions={post.mentions} />
             </View>
           ) : null}
           {phone ? null : media}
@@ -586,13 +607,13 @@ export function PostCard({
   return (
     <Animated.View style={removedStyle}>
       <View
-        role="article"
-        aria-labelledby={labelId}
+        role={quiet ? undefined : "article"}
+        aria-labelledby={quiet ? undefined : labelId}
         aria-posinset={position}
         aria-setsize={position === undefined ? undefined : setSize}
         {...(webPress as object)}
         // A thread's focused post draws no divider of its own: the thread's block under it does, after Quote this post.
-        className={cn(joined ? "px-4 pb-1 pt-3" : large ? "px-4 py-3" : "border-b border-line-low px-4 py-3", "web:transition-colors web:duration-[120ms]", washed ? "bg-surface-2" : "")}
+        className={cn(joined ? "px-4 pb-1 pt-3" : large || quiet ? "px-4 py-3" : "border-b border-line-low px-4 py-3", "web:transition-colors web:duration-[120ms]", washed ? "bg-surface-2" : "")}
       >
         {/* The thread line, from under the avatar to the next post's avatar: 2 px, line-low, through the avatars' centre. */}
         {joined ? <View pointerEvents="none" aria-hidden className="absolute bottom-0 left-[37px] top-[60px] w-0.5 bg-line-low" /> : null}

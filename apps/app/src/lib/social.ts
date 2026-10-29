@@ -1,5 +1,8 @@
 import {
+  AvatarResponse,
+  type AvatarCrop,
   BlockResponse,
+  CountsResponse,
   EngagementResponse,
   ExplorePage,
   ExploreSettingResponse,
@@ -13,6 +16,7 @@ import {
   type ProfileEditRequest,
   ProfilePage,
   ProfileView,
+  SharePreviewsResponse,
   ThreadResponse,
   TimelinePage,
   UploadResponse,
@@ -44,7 +48,7 @@ const OwnProfileResponse = z.object({ profile: ProfileView });
 
 /** Every social endpoint, typed by the shared contracts. Cookies and CSRF are handled by `api`. */
 export const social = {
-  createPost: (input: { body: string; replyToId?: string; quoteOfId?: string; media?: { id: string; alt: string }[] }) => api("/api/posts", { json: input, schema: PostView }),
+  createPost: (input: { body: string; replyToId?: string; quoteOfId?: string; media?: { id: string; alt: string }[]; hideCounts?: boolean }) => api("/api/posts", { json: input, schema: PostView }),
   getPost: (id: string) => api(postPath(id), { schema: PostView }),
   deletePost: (id: string) => api(postPath(id), { method: "DELETE" }),
   thread: (id: string, cursor?: string) => api(`${postPath(id)}/thread${query(cursor)}`, { schema: ThreadResponse }),
@@ -52,8 +56,11 @@ export const social = {
   /** Why the author's own post is in Explore or not, with no count (2c design, section 8); anyone else gets not_found. */
   exploreStatus: (id: string) => api(`${postPath(id)}/explore`, { schema: ExploreStatus }),
 
-  /** Sends one image file as the request body. The answer is an id to ask about, not a finished image. */
-  uploadMedia: (file: Blob) => api("/api/media", { raw: { type: file.type, body: file }, schema: UploadResponse }),
+  /**
+   * Sends one image file as the request body. The answer is an id to ask about, not a finished image. 2d (7.2): a profile
+   * picture goes up as kind=avatar with the part of it the worker keeps.
+   */
+  uploadMedia: (file: Blob, avatar?: { crop: AvatarCrop }) => api(avatar ? `/api/media?kind=avatar&crop=${avatar.crop}` : "/api/media", { raw: { type: file.type, body: file }, schema: UploadResponse }),
   mediaStatus: (id: string) => api(`/api/media/${id}`, { schema: MediaStatusResponse }),
   removeMedia: (id: string) => api(`/api/media/${id}`, { method: "DELETE" }),
 
@@ -93,6 +100,13 @@ export const social = {
   changeHandle: (handle: string) => api("/api/me/handle", { json: { handle }, schema: OwnProfileResponse }),
   /** "Show my posts in Explore", on or off, with no body as the other switches; the caller refreshes the session, whose /api/me carries it. */
   setShowInExplore: (on: boolean) => api("/api/me/explore", { method: on ? "POST" : "DELETE", schema: ExploreSettingResponse }),
+  /** 2d (decision 21, 9.2): link previews, as the Explore switch: POST turns them on, DELETE off. */
+  setSharePreviews: (on: boolean) => api("/api/me/share-previews", { method: on ? "POST" : "DELETE", schema: SharePreviewsResponse }),
+  /** 2d (7.3, 9.2): one of the account's own avatar uploads, once ready, becomes its picture; DELETE removes the picture. */
+  setAvatar: (mediaId: string) => api("/api/me/avatar", { method: "PUT", json: { mediaId }, schema: AvatarResponse }),
+  removeAvatar: () => api("/api/me/avatar", { method: "DELETE", schema: AvatarResponse }),
+  /** 2d (decision 26, 9.2): the author hides or shows a post's like and repost counts. */
+  setCountsHidden: (id: string, hidden: boolean) => api(`${postPath(id)}/counts`, { method: "PATCH", json: { hidden }, schema: CountsResponse }),
 };
 
 /**
@@ -131,7 +145,7 @@ export function createLanes(): Lanes {
 export const lanes = createLanes();
 
 export const laneKey = {
-  post: (id: string, kind: EngagementKind | "delete") => `post:${id}:${kind}`,
+  post: (id: string, kind: EngagementKind | "delete" | "counts") => `post:${id}:${kind}`,
   follow: (handle: string) => `follow:${handle.replace(/^@/, "").toLowerCase()}`,
 };
 

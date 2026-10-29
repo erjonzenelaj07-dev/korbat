@@ -101,6 +101,58 @@ export function ExploreSwitch({ on, busy, error, change }: ExploreSwitchState) {
   );
 }
 
+/**
+ * 2d (decision 21, 10.8): Link previews, off until the person turns them on: a card with its switch (POST turns previews
+ * on, DELETE off, as Explore's switch), the sentence on what a preview shows and where, and the note on search engines.
+ * The switch shows a change at once and puts it back with the error when the save fails; /api/me carries the stored
+ * value, so the session is read again after a save. Nothing elsewhere in the app asks the person to turn it on.
+ */
+function PreviewsCard() {
+  const { colors } = useTheme();
+  const { state, refresh } = useSession();
+  const stored = state.status === "signed-in" ? (state.me.profile?.sharePreviews ?? false) : false;
+  const [on, setOn] = useState(stored);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setOn(stored), [stored]);
+  const change = async (next: boolean) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    setOn(next);
+    try {
+      setOn((await social.setSharePreviews(next)).sharePreviews);
+      await refresh();
+    } catch (err) {
+      setOn(!next);
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Section title={PRIVACY_WORDS.previews}>
+      <SectionRows>
+        <ListRow
+          label={PRIVACY_WORDS.previewsSwitch}
+          description={PRIVACY_WORDS.previewsExplain}
+          control={{
+            kind: "switch",
+            value: on,
+            disabled: busy,
+            onValueChange: (next) => void change(next),
+            element: <Switch accessibilityLabel={PRIVACY_WORDS.previewsSwitch} value={on} disabled={busy} onValueChange={(next) => void change(next)} {...switchColours(colors)} />,
+          }}
+        />
+      </SectionRows>
+      <Text variant="meta" tone="medium" className="mt-3">
+        {PRIVACY_WORDS.search}
+      </Text>
+      <ErrorText message={error} />
+    </Section>
+  );
+}
+
 /** Unblock or Unmute beside an account: a secondary button with its own busy state and, below it, a failed undo's error. */
 function UndoButton({ label, onPress }: { label: string; onPress: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
@@ -161,6 +213,7 @@ export default function Privacy() {
           header={
             <View className="border-b border-line-low px-4 pb-1">
               <ExploreSwitch {...explore} />
+              <PreviewsCard />
               <Text tone="medium" className="mt-6">
                 {PRIVACY_WORDS.explain}
               </Text>

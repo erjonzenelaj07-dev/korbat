@@ -2,6 +2,7 @@ import type { LucideIcon } from "lucide-react-native";
 import ArrowLeft from "lucide-react-native/icons/arrow-left";
 import ArrowUp from "lucide-react-native/icons/arrow-up";
 import BadgeCheck from "lucide-react-native/icons/badge-check";
+import Bell from "lucide-react-native/icons/bell";
 import Bookmark from "lucide-react-native/icons/bookmark";
 import ChevronLeft from "lucide-react-native/icons/chevron-left";
 import ChevronRight from "lucide-react-native/icons/chevron-right";
@@ -91,6 +92,7 @@ const COMPONENTS: Record<IconName, LucideIcon> = {
   info: Info,
   retry: RotateCw,
   import: Import,
+  activity: Bell,
 };
 
 /** Lucide's 24 px drawing has a stroke of 2; korbat draws 1.75, scaled with the icon, and 2.25 when strong. */
