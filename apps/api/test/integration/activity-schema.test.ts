@@ -1,11 +1,12 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { sql, type SQL } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { ACTIVITY_DEFAULTS, ACTIVITY_KINDS, ACTIVITY_REACH, MENTION_STORE_MAX } from "@korbat/contracts";
+import { ACTIVITY_DEFAULTS, ACTIVITY_KINDS, ACTIVITY_REACH, MEDIA_KINDS, MENTION_STORE_MAX } from "@korbat/contracts";
 import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
 import { loadConfig } from "../../src/config";
 import { storedImageName } from "../../src/media/files";
-import { newImageRow, newPostRow, removeFixtures, rowCounts } from "./moderation-fixtures";
+import { matchForTest } from "./automation-fixtures";
+import { newImageRow, newPostRow, openCase, removeFixtures, rowCounts, suspectItemOn } from "./moderation-fixtures";
 import { newProfile } from "./social-fixtures";
 import { rolledBack } from "./staff-fixtures";
 
@@ -15,6 +16,8 @@ vi.setConfig({ testTimeout: 60_000 });
 
 /** 2d's three tables (migration 0049_activity), which the row-count test at the end adds to the suites' usual tables. */
 const ACTIVITY_TABLES = ["activity_items", "activity_state", "post_mentions"];
+/** Task 3: and the edge's outbox, which the avatar half's detaches and deletes write to, all of it rolled back or removed. */
+const COUNTED = [...ACTIVITY_TABLES, "edge_purges"];
 
 /** A PostgreSQL error as these tests compare it: its SQLSTATE and its message. */
 type PgError = { code: string; message: string };
@@ -78,7 +81,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: Activity's tables, menti
     apiDb = createDb(config.DATABASE_URL_API, { max: 4 });
     // The migrate role is not part of the API configuration; the test environment carries it.
     migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 2 });
-    before = await rowCounts(apiDb, ACTIVITY_TABLES);
+    before = await rowCounts(apiDb, COUNTED);
   }, 120_000);
   afterAll(async () => {
     await Promise.all([closeDb(apiDb), closeDb(migrateDb)]);
@@ -559,7 +562,199 @@ describe.skipIf(!process.env.INTEGRATION)("integration: Activity's tables, menti
     });
   });
 
+  /**
+   * Task 3 (design, sections 6.4, 6.6 and 6.8; section 12.3): migration 0051_avatars. The CHECKs and the unique key of an
+   * avatar's row, media_kind against MEDIA_KINDS, the four replaced functions and the guard, the grants. BEFORE UPDATE OF
+   * profile_id, the row triggers fire in the order of their names: post_media_avatar_guard before post_media_refused. So
+   * post_media_refused's three arms are each reached as the migrator, whom the guard skips, and its refusal's and its
+   * hold's arms as the API role too; an erased row's set is the guard's refusal for the API role. The tests that need
+   * rows only the migrator can write (an erased, a sealed or a deleted owner's avatar) and the API role to meet them
+   * commit those rows first and remove them with removeFixtures; every other test is rolled back, its outbox rows with it.
+   */
+  describe("Task 3: avatars in post_media (0051_avatars)", () => {
+    const SHA = "ab".repeat(32);
+    const AVATAR_REFUSED: PgError = { code: "42501", message: "avatar_column" };
+    const INSERT_REFUSED: PgError = { code: "42501", message: "moderation_column" };
+    const UPLOAD_REFUSED = { code: "P0001", message: "upload_refused" };
+    /** An avatar's row as insertProcessing writes one and the worker's verdict makes it: ready, 400 square, its hash. */
+    async function newAvatarRow(tx: DbTx, ownerId: string, status: "ready" | "processing" | "failed" = "ready"): Promise<string> {
+      const dims = status === "ready" ? sql`400, 400, 'L2Eo_P_3jb_3~qoL'` : sql`null, null, null`;
+      const [row] = await tx.execute<{ id: string }>(sql`
+        insert into post_media (owner_id, status, width, height, blurhash, kind, avatar_sha256)
+        values (${ownerId}::uuid, ${status}::media_status, ${dims}, 'avatar', ${SHA}) returning id`);
+      return row!.id;
+    }
+    const setTo = (id: string, profileId: string | null): SQL => sql`update post_media set profile_id = ${profileId}::uuid where id = ${id}::uuid`;
+    const purgesOf = async (tx: DbTx, id: string) => (await tx.execute<{ cause: string }>(sql`select cause from edge_purges where media_id = ${id}::uuid order by id`)).map((row) => row.cause);
+
+    test("media_kind is MEDIA_KINDS; each kind in its place, an avatar only its owner's, an avatar's SHA-256 and none on a post's image; one avatar a profile", async () => {
+      const [kinds] = await apiDb.execute<{ kinds: string[] }>(sql`select enum_range(null::public.media_kind)::text[] as kinds`);
+      expect(kinds!.kinds).toEqual([...MEDIA_KINDS]);
+      // As the migrator, whom the guard skips, so that each CHECK is what refuses.
+      await asMigrator(async (tx) => {
+        const [ada, bob] = [await profile(tx), await profile(tx)];
+        const row = (kind: string, sha: string | null) =>
+          sql`insert into post_media (owner_id, status, width, height, blurhash, kind, avatar_sha256) values (${ada.id}::uuid, 'ready', 400, 400, 'L2Eo_P_3jb_3~qoL', ${kind}::media_kind, ${sha})`;
+        expect(await attempt(tx, row("avatar", null))).toEqual(check("post_media_avatar_sha256"));
+        expect(await attempt(tx, row("avatar", "AB".repeat(32)))).toEqual(check("post_media_avatar_sha256"));
+        expect(await attempt(tx, row("avatar", "ab".repeat(31)))).toEqual(check("post_media_avatar_sha256"));
+        expect(await attempt(tx, row("post", SHA))).toEqual(check("post_media_avatar_sha256"));
+        expect(await attempt(tx, row("avatar", SHA))).toBeNull();
+        const avatar = await newAvatarRow(tx, ada.id);
+        const image = await newImageRow(tx, ada.id, null);
+        const post = await newPostRow(tx, ada.id);
+        expect(await attempt(tx, sql`update post_media set post_id = ${post}::uuid, position = 0, alt_text = 'a picture' where id = ${avatar}::uuid`)).toEqual(check("post_media_kind_place"));
+        expect(await attempt(tx, sql`update post_media set position = 0 where id = ${avatar}::uuid`)).toEqual(check("post_media_kind_place"));
+        expect(await attempt(tx, sql`update post_media set alt_text = 'a picture' where id = ${avatar}::uuid`)).toEqual(check("post_media_kind_place"));
+        expect(await attempt(tx, setTo(image, ada.id))).toEqual(check("post_media_kind_place"));
+        expect(await attempt(tx, setTo(avatar, bob.id))).toEqual(check("post_media_avatar_owner"));
+        expect(await step(tx, setTo(avatar, ada.id))).toBeNull();
+        const second = await newAvatarRow(tx, ada.id);
+        expect(await attempt(tx, setTo(second, ada.id))).toEqual(unique("post_media_avatar_idx"));
+      });
+    });
+
+    test("post_media_insert refuses a row inserted with a profile_id (moderation_column), for the API role and the migrator alike", async () => {
+      for (const run of [asApi, asMigrator]) {
+        await run(async (tx) => {
+          const ada = await profile(tx);
+          expect(
+            await attempt(tx, sql`insert into post_media (owner_id, status, width, height, blurhash, kind, avatar_sha256, profile_id) values (${ada.id}::uuid, 'ready', 400, 400, 'L2Eo_P_3jb_3~qoL', 'avatar', ${SHA}, ${ada.id}::uuid)`),
+          ).toEqual(INSERT_REFUSED);
+        });
+      }
+    });
+
+    test("post_media_avatar_guard: for the API role profile_id goes only from null to the owner's own profile, on a ready, visible, unerased avatar of a live profile, or from a value to null; the migrator is skipped", async () => {
+      // Rows only the migrator can make, committed so that the API role meets them, and removed at the end.
+      const made: string[] = [];
+      try {
+        const rows = await migrateDb.transaction(async (tx) => {
+          const [ada, bob, gone] = [await profile(tx), await profile(tx), await profile(tx)];
+          made.push(ada.id, bob.id, gone.id);
+          const ok = await newAvatarRow(tx, ada.id);
+          const erased = await newAvatarRow(tx, ada.id);
+          await tx.execute(sql`update post_media set erased_at = now() where id = ${erased}::uuid`);
+          const sealed = await newAvatarRow(tx, ada.id);
+          await tx.execute(sql`update post_media set moderation_state = 'sealed' where id = ${sealed}::uuid`);
+          const withheld = await newAvatarRow(tx, ada.id);
+          await tx.execute(sql`update post_media set moderation_state = 'withheld' where id = ${withheld}::uuid`);
+          const [processing, failed] = [await newAvatarRow(tx, ada.id, "processing"), await newAvatarRow(tx, ada.id, "failed")];
+          const image = await newImageRow(tx, ada.id, null);
+          const orphaned = await newAvatarRow(tx, gone.id);
+          await tx.execute(sql`update profiles set deleted_at = now() where id = ${gone.id}::uuid`);
+          return { ada: ada.id, bob: bob.id, gone: gone.id, ok, erased, sealed, withheld, processing, failed, image, orphaned };
+        });
+        await asApi(async (tx) => {
+          expect(await attempt(tx, setTo(rows.ok, rows.bob)), "another profile").toEqual(AVATAR_REFUSED);
+          for (const id of [rows.erased, rows.sealed, rows.withheld, rows.processing, rows.failed, rows.image]) expect(await attempt(tx, setTo(id, rows.ada)), id).toEqual(AVATAR_REFUSED);
+          expect(await attempt(tx, setTo(rows.orphaned, rows.gone)), "a deleted owner").toEqual(AVATAR_REFUSED);
+          expect(await step(tx, setTo(rows.ok, rows.ada))).toBeNull();
+          // From a value to another value is no move it allows; to null always is.
+          expect(await attempt(tx, setTo(rows.ok, rows.bob))).toEqual(AVATAR_REFUSED);
+          expect(await step(tx, setTo(rows.ok, null))).toBeNull();
+        });
+        await asMigrator(async (tx) => {
+          expect(await attempt(tx, setTo(rows.processing, rows.ada))).toBeNull();
+        });
+      } finally {
+        await removeFixtures(migrateDb, made);
+      }
+    });
+
+    test("post_media_refused refuses an avatar's set for each of its three arms: a refusal's row, an erased row and a hold for good; the API role meets the first and the last, after the guard", async () => {
+      await asMigrator(async (tx) => {
+        const ada = await profile(tx);
+        const [refused, erased, held] = [await newAvatarRow(tx, ada.id), await newAvatarRow(tx, ada.id), await newAvatarRow(tx, ada.id)];
+        // The refusal's row, with the hold for good upload_refusals_hold placed taken off again: its arm alone.
+        const matchId = await matchForTest(tx, refused, "acting");
+        await tx.execute(sql`insert into upload_refusals (media_id, owner_id, match_id, refused_at) values (${refused}::uuid, ${ada.id}::uuid, ${matchId}::uuid, now())`);
+        await tx.execute(sql`update post_media set hold_until = null where id = ${refused}::uuid`);
+        await tx.execute(sql`update post_media set erased_at = now() where id = ${erased}::uuid`);
+        await tx.execute(sql`update post_media set hold_until = 'infinity' where id = ${held}::uuid`);
+        for (const id of [refused, erased, held]) expect(await attempt(tx, setTo(id, ada.id)), id).toEqual(UPLOAD_REFUSED);
+      });
+      await asApi(async (tx) => {
+        const ada = await profile(tx);
+        const [refused, held] = [await newAvatarRow(tx, ada.id), await newAvatarRow(tx, ada.id)];
+        const matchId = await matchForTest(tx, refused, "acting");
+        await tx.execute(sql`insert into upload_refusals (media_id, owner_id, match_id, refused_at) values (${refused}::uuid, ${ada.id}::uuid, ${matchId}::uuid, now())`);
+        // A case's hold without an end: media_holds_apply makes the row's hold_until infinity.
+        const caseId = await openCase(tx, "account", ada.id);
+        await tx.execute(sql`insert into media_holds (media_id, case_id) values (${held}::uuid, ${caseId}::uuid)`);
+        for (const id of [refused, held]) expect(await attempt(tx, setTo(id, ada.id)), id).toEqual(UPLOAD_REFUSED);
+      });
+    });
+
+    test("post_media_keep keeps an avatar on no post while its owner's account case is frozen by a suspect report; another account's avatar and an upload that is no avatar go", async () => {
+      await asApi(async (tx) => {
+        const [ada, bob] = [await profile(tx), await profile(tx)];
+        const [kept, current, upload, free] = [await newAvatarRow(tx, ada.id), await newAvatarRow(tx, ada.id), await newImageRow(tx, ada.id, null), await newAvatarRow(tx, bob.id)];
+        expect(await step(tx, setTo(current, ada.id))).toBeNull();
+        await suspectItemOn(tx, "account", ada.id);
+        const gone = await tx.execute<{ id: string }>(sql`delete from post_media where id = any(${`{${[kept, current, upload, free].join(",")}}`}::uuid[]) returning id`);
+        expect(gone.map((row) => row.id).sort()).toEqual([upload, free].sort());
+      });
+    });
+
+    test("post_media_purge: a detach writes state, the purge's delete of a current avatar writes deleted, and an avatar never set or detached before writes nothing", async () => {
+      await asApi(async (tx) => {
+        const ada = await profile(tx);
+        const [detached, current, unset] = [await newAvatarRow(tx, ada.id), await newAvatarRow(tx, ada.id), await newAvatarRow(tx, ada.id)];
+        expect(await step(tx, setTo(detached, ada.id))).toBeNull();
+        expect(await purgesOf(tx, detached)).toEqual([]);
+        expect(await step(tx, setTo(detached, null))).toBeNull();
+        expect(await purgesOf(tx, detached)).toEqual(["state"]);
+        expect(await step(tx, setTo(current, ada.id))).toBeNull();
+        await tx.execute(sql`delete from post_media where id in (${detached}::uuid, ${current}::uuid, ${unset}::uuid)`);
+        expect(await purgesOf(tx, detached)).toEqual(["state"]);
+        expect(await purgesOf(tx, current)).toEqual(["deleted"]);
+        expect(await purgesOf(tx, unset)).toEqual([]);
+      });
+    });
+
+    test("the grants of 6.6: the API role updates profile_id, never kind or avatar_sha256; profiles lost avatar_path", async () => {
+      const rows = await apiDb.execute<{ name: string; update: boolean }>(sql`
+        select a.attname as name, has_column_privilege('korbat_api', a.attrelid, a.attnum, 'UPDATE') as update from pg_attribute a
+         where a.attrelid = 'public.post_media'::regclass and a.attname in ('kind', 'profile_id', 'avatar_sha256') order by a.attnum`);
+      expect(rows.map((row) => [row.name, row.update])).toEqual([
+        ["kind", false],
+        ["profile_id", true],
+        ["avatar_sha256", false],
+      ]);
+      const [gone] = await apiDb.execute<{ n: number }>(sql`select count(*)::int as n from pg_attribute where attrelid = 'public.profiles'::regclass and attname = 'avatar_path' and not attisdropped`);
+      expect(gone!.n).toBe(0);
+      await asApi(async (tx) => {
+        const ada = await profile(tx);
+        const avatar = await newAvatarRow(tx, ada.id);
+        expect(await attempt(tx, sql`update post_media set kind = 'post', avatar_sha256 = null where id = ${avatar}::uuid`)).toEqual(DENIED);
+        expect(await attempt(tx, sql`update post_media set avatar_sha256 = ${"cd".repeat(32)} where id = ${avatar}::uuid`)).toEqual(DENIED);
+      });
+    });
+
+    test("the six functions are the migrator's, their search path pinned, each with its definer flag; EXECUTE for nobody but account_frozen's for the API role; each trigger in its timing", async () => {
+      const definers: Record<string, boolean> = { account_frozen: false, post_media_avatar_guard: false, post_media_insert: false, post_media_keep: true, post_media_purge: true, post_media_refused: true };
+      const names = Object.keys(definers);
+      const rows = await apiDb.execute<Record<string, unknown>>(sql`
+        select p.proname::text as name, p.proowner::regrole::text as owner, p.prosecdef as definer, p.proconfig as config,
+               has_function_privilege('korbat_api', p.oid, 'execute') as api, has_function_privilege('public', p.oid, 'execute') as pub
+          from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = any(${`{${names.join(",")}}`}::text[]) order by 1`);
+      // account_frozen, which the media repository's disposal reads, is the API role's to call, as post_frozen is.
+      expect(rows.map((row) => ({ ...row }))).toEqual(names.sort().map((name) => ({ name, owner: "korbat_migrate", definer: definers[name], config: ["search_path=public, pg_temp"], api: name === "account_frozen", pub: false })));
+      const triggers = await apiDb.execute<{ name: string; definition: string }>(sql`
+        select t.tgname::text as name, pg_get_triggerdef(t.oid) as definition from pg_trigger t join pg_proc p on p.oid = t.tgfoid
+         where not t.tgisinternal and p.proname = any(${`{${names.join(",")}}`}::text[]) order by 1`);
+      expect(Object.fromEntries(triggers.map((row) => [row.name, row.definition.replace(/^CREATE TRIGGER [^ ]+ /, "").replace(/ EXECUTE FUNCTION .*$/, "")]))).toEqual({
+        post_media_avatar_guard: "BEFORE UPDATE OF profile_id ON public.post_media FOR EACH ROW",
+        post_media_insert: "BEFORE INSERT ON public.post_media FOR EACH ROW",
+        post_media_keep: "BEFORE DELETE ON public.post_media FOR EACH ROW",
+        post_media_purge: "AFTER DELETE OR UPDATE OF moderation_state, erased_at, profile_id ON public.post_media FOR EACH ROW",
+        post_media_refused: "BEFORE UPDATE OF post_id, profile_id ON public.post_media FOR EACH ROW",
+      });
+    });
+  });
+
   test("this file left no row behind: the tables it writes hold what they held before it", async () => {
-    expect(await rowCounts(apiDb, ACTIVITY_TABLES)).toEqual(before);
+    expect(await rowCounts(apiDb, COUNTED)).toEqual(before);
   });
 });

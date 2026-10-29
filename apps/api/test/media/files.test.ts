@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -113,6 +113,61 @@ describe("receiving an upload", () => {
     await files.prepare();
     expect(readdirSync(files.uploads.tmp)).toEqual([]);
     expect(readdirSync(files.uploads.incoming)).toEqual([complete]);
+  });
+});
+
+describe("2d Task 3: an avatar's upload (design, section 7.2)", () => {
+  test("its SHA-256 is always taken while it streams, and the three hashes of the comparison only when asked", async () => {
+    const files = await volumes();
+    const body = ["first chunk ", "second chunk"];
+    const sha256 = createHash("sha256").update(body.join("")).digest("hex");
+    const alone = await files.receiveAvatar(randomUUID(), chunked(...body), 100, accept, false);
+    expect(alone).toEqual({ bytes: 24, sha256, hashes: null });
+    const matched = await files.receiveAvatar(randomUUID(), chunked(...body), 100, accept, true);
+    expect(matched.sha256).toBe(sha256);
+    expect(matched.hashes?.sha256.toString("hex")).toBe(sha256);
+    expect(matched.hashes?.md5.toString("hex")).toBe(createHash("md5").update(body.join("")).digest("hex"));
+    // The cap and the head's judge hold as for any upload.
+    await expect(files.receiveAvatar(randomUUID(), chunked("x".repeat(101)), 100, accept, false)).rejects.toMatchObject({ code: "file_too_large" });
+  });
+
+  test("commit writes the job file, one line of JSON through tmp/, before the upload is renamed into incoming/", async () => {
+    const files = await volumes();
+    const id = randomUUID();
+    await files.receive(id, chunked("avatar bytes"), 100, accept);
+    await files.commit(id, { avatar: "centre" });
+    expect(readFileSync(files.uploads.avatarJob(id), "utf8")).toBe(`${JSON.stringify({ v: 1, crop: "centre" })}${String.fromCharCode(10)}`);
+    expect(readFileSync(files.uploads.upload(id), "utf8")).toBe("avatar bytes");
+    expect(readdirSync(files.uploads.tmp)).toEqual([]);
+    // The job file comes first: a rename that fails (here, no part was received) leaves it in place, and never an upload
+    // in incoming/ without its job.
+    const lost = randomUUID();
+    await expect(files.commit(lost, { avatar: "end" })).rejects.toMatchObject({ code: "ENOENT" });
+    expect(existsSync(files.uploads.avatarJob(lost))).toBe(true);
+    expect(existsSync(files.uploads.upload(lost))).toBe(false);
+    // A post's upload has none.
+    const post = randomUUID();
+    await files.receive(post, chunked("post bytes"), 100, accept);
+    await files.commit(post);
+    expect(existsSync(files.uploads.avatarJob(post))).toBe(false);
+  });
+
+  test("discarding an upload removes its job file too; storedUploads lists a job file left alone under its id, for the reconcile pass", async () => {
+    const files = await volumes();
+    const id = randomUUID();
+    await files.receive(id, chunked("a"), 100, accept);
+    await files.commit(id, { avatar: "start" });
+    await files.discardUpload(id);
+    expect(readdirSync(files.uploads.incoming)).toEqual([]);
+    // A crash between the job file's write and the rename: the job file alone, which the reconcile pass sees by its id.
+    const orphan = randomUUID();
+    writeFileSync(files.uploads.avatarJob(orphan), JSON.stringify({ v: 1, crop: "start" }));
+    writeFileSync(path.join(files.uploads.incoming, "stray.avatar"), "x");
+    const listed = await files.storedUploads(Date.now() + 60_000);
+    expect(listed.map((entry) => entry.id)).toEqual([orphan]);
+    expect(listed[0]!.ageMs).toBeGreaterThan(50_000);
+    await files.discardUpload(orphan);
+    expect(readdirSync(files.uploads.incoming)).toEqual(["stray.avatar"]);
   });
 });
 

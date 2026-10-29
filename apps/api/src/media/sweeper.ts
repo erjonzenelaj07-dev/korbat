@@ -79,7 +79,8 @@ export async function sweep(deps: MediaDeps, now: Date, options: { reconcile: bo
     const nowMs = now.getTime();
     const stored = await deps.files.storedImages(nowMs);
     const images = stored.filter((entry) => entry.ageMs > ORPHAN_AGE_MS).map((entry) => entry.id);
-    const uploads = (await deps.files.storedUploads(nowMs)).filter((entry) => entry.ageMs > ORPHAN_AGE_MS).map((entry) => entry.id);
+    // 2d Task 3: an avatar's upload and its job file are two entries of one id, counted once.
+    const uploads = [...new Set((await deps.files.storedUploads(nowMs)).filter((entry) => entry.ageMs > ORPHAN_AGE_MS).map((entry) => entry.id))];
     const known = await deps.repo.existing([...new Set([...images, ...uploads])]);
     const orphanImages = images.filter((id) => !known.has(id));
     const orphanUploads = uploads.filter((id) => !known.has(id));

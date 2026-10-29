@@ -349,6 +349,29 @@ describe("3b's migrations: two enums created whole, no value added to an existin
  * them all the same, from their first files on. This case reads those two files alone, by tag: 2d's later migrations
  * create media_kind (Task 3) and add values to action_kind (Task 4's avatar_kinds), each under a describe of its own.
  */
+/**
+ * 2d Task 3 (design, sections 6.4 and 6.8): the migration avatars creates media_kind whole, in one CREATE TYPE with both of
+ * the contracts' MEDIA_KINDS, and adds no value to an enum that exists; its hand-written functions compare the kind, the
+ * status and the moderation state as text, as 2d compares every enum.
+ */
+describe("2d's migration avatars: media_kind created whole, no value added to an existing one", () => {
+  test("0051_avatars adds no value with ALTER TYPE, creates media_kind with post and avatar, and compares enums as text in its bodies", () => {
+    const journal = JSON.parse(readFileSync(path.join(MIGRATIONS, "meta", "_journal.json"), "utf8")) as { entries: { idx: number; tag: string }[] };
+    const entry = journal.entries.find((candidate) => candidate.tag === "0051_avatars");
+    expect(entry?.idx).toBe(51);
+    const raw = readFileSync(path.join(MIGRATIONS, "0051_avatars.sql"), "utf8");
+    const text = flat(withoutComments(raw));
+    expect(text).not.toMatch(/ALTER TYPE [^ ]+ ADD VALUE/i);
+    const created: Record<string, string[]> = {};
+    for (const match of text.matchAll(/CREATE TYPE "public"."([a-z_]+)" AS ENUM ?[(]([^)]*)[)]/g)) {
+      created[match[1]!] = [...match[2]!.matchAll(/'([a-z_]+)'/g)].map((value) => value[1]!);
+    }
+    expect(created).toEqual({ media_kind: ["post", "avatar"] });
+    for (const literal of ["kind::text <> 'avatar'", "status::text <> 'ready'", "moderation_state::text <> 'visible'"]) expect(text, literal).toContain(literal);
+    expect(text).not.toMatch(/[.]kind (=|<>) 'avatar'/);
+  });
+});
+
 describe("2d's migrations activity and post_options: two enums created whole, no value added to an existing one", () => {
   test("0049_activity and 0050_post_options add no value with ALTER TYPE, and create activity_kind and activity_reach with their values", () => {
     const journal = JSON.parse(readFileSync(path.join(MIGRATIONS, "meta", "_journal.json"), "utf8")) as { entries: { idx: number; tag: string }[] };

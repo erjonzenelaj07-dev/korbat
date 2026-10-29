@@ -4,6 +4,7 @@ import type { DbTx } from "@korbat/db";
 import type { ResultFile } from "@korbat/media-protocol";
 import { createJob, type JobLock } from "../lib/jobs";
 import type { MatchEvent, MediaDeps } from "./context";
+import { failMismatch, resultKind } from "./repo";
 import { matchRequest, matchedHash, type MatchAnswer } from "./match-adapter";
 import type { HashedUpload, Runner } from "./match-repo";
 
@@ -109,8 +110,14 @@ export async function storeVerdict(deps: Pick<MediaDeps, "matches" | "match">, i
           result.status === "ready"
             ? sql`status = 'ready', width = ${result.width}::int, height = ${result.height}::int, blurhash = ${result.blurhash}, nsfw_score = coalesce(${score}::real, nsfw_score)`
             : sql`status = 'failed', error = ${result.reason}`;
-        const updated = (await sp.execute(sql`update public.post_media set ${verdict} where id = ${id}::uuid and status = 'processing' returning owner_id, post_id`)) as unknown as { owner_id: string; post_id: string | null }[];
-        if (updated.length === 0) return { stored: "none", events: [] };
+        // 2d Task 3 (design, section 7.4): a ready result only on a row of the kind its mark says; on another, the upload
+        // fails (failMismatch) and nothing of the check is written.
+        const kind = result.status === "ready" ? sql` and kind::text = ${resultKind(result)}` : sql``;
+        const updated = (await sp.execute(sql`update public.post_media set ${verdict} where id = ${id}::uuid and status = 'processing'${kind} returning owner_id, post_id`)) as unknown as { owner_id: string; post_id: string | null }[];
+        if (updated.length === 0) {
+          if (result.status === "ready") await failMismatch(sp, id);
+          return { stored: "none", events: [] };
+        }
         if (result.status !== "ready") return { stored: "none", events: [] };
         if (answer.state !== "matched") {
           const state = answer.state === "clear" ? "clear" : "unchecked";

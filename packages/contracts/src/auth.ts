@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AvatarView } from "./media";
 import { FORBIDDEN_FORMAT } from "./text";
 
 /** Every code the auth endpoints can put in ErrorEnvelope.error.code. */
@@ -306,6 +307,11 @@ export const MeResponse = z.object({
   profile: MeProfile.nullable(),
   /** 3e: the account's standing, read fresh; null for an account without a profile and from an API built without the moderation module. */
   standing: AccountStanding.nullable(),
+  /**
+   * 2d Task 3 (9.3): the account's own picture, read fresh through the media module; null while it has none, for an account
+   * without a profile and from an API built without the media module.
+   */
+  avatar: AvatarView.nullable(),
 });
 export type MeResponse = z.infer<typeof MeResponse>;
 

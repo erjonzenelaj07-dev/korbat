@@ -110,6 +110,85 @@ describe("3d Task 6: the R1 scorer through the real pipeline (design, sections 5
   });
 });
 
+describe("2d Task 3: an avatar's two squares (design, sections 7.1 and 7.4)", () => {
+  type Crop = "start" | "centre" | "end";
+  const avatar = async (name: string, data: Buffer, crop: Crop, scorer: Parameters<typeof processImage>[2] = null) => ready(await processImage(ws.file(name, data), MEDIA_FORMATS, scorer, { crop }));
+  const size = async (data: Buffer) => {
+    const meta = await sharp(data).metadata();
+    return [meta.width, meta.height];
+  };
+
+  test("each crop takes its square along the longer side, on a landscape and a portrait source: start, centre (rounded down) and end", async () => {
+    for (const [name, width, height] of [["landscape", 300, 200], ["portrait", 200, 300]] as const) {
+      const source = await make.banded(width, height).png().toBuffer();
+      const bands: string[] = [];
+      for (const crop of ["start", "centre", "end"] as const) {
+        const result = await avatar(`${name}-${crop}.png`, source, crop);
+        // The square's side is the shorter side, 200, under the large square's 400: never enlarged.
+        expect([result.width, result.height], `${name} ${crop}`).toEqual([200, 200]);
+        expect(await size(result.large), `${name} ${crop}`).toEqual([200, 200]);
+        expect(await size(result.small), `${name} ${crop}`).toEqual([128, 128]);
+        expect(await make.centreBand(result.small), `${name} ${crop} small`).toBe(await make.centreBand(result.large));
+        bands.push(await make.centreBand(result.large));
+      }
+      expect(bands, name).toEqual(["red", "green", "blue"]);
+    }
+  });
+
+  test("a large source becomes a 400 square and a 128 square, and the result reports the large one", async () => {
+    const result = await avatar("big.jpg", await make.jpeg(1200, 900), "centre");
+    expect([result.width, result.height]).toEqual([400, 400]);
+    expect(await size(result.large)).toEqual([400, 400]);
+    expect(await size(result.small)).toEqual([128, 128]);
+    for (const data of [result.large, result.small]) expect(data.subarray(8, 12).toString("latin1")).toBe("WEBP");
+    expect(result.blurhash.length).toBeGreaterThanOrEqual(6);
+  });
+
+  test("a source smaller than both squares is never enlarged: both files are its shorter side's square", async () => {
+    const result = await avatar("small.png", await make.png(90, 60), "end");
+    expect([result.width, result.height]).toEqual([60, 60]);
+    expect(await size(result.large)).toEqual([60, 60]);
+    expect(await size(result.small)).toEqual([60, 60]);
+  });
+
+  test("the EXIF rotation is applied before the crop: the start of an image stored sideways is the top of the image as shown", async () => {
+    // Stored 300 by 200, red on the left and blue on the right, with orientation 8: shown turned a quarter anticlockwise,
+    // 200 by 300, with the stored right edge (blue) on top. A crop along the stored width would start in red.
+    const sideways = await make.banded(300, 200).jpeg({ quality: 95 }).withMetadata({ orientation: 8 }).toBuffer();
+    expect((await sharp(sideways).metadata()).orientation).toBe(8);
+    const start = await avatar("sideways-start.jpg", sideways, "start");
+    expect([start.width, start.height]).toEqual([200, 200]);
+    expect(await make.centreBand(start.large)).toBe("blue");
+    expect(await make.centreBand((await avatar("sideways-end.jpg", sideways, "end")).large)).toBe("red");
+  });
+
+  test("both squares are fresh encodes: nothing of the source's EXIF, GPS, ICC or XMP survives", async () => {
+    const original = await make.photoWithMetadata();
+    expect(original.includes(make.SECRET)).toBe(true);
+    const result = await avatar("private.jpg", original, "centre");
+    for (const data of [result.large, result.small]) {
+      const meta = await sharp(data).metadata();
+      expect([meta.exif, meta.icc, meta.xmp, meta.iptc, meta.orientation]).toEqual([undefined, undefined, undefined, undefined, undefined]);
+      expect(data.includes(make.SECRET)).toBe(false);
+      expect(data.includes("GPS")).toBe(false);
+    }
+  });
+
+  test("a scorer is handed the 400 square's raw pixels and their shape, as a post's image hands it its small size's", async () => {
+    const seen: { length: number; width: number; height: number; channels: number }[] = [];
+    const recording = { model: "recording", score: async (pixels: Uint8Array, width: number, height: number, channels: number) => (seen.push({ length: pixels.length, width, height, channels }), 0.75) };
+    const result = await avatar("scored.png", await make.banded(1600, 900).png().toBuffer(), "centre", recording);
+    expect(result.r1).toEqual({ model: "recording", score: 0.75 });
+    expect(seen).toEqual([{ length: 400 * 400 * 3, width: 400, height: 400, channels: 3 }]);
+  });
+
+  test("an avatar's refusals are a post's: the format, the animation and the pixel caps are checked first", async () => {
+    expect(await processImage(ws.file("avatar.svg", make.svg()), MEDIA_FORMATS, null, { crop: "centre" })).toEqual({ ok: false, reason: "unsupported_format" });
+    expect(await processImage(ws.file("avatar-anim.gif", await make.animatedGif()), MEDIA_FORMATS, null, { crop: "centre" })).toEqual({ ok: false, reason: "animated_not_supported" });
+    expect(await processImage(ws.file("avatar-huge.png", await make.png(8500, 6000)), MEDIA_FORMATS, null, { crop: "centre" })).toEqual({ ok: false, reason: "image_too_large" });
+  });
+});
+
 describe("refused files", () => {
   test("anything that is not an enabled image format is refused by its first bytes", async () => {
     expect(await run("drawing.svg", make.svg())).toEqual({ ok: false, reason: "unsupported_format" });

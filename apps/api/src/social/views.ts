@@ -1,4 +1,4 @@
-import type { Author, HiddenMedia, MediaView, PostCounts, PostView, TimelineItem, Tombstone } from "@korbat/contracts";
+import type { Author, AvatarView, HiddenMedia, MediaView, PostCounts, PostView, TimelineItem, Tombstone } from "@korbat/contracts";
 import type { PostImage } from "../media";
 import type { SocialDeps, ViewerId } from "./context";
 import { encodeCursor } from "./cursor";
@@ -15,8 +15,9 @@ export function isTombstone(loaded: LoadedPost): loaded is Tombstone {
   return !("author" in loaded);
 }
 
-export function authorOf(profile: ProfileRow): Author {
-  return { id: profile.id, handle: profile.handle, displayName: profile.displayName, verified: profile.verified };
+/** 2d Task 3 (7.5): with the profile's avatar as avatarsOf answered it for the page, null for the monogram. */
+export function authorOf(profile: ProfileRow, avatar: AvatarView | null): Author {
+  return { id: profile.id, handle: profile.handle, displayName: profile.displayName, verified: profile.verified, avatar };
 }
 
 /**
@@ -55,7 +56,8 @@ export function countsFor(viewer: ViewerId, row: PostRow): PostCounts {
  * The viewer's own withheld and removed posts carry the decision behind their state (3c design, section 7.6), which the
  * moderation module names: asked the same way, once for the page and only when the viewer wrote such a post.
  * 2d (4.3): each post it shows carries the mentions that link for this viewer, read for the page's shown posts in one
- * statement (mentionsFor); a quoted embed carries none. Counts go through countsFor.
+ * statement (mentionsFor); a quoted embed carries none. Counts go through countsFor. 2d Task 3 (7.5): every author's
+ * avatar, the quoted posts' authors' too, from one avatarsOf of the media module for the whole page.
  */
 export async function loadPostViews({ repo, media, moderation }: ViewSource, viewer: ViewerId, ids: string[]): Promise<Map<string, LoadedPost>> {
   const unique = [...new Set(ids)];
@@ -67,6 +69,7 @@ export async function loadPostViews({ repo, media, moderation }: ViewSource, vie
   const blocked = viewer ? await repo.blockedEitherWay(viewer, authorIds) : new Set<string>();
   const states = viewer ? await repo.viewerPostStates(viewer, [...all.keys()]) : null;
   const images = await media.forPosts([...all.keys()]);
+  const avatars = await media.avatarsOf([...new Set([...all.values()].map((row) => row.authorId))], viewer);
   // A withheld or removed post is never in Explore for anyone, its author included, so only visible ones are asked about.
   // Whether the author is suspended when this reads is listedInExplore's to judge (3e), so the chip goes with the page.
   const own = viewer ? [...primary.values()].filter((row) => row.authorId === viewer && row.state === "visible").map((row) => row.id) : [];
@@ -85,7 +88,7 @@ export async function loadPostViews({ repo, media, moderation }: ViewSource, vie
       : null;
   const base = (row: PostRow) => ({
     id: row.id,
-    author: row.author,
+    author: { ...row.author, avatar: avatars.get(row.authorId) ?? null },
     body: row.body,
     createdAt: row.createdAt.toISOString(),
     state: row.state as PostView["state"],
@@ -147,14 +150,17 @@ export async function postViews(source: ViewSource, viewer: ViewerId, rows: List
 /** Timeline items for list rows, with the reposter attached to repost rows. */
 export async function timelineItems(source: ViewSource, viewer: ViewerId, rows: ListRow[]): Promise<TimelineItem[]> {
   const loaded = await loadPostViews(source, viewer, rows.map((row) => row.postId));
-  const reposters = await source.repo.findProfiles([...new Set(rows.map((row) => row.reposterId).filter((id): id is string => id !== null))]);
+  const reposterIds = [...new Set(rows.map((row) => row.reposterId).filter((id): id is string => id !== null))];
+  const reposters = await source.repo.findProfiles(reposterIds);
+  // 2d Task 3: the reposters' avatars, one more statement only for a page that holds a repost.
+  const avatars = reposterIds.length > 0 ? await source.media.avatarsOf(reposterIds, viewer) : new Map<string, AvatarView>();
   const items: TimelineItem[] = [];
   for (const row of rows) {
     const view = loaded.get(row.postId)!;
     if (isTombstone(view)) continue;
     const reposter = row.reposterId ? reposters.get(row.reposterId) : undefined;
     if (row.reposterId && !reposter) continue;
-    items.push(reposter ? { kind: "repost", post: view, repostedBy: authorOf(reposter), repostedAt: row.sortAt.toISOString() } : { kind: "post", post: view });
+    items.push(reposter ? { kind: "repost", post: view, repostedBy: authorOf(reposter, avatars.get(reposter.id) ?? null), repostedAt: row.sortAt.toISOString() } : { kind: "post", post: view });
   }
   return items;
 }

@@ -39,13 +39,22 @@ const isShown = (state: string): state is "visible" | "withheld" | "removed" => 
  */
 export async function serve(deps: MediaDeps, request: ServeRequest): Promise<Served> {
   const access = await deps.repo.fileAccess(request.id);
-  if (!access || access.status !== "ready" || !access.postState) return { kind: "not_found" };
-  if (access.erased || !isShown(access.mediaState) || !isShown(access.postState)) return { kind: "not_found" };
+  if (!access || access.status !== "ready") return { kind: "not_found" };
 
   let cacheControl = PUBLIC_CACHE;
-  if (access.postState !== "visible" || access.mediaState !== "visible") {
-    if ((await request.viewer()) !== access.authorId) return { kind: "not_found" };
-    cacheControl = PRIVATE_CACHE;
+  if (access.kind === "avatar") {
+    // 2d Task 3 (design, sections 7.5 and 7.8; decision 29): an avatar is served, to anyone and under the public header,
+    // exactly while it is a live profile's picture, visible and not erased; every other avatar row (an upload not set yet,
+    // a replaced or removed one, one a hold keeps, one of a deleted account, a sealed one) is not found for everyone, its
+    // owner included. The viewer is never asked. Task 4 adds the owner's own picture while R1's review withholds it.
+    if (access.profileId === null || access.profileDeleted || access.mediaState !== "visible" || access.erased) return { kind: "not_found" };
+  } else {
+    if (!access.postState) return { kind: "not_found" };
+    if (access.erased || !isShown(access.mediaState) || !isShown(access.postState)) return { kind: "not_found" };
+    if (access.postState !== "visible" || access.mediaState !== "visible") {
+      if ((await request.viewer()) !== access.authorId) return { kind: "not_found" };
+      cacheControl = PRIVATE_CACHE;
+    }
   }
 
   // The files of an id never change, so the id and the size identify the bytes.

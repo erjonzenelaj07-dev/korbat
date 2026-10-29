@@ -65,7 +65,7 @@ export async function activityHarness(options: ActivityHarnessOptions = {}) {
   const account = createAccount({
     auth: auth.forAccount,
     social: social.forAccount,
-    media: { purgeOwner: async () => [], requestDeletion: async () => undefined, exportImages: async () => [] },
+    media: { purgeOwner: async () => [], requestDeletion: async () => undefined, exportImages: async () => [], exportAvatar: async () => null },
     moderation: moderation.forAccount,
     activity: activity.forAccount,
     requireSession: auth.requireSession,

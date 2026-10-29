@@ -120,6 +120,38 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the media sweeper", () =
     expect(existsSync(h.files.store.imageDir(owned))).toBe(true);
   });
 
+  test("2d Task 3 (7.2, 7.8): the sweeper's day takes an avatar's upload never set and leaves a set avatar; reconcile removes an old job file left alone, and keeps a young one and one whose upload has a row", async () => {
+    const h = await started(25 * HOUR);
+    const ada = await h.established();
+    const current = await h.readyAvatar(ada.id);
+    await db.transaction((tx) => h.deps.repo.attachAvatar(tx, ada.id, current));
+    const unset = await h.readyAvatar(ada.id, "end");
+    expect((await sweep(h.deps, now(), { reconcile: false })).expired).toBeGreaterThanOrEqual(1);
+    expect(await h.deps.repo.find(unset)).toBeNull();
+    expect(await h.files.deletionRequests()).toContain(unset);
+    expect(await h.deps.repo.find(current)).toMatchObject({ status: "ready" });
+    expect(await h.files.deletionRequests()).not.toContain(current);
+
+    // Volumes of their own, and a row made a minute ago, which no other step of the sweep takes. A job file whose upload's
+    // rename never came (a crash between the two), two hours old: no upload and no row by its id; and a young one.
+    const y = await started(MINUTE);
+    const bob = await y.established();
+    const longAgo = new Date(Date.now() - 2 * HOUR);
+    const [orphan, young] = [y.newId(), y.newId()];
+    for (const id of [orphan, young]) writeFileSync(y.files.uploads.avatarJob(id), JSON.stringify({ v: 1, crop: "start" }));
+    utimesSync(y.files.uploads.avatarJob(orphan), longAgo, longAgo);
+    // An avatar's upload waiting for the worker, with its row, its job file and its upload as old.
+    const waiting = await upload(y.deps, bob.id, { ...y.jpeg(), avatar: { crop: "centre" } });
+    for (const file of [y.files.uploads.avatarJob(waiting.id), y.files.uploads.upload(waiting.id)]) utimesSync(file, longAgo, longAgo);
+
+    // One orphan: the job file under its id, counted once.
+    expect((await sweep(y.deps, now(), { reconcile: true })).orphans).toBe(1);
+    expect(existsSync(y.files.uploads.avatarJob(orphan))).toBe(false);
+    expect(existsSync(y.files.uploads.avatarJob(young))).toBe(true);
+    expect(existsSync(y.files.uploads.avatarJob(waiting.id))).toBe(true);
+    expect(existsSync(y.files.uploads.upload(waiting.id))).toBe(true);
+  });
+
   test("only the instance that holds the lock sweeps; it reconciles once every ten minutes and releases the lock afterwards", async () => {
     const h = await started(MINUTE);
     const lock = new MemoryJobLock();

@@ -120,7 +120,7 @@ const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")
 function post(n: number, extra: Partial<PostView> = {}): PostView {
   return {
     id: id(n),
-    author: { id: AUTHOR, handle: "ada", displayName: "Ada", verified: false },
+    author: { id: AUTHOR, handle: "ada", displayName: "Ada", verified: false, avatar: null },
     body: `post number ${n}`,
     createdAt: "2026-09-28T10:00:00.000Z",
     state: "visible",
@@ -154,6 +154,7 @@ const ME: MeResponse = {
   user: { id: AUTHOR, email: "ada@example.org", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 1 },
   profile: { id: AUTHOR, handle: "ada", displayName: "Ada", handleChangedAt: null, verified: false, showInExplore: true, sharePreviews: false },
   standing: null,
+  avatar: null,
 };
 const signedIn = (showInExplore = true) => ({ status: "signed-in", me: { ...ME, profile: { ...ME.profile!, showInExplore } } });
 
@@ -816,7 +817,7 @@ describe("the In Explore chip", () => {
     expect(linkTexts(listed, `/post/${id(7)}`)).toContain("In Explore");
     expect(html(<PostCard post={post(7)} />)).not.toContain("In Explore");
     // Nobody else's view carries the flag, and a card never shows it on someone else's post.
-    const bob = { id: OTHER, handle: "bob", displayName: "Bob", verified: false };
+    const bob = { id: OTHER, handle: "bob", displayName: "Bob", verified: false, avatar: null };
     expect(html(<PostCard post={post(8, { author: bob, inExplore: true })} />)).not.toContain("In Explore");
     session.state = { status: "signed-out" };
     expect(html(<PostCard post={post(7, { inExplore: true })} />)).not.toContain("In Explore");

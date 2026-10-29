@@ -19,7 +19,7 @@ import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
 import { createImports, importSettingsFrom } from "../../src/imports";
 import { MemoryJobLock } from "../../src/lib/jobs";
-import { mediaForAccount } from "../../src/media";
+import { mediaForAccount, mediaForPosts } from "../../src/media";
 import { status } from "../../src/media/flows/status";
 import { upload } from "../../src/media/flows/upload";
 import { MemoryStore } from "../../src/middleware/rate-limit";
@@ -66,12 +66,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     h = flowHarness(authRepo, { profiles: createProfileStore(apiDb) });
     m = await mediaHarness(apiDb);
     s = socialHarness(apiDb, {
-      media: {
-        attach: (tx, input) => m.deps.repo.attach(tx, input),
-        detachAll: (tx, postId) => m.deps.repo.detachAll(tx, postId),
-        requestDeletion: (ids) => m.files.requestDeletion(ids),
-        forPosts: (postIds) => m.deps.repo.forPosts(postIds),
-      },
+      // 2d Task 3: the media module's interface for posts as createMedia builds it, avatars included.
+      media: mediaForPosts(m.deps),
     });
   });
   afterAll(async () => {
@@ -211,7 +207,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     expect(await rejection(profile(s.deps, null, renamed))).toBe("not_found");
     expect(await rejection(exportProfile(s.deps, userId))).toBe("not_found");
     const gone = await profileRow(userId);
-    expect(gone).toMatchObject({ handle: renamed, displayName: "Deleted account", bio: "", avatarPath: null, verifiedAt: null, followerCount: 0, followingCount: 0, postCount: 0 });
+    // 2d Task 3 (decision 18): the profile has no avatar_path; its picture was an image row, which the purge's within deletes.
+    expect(gone).toMatchObject({ handle: renamed, displayName: "Deleted account", bio: "", verifiedAt: null, followerCount: 0, followingCount: 0, postCount: 0 });
+    expect(gone).not.toHaveProperty("avatarPath");
     expect(gone.deletedAt).not.toBeNull();
     expect((await apiDb.select({ handle: handleHistory.handleLower }).from(handleHistory).where(eq(handleHistory.profileId, userId))).map((row) => row.handle).sort()).toEqual([owner.handle, renamed].sort());
     expect(await s.repo.changeHandle(bob.id, renamed, s.clock.next())).toEqual({ ok: false, reason: "handle_taken" });

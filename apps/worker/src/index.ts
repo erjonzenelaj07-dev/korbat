@@ -24,7 +24,8 @@ const deps: LoopDeps = {
   formats: config.formats,
   log,
   now: Date.now,
-  process: (path, formats) => processImage(path, formats, scorer),
+  // 2d Task 3: an avatar's upload carries its job file's crop.
+  process: (path, formats, avatar) => processImage(path, formats, scorer, avatar),
   abort: (reason) => {
     log.fatal({ reason }, "watchdog: exiting so the container restarts");
     process.exit(1);

@@ -196,7 +196,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: holds, reach, the staff'
   /** The nodes of a plan one of whose conditions calls the freeze's predicate, each by its type. */
   const readsFreeze = (nodes: PlanNode[]): string[] =>
     nodes
-      .filter((node) => ["Filter", "Join Filter", "Index Cond", "Recheck Cond", "Hash Cond", "Merge Cond", "One-Time Filter"].some((key) => typeof node[key] === "string" && (node[key] as string).includes("post_frozen")))
+      .filter((node) => ["Filter", "Join Filter", "Index Cond", "Recheck Cond", "Hash Cond", "Merge Cond", "One-Time Filter"].some((key) => typeof node[key] === "string" && ((node[key] as string).includes("post_frozen") || (node[key] as string).includes("account_frozen"))))
       .map((node) => node["Node Type"]);
 
   /**
@@ -791,7 +791,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: holds, reach, the staff'
               // And wherever it is read, it is the branch of the CASE that comes after the marks were tested.
               for (const node of nodes) {
                 for (const condition of Object.values(node)) {
-                  if (typeof condition === "string" && condition.includes("post_frozen")) expect(condition, label).toMatch(/CASE WHEN \(\(p\.state = 'deleted_by_author'.*\) THEN \(.*post_frozen\(m\.post_id\).*\) ELSE false END/);
+                  // 2d Task 3: the branch holds a CASE of its own, the post's freeze for a row on a post and, for an avatar on no post,
+                  // the account's (account_frozen), each read only after the marks were tested.
+                  if (typeof condition === "string" && (condition.includes("post_frozen") || condition.includes("account_frozen"))) {
+                    expect(condition, label).toMatch(
+                      /CASE WHEN [(][(]p[.]state = 'deleted_by_author'.*[)] THEN CASE WHEN [(]m[.]post_id IS NOT NULL[)] THEN [(]NOT post_frozen[(]m[.]post_id[)][)] WHEN [(]m[.]kind = 'avatar'.*[)] THEN [(]NOT account_frozen[(]m[.]owner_id[)][)] ELSE true END ELSE false END/,
+                    );
+                  }
                 }
               }
             }

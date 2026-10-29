@@ -399,11 +399,29 @@ describe("images 2b", () => {
   });
   test("the database itself refuses a ready image without dimensions and an attached image that is incomplete", () => {
     const cfg = byName.get("post_media")!;
-    // 3b (Task 2, 0044_imported_posts): an image's import link names a running import only on an imported image.
-    expect(cfg.checks.map((c) => c.name).sort()).toEqual(["post_media_alt_len", "post_media_attached_is_complete", "post_media_import_link", "post_media_ready_has_dims"]);
+    // 3b (Task 2, 0044_imported_posts): an image's import link names a running import only on an imported image. 2d Task 3
+    // (0051_avatars): an avatar's place, owner and hash.
+    expect(cfg.checks.map((c) => c.name).sort()).toEqual([
+      "post_media_alt_len",
+      "post_media_attached_is_complete",
+      "post_media_avatar_owner",
+      "post_media_avatar_sha256",
+      "post_media_import_link",
+      "post_media_kind_place",
+      "post_media_ready_has_dims",
+    ]);
     // 3b: the import's images by their job, which the foreign key's set null and the import's own cleanup read.
     // 3b Task 5 (0047): the imports whose images are still on no post, which import-drive's cleanup asks every round.
-    expect(cfg.indexes.map((i) => i.config.name).sort()).toEqual(["post_media_import_job_idx", "post_media_import_unattached_idx", "post_media_owner_created_idx", "post_media_post_position_idx", "post_media_status_created_idx"]);
+    // 2d Task 3 (0051_avatars): one avatar a profile, and an owner's avatars.
+    expect(cfg.indexes.map((i) => i.config.name).sort()).toEqual([
+      "post_media_avatar_idx",
+      "post_media_import_job_idx",
+      "post_media_import_unattached_idx",
+      "post_media_owner_avatar_idx",
+      "post_media_owner_created_idx",
+      "post_media_post_position_idx",
+      "post_media_status_created_idx",
+    ]);
     expect(cfg.indexes.find((i) => i.config.name === "post_media_post_position_idx")?.config.unique).toBe(true);
   });
 });
@@ -1910,7 +1928,8 @@ describe("import from other platforms 3b", () => {
   });
 
   test("post_media gains imported (false by default) and the running import's id, set null when the job row goes", () => {
-    expect(shape("post_media").slice(-2)).toEqual([
+    // 2d Task 3 (0051_avatars) adds three columns after these two.
+    expect(shape("post_media").slice(-5, -3)).toEqual([
       ["imported", "boolean", true],
       ["import_job_id", "uuid", false],
     ]);
@@ -2053,6 +2072,33 @@ describe("engagement 2d", () => {
       ["post_mentions_account_idx", ["account_id"], false, null, "btree"],
       ["post_mentions_position", ["post_id", "position"], true, null, "btree"],
     ]);
+  });
+
+  test("Task 3 (6.4, 0051_avatars): post_media gains its kind, the profile it is the avatar of and an avatar's SHA-256, last; profiles lose avatar_path", () => {
+    expect(schema.mediaKind.enumName).toBe("media_kind");
+    expect(schema.mediaKind.enumValues).toEqual(["post", "avatar"]);
+    expect(shape("post_media").slice(-3)).toEqual([
+      ["kind", "media_kind", true],
+      ["profile_id", "uuid", false],
+      ["avatar_sha256", "text", false],
+    ]);
+    expect(column("post_media", "kind")?.default).toBe("post");
+    // No on delete clause: no profile row is ever deleted, and the purge deletes the account's image rows itself.
+    expect(foreignKeys("post_media").filter(([columns]) => columns === "profile_id")).toEqual([["profile_id", "profiles", "no action"]]);
+    // Each kind in its place: an avatar on no post, without a position or a description; a post's image never a profile's.
+    expect(checkSql("post_media", "post_media_kind_place")).toBe(
+      `("post_media"."kind"::text = 'post' and "post_media"."profile_id" is null) or ("post_media"."kind"::text = 'avatar' and "post_media"."post_id" is null and "post_media"."position" is null and "post_media"."alt_text" is null)`,
+    );
+    expect(checkSql("post_media", "post_media_avatar_owner")).toBe(`"post_media"."profile_id" is null or "post_media"."profile_id" = "post_media"."owner_id"`);
+    expect(checkSql("post_media", "post_media_avatar_sha256")).toBe(
+      `("post_media"."kind"::text = 'post' and "post_media"."avatar_sha256" is null) or ("post_media"."kind"::text = 'avatar' and "post_media"."avatar_sha256" is not null and "post_media"."avatar_sha256" ~ '^[0-9a-f]{64}$')`,
+    );
+    // A label of the new enum in the owner's index, as 0049 names activity_kind's: an index predicate takes no cast to text.
+    expect(indexes("post_media").filter(([name]) => name === "post_media_avatar_idx" || name === "post_media_owner_avatar_idx")).toEqual([
+      ["post_media_avatar_idx", ["profile_id"], true, "profile_id is not null", "btree"],
+      ["post_media_owner_avatar_idx", ["owner_id"], false, "kind = 'avatar'", "btree"],
+    ]);
+    expect(byName.get("profiles")!.columns.map((c) => c.name)).not.toContain("avatar_path");
   });
 
   test("posts gain hide_counts and profiles share_previews (6.4), each off by default and the last column of its table", () => {

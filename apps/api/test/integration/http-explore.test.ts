@@ -72,7 +72,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: Explore over HTTP", () =
       events: { append: auth.appendEvent },
       now: () => clock,
     });
-    const noImages: MediaForAccount = { purgeOwner: async () => [], requestDeletion: async () => undefined, exportImages: async () => [] };
+    const noImages: MediaForAccount = { purgeOwner: async () => [], requestDeletion: async () => undefined, exportImages: async () => [], exportAvatar: async () => null };
     const account = createAccount({
       auth: auth.forAccount,
       social: social.forAccount,

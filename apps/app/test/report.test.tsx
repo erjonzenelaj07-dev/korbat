@@ -194,7 +194,7 @@ describe("what leads to the form", () => {
   const hidden = (n: number): HiddenMedia => ({ id: id(n), hidden: true });
   const post = (n: number, extra: Partial<PostView> = {}): PostView => ({
     id: id(n),
-    author: { id: id(900), handle: "ada", displayName: "Ada", verified: false },
+    author: { id: id(900), handle: "ada", displayName: "Ada", verified: false, avatar: null },
     body: `post number ${n}`,
     createdAt: "2026-10-04T10:00:00.000Z",
     state: "visible",
@@ -249,7 +249,7 @@ describe("what leads to the form", () => {
   });
 
   test("UI Task 5: a profile has Report in its More menu, drawn open, after Mute and Block, and signed out too; never on the reader's own", () => {
-    const grace = { id: id(902), handle: "grace", displayName: "Grace", bio: "", verified: false, createdAt: "2026-10-01T10:00:00.000Z", counts: { posts: 1, followers: 0, following: 0 }, hasImported: false };
+    const grace = { id: id(902), handle: "grace", displayName: "Grace", bio: "", verified: false, createdAt: "2026-10-01T10:00:00.000Z", counts: { posts: 1, followers: 0, following: 0 }, hasImported: false, avatar: null };
     session.state = { status: "signed-out" };
     expect(hrefs(html(<ProfileMenuPanel profile={grace} />))).toEqual(["/report?account=grace"]);
     session.state = me(id(901));

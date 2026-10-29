@@ -12,7 +12,7 @@ import { clearFeedCache, feedCacheKey, insertPosted, readFeedCache, writeFeedCac
  */
 const SRC = path.resolve(import.meta.dirname, "..", "src");
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const ADA = { id: id(1), handle: "ada", displayName: "Ada", verified: false };
+const ADA = { id: id(1), handle: "ada", displayName: "Ada", verified: false, avatar: null };
 
 function post(n: number): PostView {
   return { id: id(100 + n), author: ADA, body: `post ${n}`, createdAt: new Date(Date.UTC(2026, 9, 21, 9, n)).toISOString(), state: "visible", replyTo: null, counts: { likes: 0, reposts: 0, replies: 0, quotes: 0 }, media: [], quoteOf: null, imported: null, mentions: [], countsHidden: false };

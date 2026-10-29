@@ -70,11 +70,12 @@ export async function setMute(deps: SocialDeps, viewer: string, handle: string, 
 
 async function ownList(deps: SocialDeps, viewer: string, rows: { profileId: string; sortAt: Date }[], limit: number): Promise<ProfilePage> {
   const ids = rows.map((row) => row.profileId);
-  const [profiles, followed] = await Promise.all([deps.repo.findProfiles(ids), deps.repo.followedBy(viewer, ids)]);
+  // 2d Task 3 (7.5): the page's avatars in one statement beside the profiles.
+  const [profiles, followed, avatars] = await Promise.all([deps.repo.findProfiles(ids), deps.repo.followedBy(viewer, ids), deps.media.avatarsOf(ids, viewer)]);
   const items: ProfileListItem[] = [];
   for (const id of ids) {
     const row = profiles.get(id);
-    if (row) items.push({ ...authorOf(row), bio: row.bio, viewerFollows: followed.has(id) });
+    if (row) items.push({ ...authorOf(row, avatars.get(id) ?? null), bio: row.bio, viewerFollows: followed.has(id) });
   }
   return { items, nextCursor: pageCursor(rows, limit) };
 }

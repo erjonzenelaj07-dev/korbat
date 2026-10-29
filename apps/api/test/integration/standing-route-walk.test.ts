@@ -133,6 +133,10 @@ export const SUSPENDED_WRITES: Record<string, "refused" | "allowed"> = {
   "PATCH /api/posts/:id/counts": "allowed",
   "POST /api/me/share-previews": "refused",
   "DELETE /api/me/share-previews": "allowed",
+  // 2d Task 3 (design, sections 7.3 and 9.4; decision 17): a new picture is refused by 3e's predicate, as a new display
+  // name is; removing one only reduces what others see.
+  "PUT /api/me/avatar": "refused",
+  "DELETE /api/me/avatar": "allowed",
 };
 
 /** The routes that end the session: called last, so that every other route is called with it. */
@@ -367,6 +371,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
       "PATCH /api/posts/:id/counts": [{ method: "PATCH", path: `/api/posts/${adasPost.id}/counts`, json: { hidden: true } }],
       "POST /api/me/share-previews": [{ method: "POST", path: "/api/me/share-previews" }],
       "DELETE /api/me/share-previews": [{ method: "DELETE", path: "/api/me/share-previews" }],
+      // 2d Task 3: setAvatar takes the acting row before it reads the upload, so any upload's id meets the measure first;
+      // the removal of a picture she does not have answers its ordinary null.
+      "PUT /api/me/avatar": [{ method: "PUT", path: "/api/me/avatar", json: { mediaId: upload.id } }],
+      "DELETE /api/me/avatar": [{ method: "DELETE", path: "/api/me/avatar" }],
     };
     const callsOf = (route: string): Call[] => {
       const given = calls[route];

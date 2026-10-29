@@ -3,7 +3,9 @@ import { FORBIDDEN_FORMAT } from "./text";
 
 /** Every code the media endpoints add to ErrorEnvelope.error.code (plus the shared ones: invalid_request, not_found, rate_limited). */
 // 3d Task 7 (design, sections 7.8 step 5 and 10.7): upload_refused, a post that attaches an upload korbat did not accept.
-export const MediaErrorCode = z.enum(["unsupported_media_type", "file_too_large", "too_many_pending_uploads", "uploads_unavailable", "media_unavailable", "upload_refused"]);
+// 2d Task 3 (design, section 9.4), both 409 of PUT /api/me/avatar: avatar_not_ready, an upload that is processing, failed or
+// refused; not_an_avatar, a post's image.
+export const MediaErrorCode = z.enum(["unsupported_media_type", "file_too_large", "too_many_pending_uploads", "uploads_unavailable", "media_unavailable", "upload_refused", "avatar_not_ready", "not_an_avatar"]);
 export type MediaErrorCode = z.infer<typeof MediaErrorCode>;
 
 /** Why processing an upload failed. Reported on the status response, not as an HTTP error. */
@@ -56,6 +58,42 @@ export const MediaAttachment = z.object({ id: MediaId, alt: AltText });
 export type MediaAttachment = z.infer<typeof MediaAttachment>;
 
 export const UploadResponse = z.object({ id: MediaId, status: z.literal("processing") });
+
+/**
+ * 2d Task 3 (design, sections 6.4 and 7.1): what an upload is for, set at its row's insert and never changed: an image of a
+ * post, or a profile's picture, which is never on a post (the CHECK post_media_kind_place). The enum media_kind holds the
+ * same values in the same order, which a database test holds.
+ */
+export const MEDIA_KINDS = ["post", "avatar"] as const;
+export type MediaKind = (typeof MEDIA_KINDS)[number];
+
+/**
+ * 2d Task 3 (decision 14, 7.2 and 7.4): where the worker cuts an avatar's square along the longer side of the oriented
+ * image: at its start (the left or top edge), in its centre (rounded down) or at its end. The picker shows the three over
+ * the local file before it is sent.
+ */
+export const AVATAR_CROPS = ["start", "centre", "end"] as const;
+export type AvatarCrop = (typeof AVATAR_CROPS)[number];
+
+/**
+ * 2d Task 3 (7.2, 9.2 and 9.4): the query of POST /api/media. Without `kind` the upload is a post's image, as before;
+ * `kind=avatar` needs one `crop`, and a `crop` without `kind=avatar` is refused, both invalid_request: the picker always
+ * sends one, so an avatar never waits on a default. A repeated parameter arrives as a list and is refused; any other
+ * parameter is dropped, as the route read no query before. Read from the query alone, never from the body, which is the
+ * file and is streamed.
+ */
+export const UploadQuery = z
+  .object({ kind: z.enum(MEDIA_KINDS).default("post"), crop: z.enum(AVATAR_CROPS).optional() })
+  .refine((query) => (query.kind === "avatar") === (query.crop !== undefined), { message: "kind=avatar takes a crop, and a crop goes only with kind=avatar", path: ["crop"] });
+export type UploadQuery = z.infer<typeof UploadQuery>;
+
+/**
+ * 2d Task 3 (7.1, 7.5 and 9.3): a profile's picture as its readers get it, the two files mediaPath names: small.webp (128 px
+ * square), large.webp (400 px square). Nothing else: an avatar has no description, and its size is fixed by the worker.
+ * Here beside MediaView rather than in social.ts, because auth.ts's MeResponse carries it too and social.ts reads auth.ts.
+ */
+export const AvatarView = z.object({ small: z.string(), large: z.string() });
+export type AvatarView = z.infer<typeof AvatarView>;
 export type UploadResponse = z.infer<typeof UploadResponse>;
 
 /**

@@ -224,7 +224,8 @@ describe("a post's chip in its view", () => {
       // 2d (4.3): no post of these names anyone.
       mentionsFor: async () => new Map<string, string[]>(),
     } as unknown as SocialDeps["repo"];
-    const media = { forPosts: async () => new Map() } as unknown as SocialDeps["media"];
+    // 2d Task 3: and no author of these has an avatar.
+    const media = { forPosts: async () => new Map(), avatarsOf: async () => new Map() } as unknown as SocialDeps["media"];
     return { asked, view: { repo, media, moderation } };
   }
 

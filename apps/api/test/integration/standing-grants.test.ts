@@ -52,10 +52,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the grants and the one w
   }
 
   describe("profiles: the API writes every column it writes today, and never the three standing_apply derives", () => {
-    test("exactly the eleven columns of 6.1 and 2d's share_previews are updatable by the API role", async () => {
-      // 2d (0050_post_options): the link-preview switch, the twelfth.
+    test("exactly the columns of 6.1 but avatar_path, and 2d's share_previews, are updatable by the API role", async () => {
+      // 2d (0050_post_options): the link-preview switch. 2d Task 3 (0051_avatars, decision 18): avatar_path, never written,
+      // is dropped with its grant: eleven columns.
       expect(await updatableColumns("korbat_api", "public.profiles")).toEqual(
-        ["avatar_path", "bio", "deleted_at", "display_name", "follower_count", "following_count", "handle", "handle_changed_at", "post_count", "share_previews", "show_in_explore", "verified_at"].sort(),
+        ["bio", "deleted_at", "display_name", "follower_count", "following_count", "handle", "handle_changed_at", "post_count", "share_previews", "show_in_explore", "verified_at"].sort(),
       );
       expect(await tablePrivileges("korbat_api", "public.profiles")).toEqual(["INSERT", "SELECT"]);
     });

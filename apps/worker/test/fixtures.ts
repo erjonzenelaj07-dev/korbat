@@ -49,6 +49,34 @@ export async function animatedPng(): Promise<Buffer> {
   return Buffer.concat([still.subarray(0, afterHeader), chunk, still.subarray(afterHeader)]);
 }
 
+/**
+ * 2d Task 3 (design, section 12.1): an image of three flat colour bands along its longer side, red, green and blue, the
+ * first ending at 5/12 of the side and the second at 7/12, so that the centre of each crop's square falls in a band of its
+ * own: on a side of 300 and a square of 200, the start's centre is at 100 (red), the centre's at 150 (green) and the end's
+ * at 200 (blue). Each band is a solid run of pixels, so a crop's position is read back from its square's centre pixel.
+ */
+export const BANDS = { red: [220, 40, 40], green: [40, 200, 40], blue: [40, 40, 220] } as const;
+export function banded(width: number, height: number) {
+  const long = Math.max(width, height);
+  const pixels = Buffer.alloc(width * height * 3);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const along = width >= height ? x : y;
+      const band = along < (long * 5) / 12 ? BANDS.red : along < (long * 7) / 12 ? BANDS.green : BANDS.blue;
+      pixels.set(band, (y * width + x) * 3);
+    }
+  }
+  return sharp(pixels, { raw: { width, height, channels: 3 } });
+}
+
+/** Which band a WebP's centre pixel shows: the channel that stands out, read through the lossy encoding. */
+export async function centreBand(webp: Buffer): Promise<"red" | "green" | "blue"> {
+  const { data, info } = await sharp(webp).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const at = (Math.floor(info.height / 2) * info.width + Math.floor(info.width / 2)) * info.channels;
+  const [r, g, b] = [data[at]!, data[at + 1]!, data[at + 2]!];
+  return r >= g && r >= b ? "red" : g >= b ? "green" : "blue";
+}
+
 /** The first box of an HEIC file. The sniffer refuses it before a decoder sees the rest. */
 export const heicHeader = () => Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypheic"), Buffer.from([0, 0, 0, 0]), Buffer.from("mif1heic"), Buffer.alloc(64)]);
 

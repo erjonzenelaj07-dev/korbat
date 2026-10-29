@@ -152,6 +152,13 @@ export const exploreItems = pgTable(
 export const mediaStatus = pgEnum("media_status", ["processing", "ready", "failed"]);
 
 /**
+ * 2d Task 3 (design, section 6.4; migration 0051_avatars): what an upload is for, an image of a post or a profile's picture,
+ * the contracts' MEDIA_KINDS. New in its migration, created whole: every function compares it as text, and the owner's
+ * index names its label as a label (an index predicate takes no cast of an enum to text).
+ */
+export const mediaKind = pgEnum("media_kind", ["post", "avatar"]);
+
+/**
  * One uploaded image. The files live on the media-store volume under the row's id; no path is
  * stored. Only the API's media module reads or writes this table.
  */
@@ -192,6 +199,23 @@ export const postMedia = pgTable(
      */
     imported: boolean("imported").notNull().default(false),
     importJobId: uuid("import_job_id").references((): AnyPgColumn => importJobs.id, { onDelete: "set null" }),
+    /**
+     * 2d Task 3 (design, sections 6.4 and 7): the upload's kind, from its query, set at insert and never changed (the API
+     * role holds no UPDATE of it). An avatar is never on a post, has no position and no description.
+     */
+    kind: mediaKind("kind").notNull().default("post"),
+    /**
+     * The profile this avatar is the picture of, while it is: set and cleared only by the media module's attachAvatar and
+     * detachAvatar, under post_media_avatar_guard (to the owner's own profile, from null, on a ready, visible, unerased
+     * avatar of a live profile), and refused at insert by post_media_insert. No on delete clause: no profile row is ever
+     * deleted, and the account's purge deletes the image rows itself. One avatar a profile (post_media_avatar_idx).
+     */
+    profileId: uuid("profile_id").references(() => profiles.id),
+    /**
+     * An avatar's SHA-256 as uploaded, in lowercase hex, taken while the upload streams whatever MEDIA_MATCH says, so that
+     * a picture a moderator reset can be recognised when it comes back (Task 4's avatar_resets). Null for a post's image.
+     */
+    avatarSha256: text("avatar_sha256"),
   },
   (t) => [
     uniqueIndex("post_media_post_position_idx").on(t.postId, t.position),
@@ -201,6 +225,20 @@ export const postMedia = pgTable(
     check("post_media_attached_is_complete", sql`${t.postId} is null or (${t.status} = 'ready' and ${t.position} between 0 and 3 and ${t.altText} is not null)`),
     check("post_media_alt_len", sql`char_length(${t.altText}) <= 1000`),
     check("post_media_import_link", sql`${t.importJobId} is null or ${t.imported}`),
+    // 2d Task 3 (6.4): an avatar is never attached to a post, and a post's image is never an avatar. Kinds compared as text.
+    check(
+      "post_media_kind_place",
+      sql`(${t.kind}::text = 'post' and ${t.profileId} is null) or (${t.kind}::text = 'avatar' and ${t.postId} is null and ${t.position} is null and ${t.altText} is null)`,
+    ),
+    // An avatar is only ever its owner's own profile's picture.
+    check("post_media_avatar_owner", sql`${t.profileId} is null or ${t.profileId} = ${t.ownerId}`),
+    // An avatar always has its file's SHA-256, a post's image never has one. "is not null" first: a CHECK passes on a null,
+    // and a pattern match on a null is null.
+    check("post_media_avatar_sha256", sql`(${t.kind}::text = 'post' and ${t.avatarSha256} is null) or (${t.kind}::text = 'avatar' and ${t.avatarSha256} is not null and ${t.avatarSha256} ~ '^[0-9a-f]{64}$')`),
+    /** 2d Task 3: one avatar a profile, and the one statement of avatarsOf, which reads a page's authors' avatars by profile. */
+    uniqueIndex("post_media_avatar_idx").on(t.profileId).where(sql`profile_id is not null`),
+    /** 2d Task 3: an owner's avatars, the current one and any former one a hold keeps, for the purge and (Task 4) the seal. */
+    index("post_media_owner_avatar_idx").on(t.ownerId).where(sql`kind = 'avatar'`),
     /**
      * 3b: an import's images by their job. The foreign key's set null when a job row goes, and the import's cleanup of its
      * unattached rows in id order (media.deleteImportLeftovers), would scan post_media without it.

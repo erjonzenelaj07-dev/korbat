@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { PostView, mediaPath } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { loadConfig } from "../../src/config";
+import { mediaForPosts } from "../../src/media";
 import { serve } from "../../src/media/flows/serve";
 import { upload } from "../../src/media/flows/upload";
 import { setFollow } from "../../src/social/flows/graph";
@@ -19,12 +20,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: images on posts", () => 
     db = createDb(loadConfig().DATABASE_URL_API, { max: 4 });
     m = await mediaHarness(db);
     s = socialHarness(db, {
-      media: {
-        attach: (tx, input) => m.deps.repo.attach(tx, input),
-        detachAll: (tx, postId) => m.deps.repo.detachAll(tx, postId),
-        requestDeletion: (ids) => m.files.requestDeletion(ids),
-        forPosts: (postIds) => m.deps.repo.forPosts(postIds),
-      },
+      // 2d Task 3: the media module's interface for posts as createMedia builds it, avatars included.
+      media: mediaForPosts(m.deps),
     });
   });
   afterAll(async () => {

@@ -215,8 +215,9 @@ const REQUEST_DELETION = {
   "media/context.ts": 2,
   "media/files.ts": 1,
   "media/flows/remove.ts": 1,
-  // 3b Task 5: one more, mediaForImports' releaseFiles.
-  "media/index.ts": 6,
+  // 3b Task 5: one more, mediaForImports' releaseFiles. 2d Task 3: one more, mediaForPosts' dropFormerAvatar, which asks for
+  // a replaced or removed avatar's files after setAvatar's or removeAvatar's commit, and only once its row went.
+  "media/index.ts": 7,
   // The retry of owed deletions, which asks only for ids whose row it found gone.
   "media/owed.ts": 1,
   "media/sweeper.ts": 2,

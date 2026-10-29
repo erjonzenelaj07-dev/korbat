@@ -14,6 +14,7 @@ import { fileAppeal } from "../../src/moderation/appeals";
 import { reexamineOwnItem, submitNotice } from "../../src/moderation/intake";
 import { eraseIntake, releaseOutcomes } from "../../src/moderation/repo";
 import { reporterList } from "../../src/moderation/reports";
+import { WITHOUT_MEDIA } from "../../src/social/context";
 import { exportProfile } from "../../src/social/flows/export";
 import { mediaHarness, type MediaHarness } from "./media-harness";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
@@ -56,7 +57,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the export's moderation 
     before = await counts();
     m = await mediaHarness(w.apiDb);
     // The social module's export over the media repository's one list for posts, as the server wires it; nothing here attaches or deletes an image.
-    s = socialHarness(w.apiDb, { media: { attach: async () => undefined, detachAll: async () => [], requestDeletion: async () => undefined, forPosts: (postIds) => m.deps.repo.forPosts(postIds) } });
+    // 2d Task 3: no avatar is set here; WITHOUT_MEDIA's avatar members answer none.
+    s = socialHarness(w.apiDb, { media: { ...WITHOUT_MEDIA, attach: async () => undefined, detachAll: async () => [], requestDeletion: async () => undefined, forPosts: (postIds) => m.deps.repo.forPosts(postIds) } });
     moderator = await d.staff("moderator");
     admin = await d.staff("admin");
   }, 120_000);

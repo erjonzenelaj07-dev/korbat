@@ -1,4 +1,4 @@
-import { CountsRequest, CreatePostRequest, HandleChangeRequest, HandleParam, Pagination, PostId, ProfileEditRequest } from "@korbat/contracts";
+import { AvatarRequest, CountsRequest, CreatePostRequest, HandleChangeRequest, HandleParam, Pagination, PostId, ProfileEditRequest } from "@korbat/contracts";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../env";
@@ -10,7 +10,7 @@ import { setEngagement, type EngagementKind } from "./flows/engagement";
 import { explorePage, exploreStatus, setShowInExplore } from "./flows/explore";
 import { blockedList, mutedList, setBlock, setFollow, setMute } from "./flows/graph";
 import { createPost, deletePost, getPost, setCountsHidden, thread } from "./flows/posts";
-import { changeHandle, editProfile, setSharePreviews } from "./flows/profile-edit";
+import { changeHandle, editProfile, removeAvatar, setAvatar, setSharePreviews } from "./flows/profile-edit";
 import { followers, following, profile } from "./flows/profiles";
 import { bookmarkedPosts, followingTimeline, latestTimeline, likedPosts, profileImported, profilePosts, profileReplies } from "./flows/timelines";
 
@@ -113,6 +113,9 @@ export function socialRoutes(deps: SocialDeps, guard: MiddlewareHandler<AppEnv>,
   // ---------------------------------------------------------------- the viewer's own profile
 
   r.patch("/me/profile", guard, validate("json", ProfileEditRequest), async (c) => c.json({ profile: await editProfile(deps, me(c), c.req.valid("json")) }));
+  // 2d Task 3 (design, sections 7.3 and 9.2): the profile's picture, set to an upload of kind avatar, and removed.
+  r.put("/me/avatar", guard, validate("json", AvatarRequest), async (c) => c.json(await setAvatar(deps, me(c), c.req.valid("json").mediaId)));
+  r.delete("/me/avatar", guard, async (c) => c.json(await removeAvatar(deps, me(c))));
   r.post("/me/handle", guard, fresh, validate("json", HandleChangeRequest), async (c) => c.json({ profile: await changeHandle(deps, me(c), c.req.valid("json")) }));
   // "Show my posts in Explore": on and off, with no body, as the app's other switches.
   r.post("/me/explore", guard, async (c) => c.json(await setShowInExplore(deps, me(c), true)));

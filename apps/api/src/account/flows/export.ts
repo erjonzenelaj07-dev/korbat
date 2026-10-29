@@ -43,6 +43,8 @@ export interface ExportPlan {
   /** 2d (design, section 11.2): the seen marker and the rules, read at once, and the received entries, read in pages. */
   activity: ActivityExport;
   images: { id: string; open: OpenFile }[];
+  /** 2d Task 3 (7.8, 11.2): the account's picture, its id and size, as the media module hands it over; null without one. */
+  avatar: { id: string; width: number; height: number } | null;
   /** The images whose file the checked open refused or could not find, filled while the images are written. */
   missingMedia: string[];
 }
@@ -115,10 +117,12 @@ const NO_ACTIVITY: ActivityExport = {
  * `pageSize` is how many rows of each profile list are read at a time; tests lower it.
  */
 export async function buildExport(deps: AccountDeps, userId: string, currentSession: string, now: Date, pageSize?: number): Promise<ExportPlan> {
-  const [account, profile, images, moderation, imports, activity] = await Promise.all([
+  const [account, profile, images, avatar, moderation, imports, activity] = await Promise.all([
     deps.auth.exportAccount(userId),
     deps.social.exportProfile(userId, pageSize),
     deps.media.exportImages(userId),
+    // 2d Task 3: the picture's file is one of the images, the 400 px square; this names it in the profile.
+    deps.media.exportAvatar(userId),
     // The server always hands the moderation module over; a test of the other members may leave it out.
     deps.moderation ? deps.moderation.exportFor(userId) : NO_MODERATION,
     // 3b Task 6: and the imports module; without it the member is empty.
@@ -126,7 +130,7 @@ export async function buildExport(deps: AccountDeps, userId: string, currentSess
     // 2d (11.2): and the activity module; without it the member holds the defaults and no entry.
     deps.activity ? deps.activity.exportEntries(userId, pageSize) : Promise.resolve(NO_ACTIVITY),
   ]);
-  return { exportedAt: now, currentSession, account, profile, moderation, imports, activity, images, missingMedia: [] };
+  return { exportedAt: now, currentSession, account, profile, moderation, imports, activity, images, avatar, missingMedia: [] };
 }
 
 /** A list member of export.json, read in pages and written one element at a time. */
@@ -210,7 +214,9 @@ async function* documentFragments(plan: ExportPlan): AsyncGenerator<string> {
         showInExplore: profile.profile.showInExplore,
         // After it, where 3e added it (W.8): the retired handles of the history, with when.
         retiredHandles: profile.profile.retiredHandles.map((retired) => ({ handle: retired.handle, retiredAt: iso(retired.retiredAt) })),
-        // 2d (11.2): the link-preview switch, last in the profile for now.
+        // 2d Task 3 (7.8, 11.2): the picture, its file the 400 px square written with the images (missingMedia names it when
+        // its file could not be read), then the link-preview switch, last in the profile.
+        avatar: plan.avatar === null ? null : { id: plan.avatar.id, file: mediaEntry(plan.avatar.id), width: plan.avatar.width, height: plan.avatar.height },
         sharePreviews: profile.profile.sharePreviews,
       },
     ],

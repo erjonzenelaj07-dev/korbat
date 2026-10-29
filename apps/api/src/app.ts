@@ -97,12 +97,14 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
   app.route("/api/health", healthRoutes(healthChecks, config.KORBAT_VERSION, advisoryChecks));
   app.route("/api/auth", auth.routes);
   // 3e (design, section 7.12): /api/me from the auth module's meFor and the moderation module's standingFor, read at
-  // every request; null without the moderation module (an app built for some tests) or without a profile.
+  // every request; null without the moderation module (an app built for some tests) or without a profile. 2d Task 3 (9.3):
+  // the account's own picture from the media module's avatarsOf, the same way: null without the media module or a profile.
   app.get("/api/me", auth.requireOnboarding, async (c) => {
     const session = c.get("session")!;
     const base = await auth.meFor(session);
     const standing = moderation && base.profile !== null ? await moderation.standingFor(session.userId) : null;
-    return c.json({ ...base, standing } satisfies MeResponse);
+    const avatar = media && base.profile !== null ? ((await media.forPosts.avatarsOf([session.userId], session.userId)).get(session.userId) ?? null) : null;
+    return c.json({ ...base, standing, avatar } satisfies MeResponse);
   });
   if (media) app.route("/api/media", media.routes);
   // 3b (design, section 9.1): every route behind the auth module's requireSession, CSRF included, like the social routes.

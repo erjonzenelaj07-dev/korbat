@@ -21,6 +21,10 @@ function checked(id: string): string {
  *   delete-owed/<id>  the API's own note that a request for image <id> is owed: written inside the transaction that
  *                     deletes the image's row, and removed once the request stands. The worker never reads it, so a
  *                     transaction that does not commit has asked for nothing.
+ *   incoming/<id>.avatar  2d Task 3 (design, section 7.2): an avatar's job, its crop (AvatarJob), written through tmp/ and
+ *                     renamed into place before the upload itself, so the worker never sees an avatar's upload without it.
+ *                     Its name is no media id: the worker's scan of incoming/ skips it as a file of its own, and every
+ *                     removal of the upload removes it too.
  */
 export function uploadsLayout(root: string) {
   const tmp = path.join(root, "tmp");
@@ -37,6 +41,7 @@ export function uploadsLayout(root: string) {
     upload: (id: string) => path.join(incoming, checked(id)),
     deletion: (id: string) => path.join(deletions, checked(id)),
     owedDeletion: (id: string) => path.join(owed, checked(id)),
+    avatarJob: (id: string) => path.join(incoming, `${checked(id)}.avatar`),
   };
 }
 export type UploadsLayout = ReturnType<typeof uploadsLayout>;

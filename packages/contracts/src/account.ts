@@ -311,8 +311,14 @@ export const ExportFormat = z.object({
      */
     retiredHandles: z.array(z.object({ handle: z.string(), retiredAt: at })),
     /**
+     * 2d Task 3 (design, sections 7.8 and 11.2): the account's picture while one is set and the account is shown it, with its
+     * file in the archive (the 400 px square, `media/<id>.webp`, listed in missingMedia when it could not be read) and its
+     * size; null otherwise. Added to korbat-export-1 without a new format name, before sharePreviews.
+     */
+    avatar: z.object({ id: z.string(), file: z.string(), width: z.number().int().positive(), height: z.number().int().positive() }).nullable(),
+    /**
      * 2d (design, section 11.2; decision 21): the link-preview switch as it stands. Added to korbat-export-1 without a new
-     * format name, last in the profile for now (Task 3 puts the avatar before it).
+     * format name, last in the profile.
      */
     sharePreviews: z.boolean(),
   }),

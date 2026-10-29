@@ -98,6 +98,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: step 1 of an account del
       purgeOwner: (tx, ownerId) => m.deps.repo.purgeOwner(tx, ownerId),
       requestDeletion: (ids) => m.files.requestDeletion(ids),
       exportImages: async () => [],
+      exportAvatar: async () => null,
     },
     limits: new MemoryStore(),
     log: pino({ level: "silent" }),

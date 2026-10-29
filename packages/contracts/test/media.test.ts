@@ -1,9 +1,12 @@
 import { describe, expect, test } from "vitest";
 import {
   ALT_MAX_LENGTH,
+  AVATAR_CROPS,
   AltText,
+  AvatarView,
   HiddenMedia,
   MEDIA_ACCEPTED_TYPES,
+  MEDIA_KINDS,
   MEDIA_MAX_BYTES,
   MEDIA_MAX_PER_POST,
   MediaAttachment,
@@ -12,6 +15,7 @@ import {
   MediaStatusResponse,
   MediaView,
   PostView,
+  UploadQuery,
   UploadResponse,
   altLength,
   isHiddenMedia,
@@ -31,7 +35,9 @@ describe("limits and codes", () => {
 
   test("error codes and failure reasons", () => {
     // 3d Task 7: upload_refused, a post that attaches an upload korbat did not accept.
-    expect(MediaErrorCode.options).toEqual(["unsupported_media_type", "file_too_large", "too_many_pending_uploads", "uploads_unavailable", "media_unavailable", "upload_refused"]);
+    // 2d Task 3 (9.4): avatar_not_ready, an upload set as the avatar that is processing, failed or refused; not_an_avatar, a
+    // post's image sent as the avatar.
+    expect(MediaErrorCode.options).toEqual(["unsupported_media_type", "file_too_large", "too_many_pending_uploads", "uploads_unavailable", "media_unavailable", "upload_refused", "avatar_not_ready", "not_an_avatar"]);
     expect(MediaFailure.options).toEqual(["unsupported_format", "animated_not_supported", "image_too_large", "corrupt_image", "processing_failed"]);
   });
 
@@ -102,7 +108,7 @@ describe("images on posts", () => {
   const image = { id: id(9), width: 2048, height: 1536, blurhash: "L2Eo_P_3jb_3", alt: "a cat", small: mediaPath(id(9), "small"), large: mediaPath(id(9), "large") };
   const post = {
     id: id(2),
-    author: { id: id(1), handle: "ada", displayName: "Ada", verified: false },
+    author: { id: id(1), handle: "ada", displayName: "Ada", verified: false, avatar: null },
     body: "",
     createdAt: "2026-09-18T10:00:00.000Z",
     state: "visible",
@@ -164,5 +170,35 @@ describe("images on posts", () => {
     expect(parsed.media.map(isHiddenMedia)).toEqual([false, true, false, true]);
     // Something that is neither is refused.
     expect(PostView.safeParse({ ...post, media: [{ id: id(10) }] }).success).toBe(false);
+  });
+});
+
+describe("2d Task 3: avatars (design, sections 7.1, 7.2 and 9.3)", () => {
+  test("the two kinds of upload and the three crop positions along the longer side", () => {
+    expect([...MEDIA_KINDS]).toEqual(["post", "avatar"]);
+    expect([...AVATAR_CROPS]).toEqual(["start", "centre", "end"]);
+  });
+
+  test("UploadQuery: without kind an upload is a post's image; kind=avatar takes exactly one crop, and a crop never goes without it", () => {
+    expect(UploadQuery.parse({})).toEqual({ kind: "post" });
+    expect(UploadQuery.parse({ kind: "post" })).toEqual({ kind: "post" });
+    for (const crop of AVATAR_CROPS) expect(UploadQuery.parse({ kind: "avatar", crop })).toEqual({ kind: "avatar", crop });
+    // A crop on a post's image, and an avatar without a crop, are both invalid_request: the picker always sends one.
+    expect(UploadQuery.safeParse({ crop: "centre" }).success).toBe(false);
+    expect(UploadQuery.safeParse({ kind: "post", crop: "start" }).success).toBe(false);
+    expect(UploadQuery.safeParse({ kind: "avatar" }).success).toBe(false);
+    // Only the three positions and the two kinds; a repeated parameter arrives as a list, which is refused too.
+    for (const bad of [{ kind: "avatar", crop: "center" }, { kind: "avatar", crop: "middle" }, { kind: "banner" }, { kind: "AVATAR", crop: "centre" }, { kind: ["avatar", "avatar"], crop: "centre" }, { kind: "avatar", crop: ["start", "end"] }]) {
+      expect(UploadQuery.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+    // Any other parameter is dropped, never refused, as before: the route read no query until now.
+    expect(UploadQuery.parse({ kind: "avatar", crop: "end", t: "1" })).toEqual({ kind: "avatar", crop: "end" });
+  });
+
+  test("an avatar is its two paths, as mediaPath makes them, and nothing else", () => {
+    const view = { small: mediaPath(id(9), "small"), large: mediaPath(id(9), "large") };
+    expect(AvatarView.parse(view)).toEqual(view);
+    expect(AvatarView.safeParse({ small: view.small }).success).toBe(false);
+    expect(AvatarView.parse({ ...view, width: 400 })).toEqual(view);
   });
 });

@@ -158,8 +158,9 @@ export function createSocial(options: CreateSocialOptions) {
       return new Map([...loaded].flatMap(([id, view]) => (isTombstone(view) ? [] : [[id, view] as const])));
     },
     async authors(ids) {
-      const found = await deps.repo.findProfiles([...ids]);
-      return new Map([...found].map(([id, profile]) => [id, authorOf(profile)] as const));
+      // 2d Task 3 (7.5): the follow groups' actors with their avatars, from one avatarsOf; as any reader but the actor sees them.
+      const [found, avatars] = await Promise.all([deps.repo.findProfiles([...ids]), deps.media.avatarsOf([...ids], null)]);
+      return new Map([...found].map(([id, profile]) => [id, authorOf(profile, avatars.get(id) ?? null)] as const));
     },
   };
   const forImports: SocialForImports = {

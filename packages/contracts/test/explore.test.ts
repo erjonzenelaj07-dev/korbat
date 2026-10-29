@@ -3,7 +3,7 @@ import * as contracts from "../src/index";
 import { EXPLORE_V2, ExplorePage, ExploreSettingResponse, ExploreStatus, ExploreStatusKind, TimelineItem, type ExploreFormula } from "../src/index";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const author = { id: id(1), handle: "ada", displayName: "Ada", verified: false };
+const author = { id: id(1), handle: "ada", displayName: "Ada", verified: false, avatar: null };
 const post = (n: number, extra: Record<string, unknown> = {}) => ({
   id: id(n),
   author,

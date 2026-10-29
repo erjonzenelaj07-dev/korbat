@@ -33,6 +33,7 @@ import { updateLine } from "../../src/moderation/dispatch";
 import { noticeStatus, submitNotice } from "../../src/moderation/intake";
 import { pendingOutcomeLines, releaseOutcomes } from "../../src/moderation/repo";
 import { createSocial } from "../../src/social";
+import { WITHOUT_MEDIA } from "../../src/social/context";
 import { Browser } from "./http-client";
 import { deciderWorld, type DeciderWorld, type RealStaff } from "./moderation-decide";
 import { act, authCaseCounts, moderationCounts, newImageRow, newPostRow } from "./moderation-fixtures";
@@ -77,7 +78,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the app's side of modera
       requireSession: w.auth.requireSession,
       requireFreshAuth: w.auth.requireFreshAuth(),
       moderation: w.moderation.forSocial,
-      media: { attach: async () => undefined, detachAll: async () => [], requestDeletion: async () => undefined, forPosts: (postIds) => images.forPosts(postIds) },
+      // 2d Task 3: no avatar is set here; WITHOUT_MEDIA's avatar members answer none.
+      media: { ...WITHOUT_MEDIA, attach: async () => undefined, detachAll: async () => [], requestDeletion: async () => undefined, forPosts: (postIds) => images.forPosts(postIds) },
     });
     app = createApp({ config: w.config, logger, rateLimitStore: w.deps.limits, healthChecks: {}, auth: w.auth, social, moderation: w.moderation });
     moderator = await d.staff("moderator");

@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 import {
   AltText,
+  Author,
+  AvatarRequest,
+  AvatarResponse,
   BIO_MAX_LENGTH,
   Bio,
   CountsRequest,
@@ -28,7 +31,8 @@ import {
 } from "../src/index";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const author = { id: id(1), handle: "ada", displayName: "Ada", verified: false };
+// 2d Task 3: every author carries its avatar, null while it has none.
+const author = { id: id(1), handle: "ada", displayName: "Ada", verified: false, avatar: null };
 const counts = { likes: 0, reposts: 0, replies: 0, quotes: 0 };
 const post = (n: number, extra: Record<string, unknown> = {}) => ({
   id: id(n),
@@ -182,7 +186,7 @@ describe("post views", () => {
 
 describe("profiles", () => {
   test("profile views carry counts and an optional viewer relation", () => {
-    const base = { id: id(1), handle: "ada", displayName: "Ada", bio: "", verified: true, createdAt: "2026-09-17T10:00:00.000Z", counts: { posts: 1, followers: 2, following: 3 }, hasImported: false };
+    const base = { id: id(1), handle: "ada", displayName: "Ada", bio: "", verified: true, createdAt: "2026-09-17T10:00:00.000Z", counts: { posts: 1, followers: 2, following: 3 }, hasImported: false, avatar: null };
     expect(ProfileView.safeParse(base).success).toBe(true);
     expect(ProfileView.safeParse({ ...base, viewer: { following: true, followedBy: false, blocked: false, muted: false } }).success).toBe(true);
     expect(ProfileView.safeParse({ ...base, counts: { posts: -1, followers: 0, following: 0 } }).success).toBe(false);
@@ -195,6 +199,32 @@ describe("profiles", () => {
     expect(Object.keys(ProfileView.shape)).not.toContain("showInExplore");
     expect(ProfileView.parse({ ...base, showInExplore: false })).not.toHaveProperty("showInExplore");
   });
+  test("2d Task 3 (7.5, 9.3): an author, a profile list's item and a profile view each carry the avatar, its two paths or null, always present", () => {
+    const avatar = { small: `/api/media/${id(9)}/small.webp`, large: `/api/media/${id(9)}/large.webp` };
+    expect(Author.parse({ ...author, avatar })).toEqual({ ...author, avatar });
+    expect(Author.parse(author).avatar).toBeNull();
+    const { avatar: _none, ...without } = author;
+    expect(Author.safeParse(without).success).toBe(false);
+    expect(Author.safeParse({ ...author, avatar: { small: avatar.small } }).success).toBe(false);
+    expect(ProfileListItem.parse({ ...author, avatar, bio: "hi" }).avatar).toEqual(avatar);
+    expect(ProfileListItem.safeParse({ ...without, bio: "hi" }).success).toBe(false);
+    const view = { id: id(1), handle: "ada", displayName: "Ada", bio: "", verified: false, createdAt: "2026-09-17T10:00:00.000Z", counts: { posts: 0, followers: 0, following: 0 }, hasImported: false };
+    expect(ProfileView.parse({ ...view, avatar }).avatar).toEqual(avatar);
+    expect(ProfileView.parse({ ...view, avatar: null }).avatar).toBeNull();
+    expect(ProfileView.safeParse(view).success).toBe(false);
+    // A post's author and a quoted post's author carry it too.
+    expect(PostView.parse(post(2, { author: { ...author, avatar } })).author.avatar).toEqual(avatar);
+  });
+
+  test("2d Task 3 (7.3, 9.2): PUT /api/me/avatar takes an upload's id, canonical; both avatar routes answer the account's avatar or null", () => {
+    expect(AvatarRequest.parse({ mediaId: id(9).toUpperCase() })).toEqual({ mediaId: id(9) });
+    for (const bad of [{}, { mediaId: "x" }, { mediaId: null }]) expect(AvatarRequest.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    const avatar = { small: `/api/media/${id(9)}/small.webp`, large: `/api/media/${id(9)}/large.webp` };
+    expect(AvatarResponse.parse({ avatar })).toEqual({ avatar });
+    expect(AvatarResponse.parse({ avatar: null })).toEqual({ avatar: null });
+    expect(AvatarResponse.safeParse({}).success).toBe(false);
+  });
+
   test("the error codes are exactly the seven social ones, 3e's account_suspended last", () => {
     expect(SocialErrorCode.options).toEqual(["post_unavailable", "not_author", "blocked", "self_target", "account_too_new", "explore_refreshed", "account_suspended"]);
   });

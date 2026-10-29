@@ -298,11 +298,39 @@ export interface MediaForAccount {
    * since the list was read, so a seal that commits while an archive streams leaves no sealed file in it from then on.
    */
   exportImages(ownerId: string): Promise<{ id: string; open(): Promise<StoredFile | null> }[]>;
+  /**
+   * 2d Task 3 (design, sections 7.8 and 11.2): the account's picture as the export's profile names it, its id and size,
+   * while it is set and the account is shown it; null otherwise. Its file is one of exportImages', the 400 px square.
+   */
+  exportAvatar(ownerId: string): Promise<{ id: string; width: number; height: number } | null>;
+}
+
+/**
+ * The social module's interface over this module's dependencies, as createMedia hands it out; the integration tests build
+ * it the same way. 2d Task 3: a former avatar's deletion after setAvatar's or removeAvatar's commit (7.3 step 6) asks for its
+ * files only when its row went: an upload still in incoming/ is removed first, as the sweeper removes one it gives up on.
+ */
+export function mediaForPosts(deps: MediaDeps): MediaForPosts {
+  return {
+    attach: (tx, input) => deps.repo.attach(tx, input),
+    detachAll: (tx, postId) => deps.repo.detachAll(tx, postId),
+    requestDeletion: (ids) => deps.files.requestDeletion(ids),
+    forPosts: (postIds) => deps.repo.forPosts(postIds),
+    attachAvatar: (tx, accountId, mediaId) => deps.repo.attachAvatar(tx, accountId, mediaId),
+    detachAvatar: (tx, accountId) => deps.repo.detachAvatar(tx, accountId),
+    async dropFormerAvatar(id) {
+      if (id === null || !(await deps.repo.deleteFormerAvatar(id))) return;
+      await deps.files.discardUpload(id);
+      await deps.files.requestDeletion([id]);
+    },
+    avatarsOf: (profileIds, viewer) => deps.repo.avatarsOf(profileIds, viewer),
+  };
 }
 
 /** The account module's interface over this module's dependencies, as createMedia hands it out; the integration tests build it the same way. */
 export function mediaForAccount(deps: MediaDeps): MediaForAccount {
   return {
+    exportAvatar: (ownerId) => deps.repo.exportAvatar(ownerId),
     async purgeOwner(tx, ownerId) {
       const ids = await deps.repo.purgeOwner(tx, ownerId);
       await deps.files.oweDeletion(ids);
@@ -444,12 +472,7 @@ export function createMedia(options: CreateMediaOptions) {
     matches: createMatchRepo(options.apiDb),
     matched: { handler: null },
   };
-  const forPosts: MediaForPosts = {
-    attach: (tx, input) => deps.repo.attach(tx, input),
-    detachAll: (tx, postId) => deps.repo.detachAll(tx, postId),
-    requestDeletion: (ids) => deps.files.requestDeletion(ids),
-    forPosts: (postIds) => deps.repo.forPosts(postIds),
-  };
+  const forPosts = mediaForPosts(deps);
   const forAccount = mediaForAccount(deps);
   const forCases = mediaForCases(deps);
   const forImports = mediaForImports(deps);

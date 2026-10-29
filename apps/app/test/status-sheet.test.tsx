@@ -144,7 +144,7 @@ const order = () =>
     },
   });
 
-const ADA = { id: id(900), handle: "ada", displayName: "Ada", verified: false };
+const ADA = { id: id(900), handle: "ada", displayName: "Ada", verified: false, avatar: null };
 const me = { user: { id: ADA.id, onboarded: true }, profile: { handle: "ada", showInExplore: true }, standing: { activeStrikes: 0, measure: null, reporting: null, handleRetired: false } } as unknown as MeResponse;
 
 function post(extra: Partial<PostView> = {}): PostView {

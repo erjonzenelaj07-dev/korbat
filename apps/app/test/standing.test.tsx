@@ -150,6 +150,7 @@ describe("3e: the report form, Your standing and Settings, Profile while the sus
       user: { id: id(1), email: "ada@example.com", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 0 },
       profile: { id: id(1), handle, displayName: "Ada", handleChangedAt: null, verified: false, showInExplore: true, sharePreviews: false },
       standing: running(),
+      avatar: null,
     });
     const retired = textOf(html(<HandleSection me={me("retired_0a1b2c3d4e5f")} run={async () => undefined} refresh={async () => undefined} />));
     expect(retired).toContain(STANDING_TEXTS.handle.retiredSuspended);

@@ -229,6 +229,9 @@ function harness() {
   const currentSession = randomUUID();
   const otherSession = randomUUID();
   const [postId, deletedId, likedId, bookmarkedId, imageA, imageB] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+  // 2d Task 3: the account's picture as the media module's exportAvatar hands it over; a test may set it to null.
+  const picture: { avatar: { id: string; width: number; height: number } | null } = { avatar: { id: randomUUID(), width: 400, height: 400 } };
+  const avatar = () => picture.avatar;
   const events: RecordedEvent[] = [];
   const reads: string[] = [];
   const failures = { exportAccount: 0, exportFor: 0 };
@@ -476,7 +479,8 @@ function harness() {
         mutes: paged("mutes", lists.mutes, pageSize),
       }),
     },
-    media: { purgeOwner: notHere, requestDeletion: notHere, exportImages: async () => images },
+    // 2d Task 3: the picture the profile names; its file is among the images.
+    media: { purgeOwner: notHere, requestDeletion: notHere, exportImages: async () => images, exportAvatar: async () => avatar() },
     // 3b Task 6: the account's imports, newest first, as the imports module hands them over (11.2).
     imports: { purgeOwner: notHere, removeFiles: notHere, exportFor: async () => imports },
     // 2d (11.2): the account's Activity: the marker and the rules at once, the received entries in pages as they are written.
@@ -521,6 +525,7 @@ function harness() {
     imageA,
     imageB,
     images,
+    picture,
     events,
     lists,
     imports,
@@ -565,6 +570,8 @@ function expectedDocument(h: Harness, missingMedia: string[] = []) {
       handleHistory: ["ada_old", "ada"],
       showInExplore: false,
       retiredHandles: [{ handle: "ada_old", retiredAt: iso(T0 - DAY_MS) }],
+      // 2d Task 3 (7.8, 11.2): the picture, its file the 400 px square among the images, before the preview switch.
+      avatar: h.picture.avatar === null ? null : { id: h.picture.avatar.id, file: `media/${h.picture.avatar.id}.webp`, width: 400, height: 400 },
       // 2d (11.2): last in the profile.
       sharePreviews: true,
     },
@@ -825,7 +832,8 @@ describe("building the export", () => {
       { type: "signup", at: iso(T0 - 3 * DAY_MS) },
     ]);
     // With the author's Explore switch as the profile holds it (off here); the byte-for-byte tests below place it after the handle history.
-    expect(json.profile).toEqual({ handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: iso(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"], showInExplore: false, retiredHandles: [{ handle: "ada_old", retiredAt: iso(T0 - DAY_MS) }], sharePreviews: true });
+    const avatar = { id: h.picture.avatar!.id, file: `media/${h.picture.avatar!.id}.webp`, width: 400, height: 400 };
+    expect(json.profile).toEqual({ handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: iso(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"], showInExplore: false, retiredHandles: [{ handle: "ada_old", retiredAt: iso(T0 - DAY_MS) }], avatar, sharePreviews: true });
     expect(json.posts).toHaveLength(2);
     expect(json.posts[0]).toEqual({
       id: h.postId,
@@ -856,6 +864,18 @@ describe("building the export", () => {
     expect(plan.images).toEqual([]);
     // Building the plan records nothing: the event belongs after the last chunk of the stream.
     expect(h.events).toEqual([]);
+  });
+
+  test("2d Task 3 (7.8, 11.2): the profile names the account's picture after retiredHandles and before sharePreviews, by its entry media/<id>.webp; null without one, byte for byte", async () => {
+    const h = harness();
+    const textOf = async () => (await collect(exportJson(await buildExport(h.deps, h.userId, h.currentSession, h.now())))).join("");
+    const named = JSON.parse(await textOf()) as { profile: Record<string, unknown> };
+    expect(Object.keys(named.profile).slice(-3)).toEqual(["retiredHandles", "avatar", "sharePreviews"]);
+    expect(named.profile.avatar).toEqual({ id: h.picture.avatar!.id, file: `media/${h.picture.avatar!.id}.webp`, width: 400, height: 400 });
+    h.picture.avatar = null;
+    const none = await textOf();
+    expect(ExportFormat.parse(JSON.parse(none)).profile.avatar).toBeNull();
+    expect(none).toBe(JSON.stringify(expectedDocument(h), null, 2));
   });
 
   test("the images to write are the media module's, and the entry name is media/<id>.webp", async () => {

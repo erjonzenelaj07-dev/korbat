@@ -73,7 +73,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: media upload, status and
       expect(await scoreOf(old.id)).toBeNull();
       // A version the protocol does not know is not a result: the upload stays processing and its file stays.
       const later = UploadResponse.parse(await upload(scored.deps, ada.id, scored.jpeg()));
-      writeFileSync(scored.files.store.result(later.id), JSON.stringify({ v: 3, id: later.id, status: "ready", width: 10, height: 10, blurhash: "L2Eo_P_3jb_3~qoL" }));
+      // 2d Task 3: version 3 is the worker's now (its avatar mark); 4 is the first the protocol does not know.
+      writeFileSync(scored.files.store.result(later.id), JSON.stringify({ v: 4, id: later.id, status: "ready", width: 10, height: 10, blurhash: "L2Eo_P_3jb_3~qoL" }));
       expect(await status(scored.deps, ada.id, later.id)).toEqual({ id: later.id, status: "processing" });
       expect(existsSync(scored.files.uploads.upload(later.id))).toBe(true);
     } finally {

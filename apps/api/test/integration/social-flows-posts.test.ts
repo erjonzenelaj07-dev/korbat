@@ -75,7 +75,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: post and engagement flow
     const ada = await h.established();
     const root = await post(ada.id, "first");
     expect(PostView.parse(root)).toMatchObject({ body: "first", replyTo: null, quoteOf: null, counts: { likes: 0, reposts: 0, replies: 0, quotes: 0 }, viewer: { liked: false, reposted: false, bookmarked: false } });
-    expect(root.author).toEqual({ id: ada.id, handle: ada.handle, displayName: expect.any(String), verified: false });
+    // 2d Task 3: with its avatar, none here.
+    expect(root.author).toEqual({ id: ada.id, handle: ada.handle, displayName: expect.any(String), verified: false, avatar: null });
 
     const reply = await post(ada.id, "second", { replyToId: root.id });
     expect(reply.replyTo).toEqual({ id: root.id, authorHandle: ada.handle });

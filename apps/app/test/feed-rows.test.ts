@@ -10,7 +10,7 @@ import { dayTime, fullDate } from "../src/lib/time";
  * the end, and automatic loading stopping at the marker are checked here as the pure function gives them.
  */
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const AUTHOR = { id: id(900), handle: "ada", displayName: "Ada", verified: false };
+const AUTHOR = { id: id(900), handle: "ada", displayName: "Ada", verified: false, avatar: null };
 
 /** Post n, n minutes after nine: a higher number is newer. */
 function post(n: number): PostView {

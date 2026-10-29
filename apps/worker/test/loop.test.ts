@@ -21,6 +21,8 @@ async function harness(process: LoopDeps["process"] = async () => READY) {
   for (const dir of [uploads.tmp, uploads.incoming, uploads.deletions]) mkdirSync(dir, { recursive: true });
   await prepareStore(store);
   const calls: string[] = [];
+  // 2d Task 3: the crop each call was given, undefined for a post's upload.
+  const crops: (string | undefined)[] = [];
   const aborted: string[] = [];
   let clock = 1_800_000_000_000;
   const deps: LoopDeps = {
@@ -29,9 +31,10 @@ async function harness(process: LoopDeps["process"] = async () => READY) {
     formats: MEDIA_FORMATS,
     log: pino({ level: "silent" }),
     now: () => (clock += 5),
-    process: async (file, formats) => {
+    process: async (file, formats, avatar) => {
       calls.push(path.basename(file));
-      return process(file, formats);
+      crops.push(avatar?.crop);
+      return process(file, formats, avatar);
     },
     abort: (reason) => void aborted.push(reason),
     watchdogMs: 10_000,
@@ -41,7 +44,9 @@ async function harness(process: LoopDeps["process"] = async () => READY) {
     return id;
   };
   const result = (id: string) => ResultFile.parse(JSON.parse(readFileSync(store.result(id), "utf8")));
-  return { deps, uploads, store, upload, result, calls, aborted };
+  /** 2d Task 3: an avatar's job file beside the upload, as the API writes it before the upload. */
+  const job = (id: string, text: string) => writeFileSync(uploads.avatarJob(id), text);
+  return { deps, uploads, store, upload, job, result, calls, crops, aborted };
 }
 
 describe("processing uploads", () => {
@@ -49,8 +54,10 @@ describe("processing uploads", () => {
     const h = await harness();
     const id = h.upload();
     expect(await tick(h.deps)).toBe(true);
-    // 3d Task 6: the worker writes result version 2; without a scorer it carries no score.
-    expect(h.result(id)).toEqual({ v: 2, id, status: "ready", width: 800, height: 600, blurhash: "L2Eo_P_3jb_3" });
+    // 3d Task 6: without a scorer the result carries no score. 2d Task 3: the worker writes version 3, and a post's upload
+    // carries no avatar mark.
+    expect(h.result(id)).toEqual({ v: 3, id, status: "ready", width: 800, height: 600, blurhash: "L2Eo_P_3jb_3" });
+    expect(h.crops).toEqual([undefined]);
     expect(readFileSync(h.store.image(id, "large"), "utf8")).toBe("large-bytes");
     expect(readFileSync(h.store.image(id, "small"), "utf8")).toBe("small-bytes");
     expect(readFileSync(h.store.attempt(id), "utf8")).toBe("1");
@@ -61,14 +68,14 @@ describe("processing uploads", () => {
     const h = await harness(async () => ({ ...READY, r1: { model: "korbat-test-marker", score: 1 } }));
     const id = h.upload();
     await tick(h.deps);
-    expect(h.result(id)).toEqual({ v: 2, id, status: "ready", width: 800, height: 600, blurhash: "L2Eo_P_3jb_3", r1: { model: "korbat-test-marker", score: 1 } });
+    expect(h.result(id)).toEqual({ v: 3, id, status: "ready", width: 800, height: 600, blurhash: "L2Eo_P_3jb_3", r1: { model: "korbat-test-marker", score: 1 } });
   });
 
   test("a refused upload gets a failed result with the reason and no files", async () => {
     const h = await harness(async () => ({ ok: false, reason: "animated_not_supported" }));
     const id = h.upload();
     await tick(h.deps);
-    expect(h.result(id)).toEqual({ v: 2, id, status: "failed", reason: "animated_not_supported" });
+    expect(h.result(id)).toEqual({ v: 3, id, status: "failed", reason: "animated_not_supported" });
     expect(existsSync(h.store.imageDir(id))).toBe(false);
   });
 
@@ -103,7 +110,7 @@ describe("processing uploads", () => {
     }
     expect(readFileSync(h.store.attempt(id), "utf8")).toBe("3");
     await tick(h.deps);
-    expect(h.result(id)).toEqual({ v: 2, id, status: "failed", reason: "processing_failed" });
+    expect(h.result(id)).toEqual({ v: 3, id, status: "failed", reason: "processing_failed" });
     expect(h.calls).toHaveLength(3);
   });
 
@@ -148,6 +155,66 @@ describe("processing uploads", () => {
     await tick(h.deps);
     expect(h.aborted).toHaveLength(1);
     expect(h.aborted[0]).toMatch(/took longer than 30 ms/);
+  });
+});
+
+describe("2d Task 3: an avatar's job file (design, sections 7.2 and 7.4)", () => {
+  test("an upload with a job file is processed with its crop, and its ready result is version 3 with the mark", async () => {
+    const h = await harness(async () => ({ ...READY, width: 400, height: 400 }));
+    const id = randomUUID();
+    h.job(id, JSON.stringify({ v: 1, crop: "end" }));
+    h.upload("bytes", id);
+    expect(await tick(h.deps)).toBe(true);
+    expect(h.crops).toEqual(["end"]);
+    expect(h.result(id)).toEqual({ v: 3, id, status: "ready", width: 400, height: 400, blurhash: "L2Eo_P_3jb_3", avatar: true });
+  });
+
+  test("a refused avatar gets a failed result, which never carries the mark", async () => {
+    const h = await harness(async () => ({ ok: false, reason: "corrupt_image" }));
+    const id = randomUUID();
+    h.job(id, JSON.stringify({ v: 1, crop: "start" }));
+    h.upload("bytes", id);
+    await tick(h.deps);
+    expect(h.result(id)).toEqual({ v: 3, id, status: "failed", reason: "corrupt_image" });
+  });
+
+  test("a job file that is not exactly a version and a crop, too long, or not a plain file fails the upload as processing_failed, and the pipeline never runs", async () => {
+    const h = await harness();
+    const bad = ["not json", "{}", JSON.stringify({ v: 1 }), JSON.stringify({ v: 1, crop: "middle" }), JSON.stringify({ v: 2, crop: "centre" }), JSON.stringify({ v: 1, crop: "centre", size: 400 }), `${JSON.stringify({ v: 1, crop: "centre" })}${" ".repeat(300)}`];
+    const ids: string[] = [];
+    for (const text of bad) {
+      const id = randomUUID();
+      h.job(id, text);
+      h.upload("bytes", id);
+      ids.push(id);
+    }
+    const folder = randomUUID();
+    mkdirSync(h.uploads.avatarJob(folder));
+    h.upload("bytes", folder);
+    ids.push(folder);
+    for (let i = 0; i < ids.length; i++) await tick(h.deps);
+    for (const id of ids) expect(h.result(id), id).toEqual({ v: 3, id, status: "failed", reason: "processing_failed" });
+    expect(h.calls).toEqual([]);
+  });
+
+  test("a job file alone is no upload: the scan of incoming/ skips it, and it is never processed", async () => {
+    const h = await harness();
+    h.job(randomUUID(), JSON.stringify({ v: 1, crop: "centre" }));
+    expect(await tick(h.deps)).toBe(false);
+    expect(h.calls).toEqual([]);
+  });
+
+  test("with the real pipeline: an avatar's upload ends as its two squares on the store volume", async () => {
+    configureDecoder(MEDIA_FORMATS);
+    // As the process wires it: the job's crop is processImage's fourth argument, after the scorer (none here).
+    const h = await harness((file, formats, avatar) => processImage(file, formats, null, avatar));
+    const id = randomUUID();
+    h.job(id, JSON.stringify({ v: 1, crop: "centre" }));
+    h.upload(await make.jpeg(1200, 900), id);
+    await tick(h.deps);
+    expect(h.result(id)).toMatchObject({ v: 3, status: "ready", width: 400, height: 400, avatar: true });
+    expect(readFileSync(h.store.image(id, "large")).subarray(8, 12).toString("latin1")).toBe("WEBP");
+    expect(readFileSync(h.store.image(id, "small")).subarray(8, 12).toString("latin1")).toBe("WEBP");
   });
 });
 
@@ -229,7 +296,7 @@ describe("heartbeat and start", () => {
 describe("with the real pipeline", () => {
   test("a JPEG upload ends as WebP files on the store volume", async () => {
     configureDecoder(MEDIA_FORMATS);
-    const h = await harness(processImage);
+    const h = await harness((file, formats) => processImage(file, formats));
     const id = h.upload(await make.photoWithMetadata());
     const refused = h.upload(make.svg());
     await tick(h.deps);

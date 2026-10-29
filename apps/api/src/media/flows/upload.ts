@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { FileHandle } from "node:fs/promises";
-import { MEDIA_ACCEPTED_TYPES, MEDIA_MAX_BYTES, type MediaAcceptedType, type UploadResponse } from "@korbat/contracts";
+import { MEDIA_ACCEPTED_TYPES, MEDIA_MAX_BYTES, type AvatarCrop, type MediaAcceptedType, type UploadResponse } from "@korbat/contracts";
 import type { DbTx } from "@korbat/db";
 import { sniffImage, type MediaFormat } from "@korbat/media-protocol";
 import { HEIC_MESSAGE, MAX_PENDING_UPLOADS, MediaError, type MediaDeps } from "../context";
+import type { ReceivedHashes } from "../files";
 import { ImportMovedOn } from "../repo";
 
 const FORMAT_OF: Record<MediaAcceptedType, MediaFormat> = {
@@ -18,6 +19,8 @@ export interface UploadRequest {
   contentType: string | undefined;
   contentLength: string | undefined;
   body: ReadableStream<Uint8Array> | null;
+  /** 2d Task 3 (design, section 7.2): an avatar's upload, from the query's kind=avatar and its crop; absent for a post's. */
+  avatar?: { crop: AvatarCrop };
 }
 
 /** `image/jpeg; charset=binary` to `image/jpeg`. */
@@ -61,13 +64,25 @@ export async function upload(deps: MediaDeps, ownerId: string, request: UploadRe
   const id = randomUUID();
   // 3d Task 7 (design, section 7.8 step 1): while the comparison with known material is on, the three hashes of the file
   // as received are taken while it streams, and stored with the image row in one transaction; while it is off, nothing is
-  // hashed and no row of media_hashes is written.
+  // hashed and no row of media_hashes is written. 2d Task 3 (7.2): an avatar's SHA-256 is taken always, one hash of at
+  // most MEDIA_MAX_BYTES, and kept on its row as avatar_sha256.
   const accept = (head: Uint8Array) => checkFirstBytes(deps, head);
-  const hashes = deps.match.mode === "off" ? undefined : (await deps.files.receiveHashed(id, request.body, MEDIA_MAX_BYTES, accept)).hashes;
-  if (hashes === undefined && deps.match.mode === "off") await deps.files.receive(id, request.body, MEDIA_MAX_BYTES, accept);
+  const matching = deps.match.mode !== "off";
+  let hashes: ReceivedHashes | undefined;
+  let avatar: { sha256: string } | undefined;
+  if (request.avatar !== undefined) {
+    const received = await deps.files.receiveAvatar(id, request.body, MEDIA_MAX_BYTES, accept, matching);
+    hashes = received.hashes ?? undefined;
+    avatar = { sha256: received.sha256 };
+  } else if (matching) {
+    hashes = (await deps.files.receiveHashed(id, request.body, MEDIA_MAX_BYTES, accept)).hashes;
+  } else {
+    await deps.files.receive(id, request.body, MEDIA_MAX_BYTES, accept);
+  }
   try {
-    await deps.repo.insertProcessing({ id, ownerId, now: deps.now(), hashes });
-    await deps.files.commit(id);
+    await deps.repo.insertProcessing({ id, ownerId, now: deps.now(), hashes, avatar });
+    // An avatar's job file goes into incoming/ before the upload does (files.commit).
+    await deps.files.commit(id, request.avatar === undefined ? undefined : { avatar: request.avatar.crop });
   } catch (err) {
     await deps.repo.deleteRow(id).catch(() => undefined);
     await deps.files.discardUpload(id);

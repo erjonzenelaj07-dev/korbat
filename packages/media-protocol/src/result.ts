@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MediaFailure } from "@korbat/contracts";
+import { AVATAR_CROPS, MediaFailure } from "@korbat/contracts";
 import { R1_MODEL_NAME } from "./classifier";
 import { MAX_SIDE } from "./limits";
 
@@ -27,17 +27,31 @@ const PdqResult = z.strictObject({
  * 3d Task 6 (design, section 10.2): the union of version 1 as it stood and version 2, which is version 1's members with
  * `v: 2` and, on a ready result, the optional members `r1` and `pdq`. The worker writes version 2; the API reads both and
  * refuses every other version, member and range, so a new version ships in the API and the worker together.
+ *
+ * 2d Task 3 (design, section 7.4): version 3 is version 2's members with `v: 3` and, on a ready result of an avatar's job
+ * alone, `avatar: true`: the worker made the two squares. The worker writes version 3; the API reads versions 1 to 3 and
+ * refuses an avatar's row whose ready result lacks the mark and a post's row whose result carries it.
  */
 export const ResultFile = z.union([
   z.strictObject({ v: z.literal(1), id: z.uuid(), status: z.literal("ready"), width: side, height: side, blurhash }),
   z.strictObject({ v: z.literal(1), id: z.uuid(), status: z.literal("failed"), reason: MediaFailure }),
   z.strictObject({ v: z.literal(2), id: z.uuid(), status: z.literal("ready"), width: side, height: side, blurhash, r1: R1Result.optional(), pdq: PdqResult.optional() }),
   z.strictObject({ v: z.literal(2), id: z.uuid(), status: z.literal("failed"), reason: MediaFailure }),
+  z.strictObject({ v: z.literal(3), id: z.uuid(), status: z.literal("ready"), width: side, height: side, blurhash, r1: R1Result.optional(), pdq: PdqResult.optional(), avatar: z.literal(true).optional() }),
+  z.strictObject({ v: z.literal(3), id: z.uuid(), status: z.literal("failed"), reason: MediaFailure }),
 ]);
 export type ResultFile = z.infer<typeof ResultFile>;
 
 /** The version the worker writes. */
-export const RESULT_VERSION = 2;
+export const RESULT_VERSION = 3;
+
+/**
+ * 2d Task 3 (design, section 7.2): incoming/<id>.avatar, the job of an avatar's upload, which the API writes before the
+ * upload and the worker reads strictly: version 1 and the crop's position (AVATAR_CROPS), nothing else, at most
+ * MAX_JOB_BYTES. A job file that does not parse makes the upload processing_failed.
+ */
+export const AvatarJob = z.strictObject({ v: z.literal(1), crop: z.enum(AVATAR_CROPS) });
+export type AvatarJob = z.infer<typeof AvatarJob>;
 
 /** The heartbeat file: when the worker last completed a tick, in epoch milliseconds. */
 export const Heartbeat = z.strictObject({ v: z.literal(1), at: z.number().int().nonnegative() });

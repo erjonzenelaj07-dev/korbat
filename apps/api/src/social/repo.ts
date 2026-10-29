@@ -1420,6 +1420,35 @@ export function createSocialRepo(db: Db) {
     },
 
     /**
+     * 2d Task 3 (design, section 7.3): setAvatar's transaction. Step 1, the account's row through lockActing FOR NO KEY
+     * UPDATE, the helper createPost uses, with 3e's predicate (account_suspended, or not_found for a deleted profile); then
+     * `write`, the media module's attachAvatar (steps 2 to 4: the upload checked and set, the replaced picture detached), as
+     * createPost's `within` attaches its images, so this module never names the image table; step 5, the closing judgment.
+     * Answers what `write` answered; step 6 is the caller's, after the commit.
+     */
+    async setAvatar<T>(accountId: string, write: (tx: DbTx) => Promise<T>): Promise<T> {
+      return db.transaction(async (tx) => {
+        await lockActing(tx, accountId, "no key update");
+        const done = await write(tx);
+        await judgeActing(tx, accountId);
+        return done;
+      });
+    },
+
+    /**
+     * 2d Task 3 (7.3, decision 17): removeAvatar's transaction: the account's row FOR NO KEY UPDATE with no predicate, so a
+     * suspended account may remove its picture, a deleted profile answering not_found; then `write`, the media module's
+     * detachAvatar. Answers what `write` answered.
+     */
+    async removeAvatar<T>(accountId: string, write: (tx: DbTx) => Promise<T>): Promise<T> {
+      return db.transaction(async (tx) => {
+        const [row] = (await tx.execute(sql`select deleted_at is not null as deleted from profiles where id = ${accountId}::uuid for no key update`)) as unknown as { deleted: boolean }[];
+        if (!row || row.deleted) throw new SocialError("not_found", 404);
+        return write(tx);
+      });
+    },
+
+    /**
      * Renames the profile in one transaction. Its row is locked first, so two changes by the same
      * account run one after the other and the second leaves behind the handle the first chose. The
      * new handle must be nobody else's, in profiles (any case) or in handle_history; that check is
@@ -1771,7 +1800,7 @@ export function createSocialRepo(db: Db) {
         if (row) await tx.insert(handleHistory).values({ handleLower: row.handle.toLowerCase(), profileId: id, changedAt: now }).onConflictDoNothing();
         await tx
           .update(profiles)
-          .set({ displayName: "Deleted account", bio: "", avatarPath: null, verifiedAt: null, followerCount: 0, followingCount: 0, postCount: 0, deletedAt: now })
+          .set({ displayName: "Deleted account", bio: "", verifiedAt: null, followerCount: 0, followingCount: 0, postCount: 0, deletedAt: now })
           .where(and(eq(profiles.id, id), isNull(profiles.deletedAt)));
         // The tombstones. The rows are this transaction's already, and no post of the account can appear meanwhile: writing
         // one takes a shared lock on the profile row, which this transaction holds for update. 3b (design, sections 4.7 and

@@ -27,8 +27,8 @@
  * 14. A second throwaway account (the first one's session is gone by now, and a deleted account could not
  *     be granted a role) edits its bio, changes its handle, reports the first account's post under a rule
  *     (its own list of reports shows the report undecided, and no decision is about it), downloads its
- *     export as a ZIP whose export.json ends with the moderation member holding that report and, since 3b, the
- *     account's imports (none), posts, and deletes itself with a code read from Mailpit and its handle typed;
+ *     export as a ZIP whose export.json ends with the moderation member holding that report, since 3b the account's
+ *     imports (none) and, since 2d, its Activity, posts, and deletes itself with a code read from Mailpit and its handle typed;
  *     afterwards its profile is not found, its session is gone, and its post has left the Latest timeline.
  * 15. Signed out, a notice that the first account's post is illegal is taken through the app's site with the
  *     human check: it answers a reference and a token. The status page opens with that token and shows the
@@ -68,6 +68,10 @@
  *     shows the tab (hasImported) and counts four more posts, and Latest holds none of them. Last, Remove imported posts
  *     (POST /api/imports/:id/undo) runs until the import is undone: the tab is empty, the profile no longer shows it and
  *     counts as before. The stack needs the archive's size, 4 GiB and IMPORT_MIN_FREE_BYTES free on Docker's disk.
+ * 22. 2d Task 3: the first account's picture, a 900 by 600 JPEG whose middle third is a band of its own colour, sent through
+ *     Caddy with kind=avatar&crop=centre and made square by the real worker (version 3 of its result); PUT /api/me/avatar
+ *     sets it, /api/me and the author of the account's post carry its two paths, and large.webp is a 400 px square cut
+ *     from the centre, served to anyone under the public header. It stays the account's picture.
  *
  * Runs only against a local Docker context. Needs API_TURNSTILE_SECRET_KEY set to Cloudflare's always-pass test secret and API_SMTP_URL pointing
  * at Mailpit, and API_CONSOLE_ORIGIN naming the --console address. Makes its images with the sharp the worker uses.
@@ -335,6 +339,40 @@ async function images(token) {
   check("the worker has never restarted or been OOM-killed", worker.restarts === 0 && !worker.oomKilled, `restarts ${worker.restarts}, OOM-killed ${worker.oomKilled}`);
 }
 
+/**
+ * 2d Task 3 (design, sections 7.2 to 7.5; step 22): the account's picture through the real worker. The source is 900 by 600,
+ * blue with its middle third orange, so the centre crop's square (600 px from x = 150) has orange at its centre, and the
+ * start's or the end's would not.
+ */
+async function avatar(token, postId) {
+  const band = await sharp({ create: { width: 300, height: 600, channels: 3, background: "#e0a020" } }).png().toBuffer();
+  const source = await sharp({ create: { width: 900, height: 600, channels: 3, background: "#204080" } }).composite([{ input: band, left: 300, top: 0 }]).jpeg({ quality: 92 }).toBuffer();
+  const sent = await send("/api/media?kind=avatar&crop=centre", { method: "POST", token, body: source, type: "image/jpeg" });
+  let id = null;
+  try {
+    id = JSON.parse(sent.bytes.toString("utf8")).id ?? null;
+  } catch {
+    id = null;
+  }
+  if (!check("2d: upload a picture with kind=avatar&crop=centre through Caddy", sent.status === 202 && id !== null, `HTTP ${sent.status}`)) return;
+  const state = await waitReady(id, token);
+  if (!check("2d: the worker makes it ready as a 400 px square", state.status === "ready" && state.width === 400 && state.height === 400, `${state.status} ${state.width}x${state.height}`)) return;
+  const set = await api("/api/me/avatar", { method: "PUT", json: { mediaId: id }, token });
+  const paths = { small: `/api/media/${id}/small.webp`, large: `/api/media/${id}/large.webp` };
+  if (!check("2d: PUT /api/me/avatar sets it and answers its two paths", set.status === 200 && isDeepStrictEqual(set.body?.avatar, paths), set.summary)) return;
+  const me = await api("/api/me", { token });
+  check("2d: /api/me carries the picture", isDeepStrictEqual(me.body?.avatar, paths), JSON.stringify(me.body?.avatar));
+  const post = await api(`/api/posts/${postId}`);
+  check("2d: the author of the account's post carries it, signed out", post.status === 200 && isDeepStrictEqual(post.body?.author?.avatar, paths), post.summary);
+  const file = await send(paths.large);
+  check("2d: large.webp is served to anyone under the public header", file.status === 200 && file.headers.get("content-type") === "image/webp" && file.headers.get("cache-control") === PUBLIC_IMAGE_CACHE, `HTTP ${file.status}, ${file.headers.get("cache-control")}`);
+  const meta = file.status === 200 ? await sharp(file.bytes).metadata() : null;
+  const { data, info } = file.status === 200 ? await sharp(file.bytes).removeAlpha().raw().toBuffer({ resolveWithObject: true }) : { data: Buffer.alloc(0), info: { width: 0, height: 0, channels: 3 } };
+  const at = (Math.floor(info.height / 2) * info.width + Math.floor(info.width / 2)) * info.channels;
+  const centre = data.length > at + 2 ? [data[at], data[at + 1], data[at + 2]] : [0, 0, 0];
+  check("2d: it is a 400 px WebP square cut from the centre", meta?.format === "webp" && meta.width === 400 && meta.height === 400 && centre[0] > 150 && centre[2] < 100, `${meta?.format} ${meta?.width}x${meta?.height}, centre ${centre.join(",")}`);
+}
+
 /** Flat colour compresses to almost nothing, so every file is small to send and at its cap to decode. */
 const WORST_CASE = [
   ["48 MP 16-bit interlaced PNG", "image/png", () => sharp({ create: { width: 8000, height: 6000, channels: 3, background: "#806040" } }).toColourspace("rgb16").png({ progressive: true }).toBuffer()],
@@ -582,9 +620,10 @@ function exportedModeration(archive, reportRef, postId) {
     document = null;
   }
   const moderation = document?.moderation;
-  const last = document === null ? "export.json could not be read" : `last members ${Object.keys(document).slice(-2).join(", ")}`;
-  const ends = document !== null && isDeepStrictEqual(Object.keys(document).slice(-2), ["moderation", "imports"]) && isDeepStrictEqual(document.imports, []);
-  if (!check("export.json ends with the moderation member, its decisions and its reports, then the account's imports, none", ends && Array.isArray(moderation?.decisions) && Array.isArray(moderation?.reports), last)) return;
+  const last = document === null ? "export.json could not be read" : `last members ${Object.keys(document).slice(-3).join(", ")}`;
+  // 2d (11.2): the account's Activity comes last, after 3b's imports.
+  const ends = document !== null && isDeepStrictEqual(Object.keys(document).slice(-3), ["moderation", "imports", "activity"]) && isDeepStrictEqual(document.imports, []);
+  if (!check("export.json ends with the moderation member, its decisions and its reports, then the account's imports, none, then its Activity", ends && Array.isArray(moderation?.decisions) && Array.isArray(moderation?.reports), last)) return;
   const own = moderation.reports[0];
   check(
     "the export holds no decision and the account's one report, undecided",
@@ -889,6 +928,8 @@ async function main() {
   await appShell(created.body?.id);
 
   await images(token);
+  // 2d Task 3 (step 22): the account's picture, on its post made above.
+  await avatar(token, created.body?.id);
   if (worstCase) await worstCaseImages(token);
   await importArchive(token);
 

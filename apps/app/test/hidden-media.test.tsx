@@ -51,7 +51,7 @@ const sealed = (n: number): HiddenMedia => ({ id: id(n), hidden: true, sealed: t
 function post(n: number, extra: Partial<PostView> = {}): PostView {
   return {
     id: id(n),
-    author: { id: id(900), handle: "ada", displayName: "Ada", verified: false },
+    author: { id: id(900), handle: "ada", displayName: "Ada", verified: false, avatar: null },
     body: `post number ${n}`,
     createdAt: "2026-10-04T10:00:00.000Z",
     state: "visible",

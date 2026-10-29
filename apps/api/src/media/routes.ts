@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { z } from "zod";
-import { MediaId, type MediaSize } from "@korbat/contracts";
+import { MediaId, UploadQuery, type MediaSize } from "@korbat/contracts";
 import { isMediaId } from "@korbat/media-protocol";
 import type { AppEnv } from "../env";
 import { errorBody } from "../lib/errors";
@@ -18,14 +18,21 @@ const MediaParam = z.object({ id: MediaId });
 /**
  * Upload, status and removal, mounted at /api/media. `guard` is the auth module's requireSession:
  * an onboarded account, with CSRF and Origin already checked for cookie sessions. The upload body
- * is the raw file; it is streamed, never parsed, and no validator may read it first.
+ * is the raw file; it is streamed, never parsed, and no validator may read it first. 2d Task 3 (design, sections 7.2 and
+ * 9.2): its query alone is validated (UploadQuery: kind=avatar with its crop, or a post's image), which reads no body.
  */
 export function mediaRoutes(deps: MediaDeps, guard: MiddlewareHandler<AppEnv>) {
   const r = new Hono<AppEnv>();
   const me = (c: Context<AppEnv>): string => c.get("session")!.userId;
 
-  r.post("/", guard, async (c) => {
-    const request = { contentType: c.req.header("content-type"), contentLength: c.req.header("content-length"), body: c.req.raw.body };
+  r.post("/", guard, validate("query", UploadQuery), async (c) => {
+    const query = c.req.valid("query");
+    const request = {
+      contentType: c.req.header("content-type"),
+      contentLength: c.req.header("content-length"),
+      body: c.req.raw.body,
+      ...(query.kind === "avatar" && query.crop !== undefined ? { avatar: { crop: query.crop } } : {}),
+    };
     return c.json(await upload(deps, me(c), request), 202);
   });
   r.get("/:id", guard, validate("param", MediaParam), async (c) => c.json(await status(deps, me(c), c.req.valid("param").id)));

@@ -60,7 +60,7 @@ const signedIn = () => ({ status: "signed-in", me: ME });
 
 const POST: PostView = {
   id: "00000000-0000-4000-8000-000000000102",
-  author: { id: "00000000-0000-4000-8000-000000000002", handle: "grace", displayName: "Grace Hopper", verified: true },
+  author: { id: "00000000-0000-4000-8000-000000000002", handle: "grace", displayName: "Grace Hopper", verified: true, avatar: null },
   body: "Compilers, ships and the occasional heron.",
   createdAt: new Date(Date.now() - 3 * 3_600_000).toISOString(),
   state: "visible",

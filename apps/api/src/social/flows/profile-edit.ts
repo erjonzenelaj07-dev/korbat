@@ -1,10 +1,10 @@
-import type { HandleChangeRequest, ProfileEditRequest, ProfileView, SharePreviewsResponse } from "@korbat/contracts";
+import type { AvatarResponse, HandleChangeRequest, ProfileEditRequest, ProfileView, SharePreviewsResponse } from "@korbat/contracts";
 import { checkHandle } from "../../auth";
 import { SocialError, type SocialDeps } from "../context";
 import { enforceAccountLimit, enforceWriteLimit } from "../limits";
 import type { ProfileRow } from "../repo";
 import { DAY_MS, HOUR_MS } from "../tiers";
-import { profileView } from "./profiles";
+import { profileViewOf } from "./profiles";
 
 /** A handle may change again this long after the last change (1b design, section 7.2). */
 export const HANDLE_COOLDOWN_MS = 30 * DAY_MS;
@@ -44,7 +44,36 @@ export async function editProfile(deps: SocialDeps, viewer: string, input: Profi
   // The event says that the profile changed, not what it says now: the events table holds no content.
   await deps.events?.append(viewer, "profile_updated");
   const row = await own(deps, viewer);
-  return profileView(row, await deps.repo.hasImported(row.id));
+  return profileViewOf(deps, viewer, row);
+}
+
+/**
+ * 2d Task 3 (design, sections 7.3 and 9.2): PUT /api/me/avatar, the account's picture set to one of its own uploads of kind
+ * avatar that the worker made ready. Counted under avatar (with the removal) first. The repository's setAvatar takes the
+ * account's row through 3e's predicate (account_suspended, or not_found for a deleted profile), the media module's
+ * attachAvatar checks and sets the upload in the same transaction (not_found, not_an_avatar, avatar_not_ready) and detaches
+ * the picture it replaces, and the closing judgment ends it; after the commit the replaced picture's row and files go,
+ * unless a hold or a frozen case keeps the row. Task 4 adds the reset picture's refusal and moderation.avatarSet.
+ */
+export async function setAvatar(deps: SocialDeps, viewer: string, mediaId: string): Promise<AvatarResponse> {
+  const row = await own(deps, viewer);
+  await enforceWriteLimit(deps.limits, viewer, "avatar", row.createdAt, deps.now());
+  const set = await deps.repo.setAvatar(viewer, (tx) => deps.media.attachAvatar(tx, viewer, mediaId));
+  await deps.media.dropFormerAvatar(set.former);
+  return { avatar: set.avatar };
+}
+
+/**
+ * 2d Task 3 (7.3, decision 17): DELETE /api/me/avatar, the account's picture removed, counted under avatar. No predicate:
+ * a removal only reduces what others see, so a suspended account may make one; a deleted profile is not_found. After the
+ * commit the removed picture's row and files go, as for a replacement. Answers null, with or without a picture before.
+ */
+export async function removeAvatar(deps: SocialDeps, viewer: string): Promise<AvatarResponse> {
+  const row = await own(deps, viewer);
+  await enforceWriteLimit(deps.limits, viewer, "avatar", row.createdAt, deps.now());
+  const former = await deps.repo.removeAvatar(viewer, (tx) => deps.media.detachAvatar(tx, viewer));
+  await deps.media.dropFormerAvatar(former);
+  return { avatar: null };
 }
 
 /**
@@ -81,5 +110,5 @@ export async function changeHandle(deps: SocialDeps, viewer: string, input: Hand
   }
   await deps.events?.append(viewer, "handle_changed", { from: result.from, to });
   const row = await own(deps, viewer);
-  return profileView(row, await deps.repo.hasImported(row.id));
+  return profileViewOf(deps, viewer, row);
 }

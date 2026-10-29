@@ -1,5 +1,5 @@
 import { and, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
-import { ALERT_KINDS, AUTOMATION_RULES, EDGE_RULES, mediaPath, type EdgePurgeView } from "@korbat/contracts";
+import { ALERT_KINDS, AUTOMATION_RULES, EDGE_RULES, mediaPath, type AvatarView, type EdgePurgeView, type MediaKind } from "@korbat/contracts";
 import { postMedia, posts, profiles, type Db, type DbTx } from "@korbat/db";
 import type { ResultFile } from "@korbat/media-protocol";
 import { WRITE_CLOCK, closingJudgment, liveNotSuspended } from "../lib/standing";
@@ -59,6 +59,36 @@ export interface CaseReach {
 /** Ids as one uuid[] parameter. */
 const uuidArray = (ids: readonly string[]): SQL => sql`${`{${ids.join(",")}}`}::uuid[]`;
 
+/** 2d Task 3 (design, sections 7.1 and 7.5): an avatar as its readers get it, the two paths of its row's files. */
+export const avatarView = (id: string): AvatarView => ({ small: mediaPath(id, "small"), large: mediaPath(id, "large") });
+
+/**
+ * 2d Task 3 (design, section 7.4): the kind of row a ready result was made for. The worker marks a ready result of an
+ * avatar's job with `avatar: true` (version 3); a result of version 1 or 2, a failed one and an unmarked one are a post's.
+ * Both writers of a verdict (finalize here and storeVerdict in match.ts) store a ready result only on a row of this kind.
+ */
+export function resultKind(result: ResultFile): MediaKind {
+  return result.v === 3 && result.status === "ready" && result.avatar === true ? "avatar" : "post";
+}
+
+/**
+ * 2d Task 3 (design, section 7.4): a ready result whose avatar mark does not match the row's kind (an avatar's result
+ * without it, a post's with it, which a worker of another build or a file written around it would leave) fails the upload
+ * as processing_failed, rather than store an image as an avatar's squares or the squares as a post's image. Only a row
+ * still processing changes; answers whether it did. Through the caller's statement runner: finalize's pool, storeVerdict's
+ * savepoint.
+ */
+export async function failMismatch(q: Pick<Db, "execute"> | Pick<DbTx, "execute">, id: string): Promise<boolean> {
+  const rows = (await q.execute(sql`update public.post_media set status = 'failed', error = 'processing_failed' where id = ${id}::uuid and status = 'processing' returning id`)) as unknown as { id: string }[];
+  return rows.length === 1;
+}
+
+/** 2d Task 3 (7.3): the account's current avatar detached in the caller's transaction; its id, or null when it had none. */
+async function detachCurrent(tx: DbTx, accountId: string): Promise<string | null> {
+  const rows = (await tx.execute(sql`update post_media set profile_id = null where profile_id = ${accountId}::uuid returning id`)) as unknown as { id: string }[];
+  return rows[0]?.id ?? null;
+}
+
 /** 3d Task 7: no row of upload_refusals names the image. A held or refused upload is in no reader and no export. */
 const NOT_REFUSED = sql`not exists (select 1 from public.upload_refusals r where r.media_id = ${postMedia.id})`;
 
@@ -73,6 +103,10 @@ const NOT_REFUSED = sql`not exists (select 1 from public.upload_refusals r where
  */
 const EXPORTABLE = and(
   eq(postMedia.status, "ready"),
+  // 2d Task 3 (design, section 7.8): an avatar's row only while it is its live account's picture. A former one that a hold
+  // or a freeze keeps is in no export, as a deleted post's kept image is in none; an avatar's upload never set (on no post
+  // for at most the sweeper's day) is not the account's picture either.
+  or(eq(postMedia.kind, "post"), sql`exists (select 1 from public.profiles o where o.id = ${postMedia.profileId} and o.deleted_at is null)`),
   inArray(postMedia.moderationState, ["visible", "withheld", "removed"]),
   isNull(postMedia.erasedAt),
   or(isNull(postMedia.postId), and(ne(posts.state, "deleted_by_author"), ne(posts.state, "disabled"), isNull(posts.erasedAt))),
@@ -92,10 +126,16 @@ const EXPORTABLE = and(
  * called it for every attached image row in the table before any mark was tested: several index probes a row, seconds
  * for a table of thousands, however few rows were disposable. A CASE is evaluated in the order it is written, and this
  * one names all three tables, so it runs where they are joined.
+ *
+ * 2d Task 3: an avatar on no post is kept by post_media_keep while its owner's account case is frozen by a suspect report,
+ * the database's account_frozen (0051_avatars, the freeze's account arm). It is read here too, so that the disposal does not
+ * take again, round after round, a row the trigger keeps, as it does not for a frozen post.
  */
 const DISPOSABLE = sql`(m.hold_until is null or m.hold_until <= now())
   and case when (p.state = 'deleted_by_author' or o.deleted_at is not null or p.erased_at is not null or m.erased_at is not null)
-           then (m.post_id is null or not public.post_frozen(m.post_id))
+           then (case when m.post_id is not null then not public.post_frozen(m.post_id)
+                      when m.kind = 'avatar' then not public.account_frozen(m.owner_id)
+                      else true end)
            else false end`;
 
 const columns = {
@@ -162,10 +202,12 @@ export function createMediaRepo(db: Db) {
      * imported image, which no route of the person's uploaded, so an import of thousands never fills the 20 a person holds.
      */
     async pendingCount(ownerId: string): Promise<number> {
+      // 2d Task 3 (design, section 7.2): never an avatar, which is never a post's upload: the current one and a held former
+      // one use no slot of the 20.
       const rows = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(postMedia)
-        .where(and(eq(postMedia.ownerId, ownerId), isNull(postMedia.postId), inArray(postMedia.status, ["processing", "ready"]), eq(postMedia.imported, false), NOT_REFUSED));
+        .where(and(eq(postMedia.ownerId, ownerId), isNull(postMedia.postId), inArray(postMedia.status, ["processing", "ready"]), eq(postMedia.imported, false), eq(postMedia.kind, "post"), NOT_REFUSED));
       return rows[0]?.count ?? 0;
     },
 
@@ -185,14 +227,23 @@ export function createMediaRepo(db: Db) {
      * for any upload (the row it locks is held already), post_media_import_insert checks the job again, and the closing
      * judgment ends the transaction as for any upload.
      */
-    async insertProcessing(input: { id: string; ownerId: string; now: Date; hashes?: ReceivedHashes | undefined; importJob?: { id: string; claim: (tx: DbTx) => Promise<boolean> } }): Promise<void> {
+    async insertProcessing(input: {
+      id: string;
+      ownerId: string;
+      now: Date;
+      hashes?: ReceivedHashes | undefined;
+      importJob?: { id: string; claim: (tx: DbTx) => Promise<boolean> };
+      /** 2d Task 3 (design, sections 6.4 and 7.2): an avatar's upload, with its file's SHA-256 in lowercase hex. */
+      avatar?: { sha256: string };
+    }): Promise<void> {
       await db.transaction(async (tx) => {
         if (input.importJob !== undefined && !(await input.importJob.claim(tx))) throw new ImportMovedOn();
         const imported = input.importJob !== undefined;
+        const kind: MediaKind = input.avatar === undefined ? "post" : "avatar";
         const inserted = await tx.execute(sql`
           with ok as (select p.id from profiles p where p.id = ${input.ownerId}::uuid and ${liveNotSuspended("p", WRITE_CLOCK)} for key share of p)
-          insert into post_media (id, owner_id, status, created_at, imported, import_job_id)
-          select ${input.id}::uuid, ok.id, 'processing', ${input.now.toISOString()}::timestamptz, ${imported}, ${input.importJob?.id ?? null}::uuid from ok
+          insert into post_media (id, owner_id, status, created_at, imported, import_job_id, kind, avatar_sha256)
+          select ${input.id}::uuid, ok.id, 'processing', ${input.now.toISOString()}::timestamptz, ${imported}, ${input.importJob?.id ?? null}::uuid, ${kind}::media_kind, ${input.avatar?.sha256 ?? null} from ok
           returning id`);
         if (inserted.length === 0) throw new MediaError("account_suspended", 403);
         // 3d Task 7 (design, section 7.8 step 1): with the comparison on, the hashes and the pending check are written in
@@ -235,8 +286,11 @@ export function createMediaRepo(db: Db) {
         result.status === "ready"
           ? { status: "ready" as const, width: result.width, height: result.height, blurhash: result.blurhash, ...(score !== null ? { nsfwScore: score } : {}) }
           : { status: "failed" as const, error: result.reason };
-      const rows = await db.update(postMedia).set(values).where(and(eq(postMedia.id, id), eq(postMedia.status, "processing"))).returning({ id: postMedia.id });
-      return rows.length === 1;
+      // 2d Task 3 (design, section 7.4): a ready result is stored only on a row of the kind it was made for.
+      const kind = result.status === "ready" ? eq(postMedia.kind, resultKind(result)) : undefined;
+      const rows = await db.update(postMedia).set(values).where(and(eq(postMedia.id, id), eq(postMedia.status, "processing"), kind)).returning({ id: postMedia.id });
+      if (rows.length === 1 || result.status !== "ready") return rows.length === 1;
+      return failMismatch(db, id);
     },
 
     /**
@@ -307,28 +361,59 @@ export function createMediaRepo(db: Db) {
       if (keepChecking) {
         const checking = (await db.execute(sql`
           select 1 from post_media m join public.media_hashes h on h.media_id = m.id
-           where m.id = ${id}::uuid and m.owner_id = ${ownerId}::uuid and m.post_id is null and m.status = 'processing'
+           where m.id = ${id}::uuid and m.owner_id = ${ownerId}::uuid and m.post_id is null and m.status = 'processing' and m.kind = 'post'
              and h.check_state in ('pending', 'capped')`)) as unknown as unknown[];
         if (checking.length === 1) return "kept";
       }
-      const rows = await db.delete(postMedia).where(and(eq(postMedia.id, id), eq(postMedia.ownerId, ownerId), isNull(postMedia.postId))).returning({ id: postMedia.id });
+      // 2d Task 3 (design, section 7.2): never an avatar, which only PUT and DELETE /api/me/avatar set and remove.
+      const rows = await db.delete(postMedia).where(and(eq(postMedia.id, id), eq(postMedia.ownerId, ownerId), isNull(postMedia.postId), eq(postMedia.kind, "post"))).returning({ id: postMedia.id });
       return rows.length === 1 ? "deleted" : "none";
     },
 
     /**
      * What serving an image file depends on: whether it is ready, its own moderation state, its post's state and author,
-     * and whether its content or its post's was erased.
+     * and whether its content or its post's was erased. 2d Task 3 (design, section 7.5): also its kind, the profile it is the
+     * avatar of, and whether that profile is deleted, read in the same query through profile_id.
      */
-    async fileAccess(id: string): Promise<{ status: MediaRow["status"]; mediaState: MediaRow["moderationState"]; postState: string | null; authorId: string | null; erased: boolean } | null> {
+    async fileAccess(id: string): Promise<{
+      status: MediaRow["status"];
+      mediaState: MediaRow["moderationState"];
+      postState: string | null;
+      authorId: string | null;
+      erased: boolean;
+      kind: MediaKind;
+      profileId: string | null;
+      profileDeleted: boolean;
+    } | null> {
       const rows = await db
-        .select({ status: postMedia.status, mediaState: postMedia.moderationState, postState: posts.state, authorId: posts.authorId, erasedAt: postMedia.erasedAt, postErasedAt: posts.erasedAt })
+        .select({
+          status: postMedia.status,
+          mediaState: postMedia.moderationState,
+          postState: posts.state,
+          authorId: posts.authorId,
+          erasedAt: postMedia.erasedAt,
+          postErasedAt: posts.erasedAt,
+          kind: postMedia.kind,
+          profileId: postMedia.profileId,
+          profileDeletedAt: profiles.deletedAt,
+        })
         .from(postMedia)
         .leftJoin(posts, eq(posts.id, postMedia.postId))
+        .leftJoin(profiles, eq(profiles.id, postMedia.profileId))
         .where(eq(postMedia.id, id))
         .limit(1);
       const found = rows[0];
       if (!found) return null;
-      return { status: found.status, mediaState: found.mediaState, postState: found.postState, authorId: found.authorId, erased: found.erasedAt !== null || found.postErasedAt !== null };
+      return {
+        status: found.status,
+        mediaState: found.mediaState,
+        postState: found.postState,
+        authorId: found.authorId,
+        erased: found.erasedAt !== null || found.postErasedAt !== null,
+        kind: found.kind,
+        profileId: found.profileId,
+        profileDeleted: found.profileDeletedAt !== null,
+      };
     },
 
     /**
@@ -339,10 +424,12 @@ export function createMediaRepo(db: Db) {
       for (const [position, item] of input.items.entries()) {
         let rows: { id: string }[];
         try {
+          // 2d Task 3 (design, section 7.2): only a post's upload; an avatar's id gets the error a missing upload gets, never
+          // the CHECK post_media_kind_place's 500.
           rows = await tx
             .update(postMedia)
             .set({ postId: input.postId, position, altText: item.alt })
-            .where(and(eq(postMedia.id, item.id), eq(postMedia.ownerId, input.ownerId), isNull(postMedia.postId), eq(postMedia.status, "ready")))
+            .where(and(eq(postMedia.id, item.id), eq(postMedia.ownerId, input.ownerId), isNull(postMedia.postId), eq(postMedia.status, "ready"), eq(postMedia.kind, "post")))
             .returning({ id: postMedia.id });
         } catch (err) {
           // 3d Task 7 (design, section 7.8 step 5): post_media_refused refuses a refused upload, an erased one and one held
@@ -376,7 +463,90 @@ export function createMediaRepo(db: Db) {
       const rows = (await tx.execute(
         sql`delete from post_media where id in (select id from post_media where owner_id = ${ownerId}::uuid order by id for update) returning id`,
       )) as unknown as { id: string }[];
+      // 2d Task 3 (decision 29, 7.8): the account's picture that the keep trigger kept (a frozen account case, a hold) stays,
+      // detached: it is the picture of no profile from the purge on, and its detach writes the edge's outbox row that its
+      // delete would have written. The disposal takes it once nothing keeps it.
+      await tx.execute(sql`update post_media set profile_id = null where profile_id = ${ownerId}::uuid`);
       return rows.map((row) => row.id);
+    },
+
+    // ------------------------------------------------------------ 2d Task 3: avatars (design, sections 7.3, 7.5 and 7.8)
+
+    /**
+     * Steps 2 to 4 of setAvatar (7.3), inside the social module's transaction, which took the account's row through 3e's
+     * predicate first. The upload's row is taken FOR NO KEY UPDATE and must be the account's own (not_found otherwise, a
+     * missing row too), of kind avatar (not_an_avatar), ready, visible and not erased (avatar_not_ready); then the current
+     * avatar, if it is another row, is detached (its outbox row, 6.4) and the upload set, which post_media_refused refuses
+     * for a refused or held upload (avatar_not_ready). Answers the new avatar's paths and the detached row's id, which the
+     * caller deletes after the commit; setting the current avatar again changes nothing.
+     */
+    async attachAvatar(tx: DbTx, accountId: string, mediaId: string): Promise<{ avatar: AvatarView; former: string | null }> {
+      const [row] = (await tx.execute(sql`
+        select owner_id, kind::text as kind, status::text as status, moderation_state::text as state, erased_at is not null as erased, profile_id
+          from post_media where id = ${mediaId}::uuid for no key update`)) as unknown as { owner_id: string; kind: MediaKind; status: string; state: string; erased: boolean; profile_id: string | null }[];
+      if (!row || row.owner_id !== accountId) throw new MediaError("not_found", 404);
+      if (row.kind !== "avatar") throw new MediaError("not_an_avatar", 409);
+      if (row.status !== "ready" || row.state !== "visible" || row.erased) throw new MediaError("avatar_not_ready", 409);
+      if (row.profile_id === accountId) return { avatar: avatarView(mediaId), former: null };
+      const former = await detachCurrent(tx, accountId);
+      try {
+        await tx.execute(sql`update post_media set profile_id = ${accountId}::uuid where id = ${mediaId}::uuid`);
+      } catch (err) {
+        if (raisedCode(err) === "upload_refused") throw new MediaError("avatar_not_ready", 409);
+        throw err;
+      }
+      return { avatar: avatarView(mediaId), former };
+    },
+
+    /**
+     * Step 3 of setAvatar and the whole of removeAvatar's write (7.3): the account's current avatar, if any, detached in the
+     * caller's transaction (the guard always allows a move to null; the outbox row is the trigger's). Answers its id, for
+     * the deletion after the commit, or null.
+     */
+    detachAvatar: (tx: DbTx, accountId: string): Promise<string | null> => detachCurrent(tx, accountId),
+
+    /**
+     * Step 6 of setAvatar and removeAvatar (7.3), after the commit: a former avatar's row deleted, unless it is set again,
+     * on a post, or kept by post_media_keep (a hold, a frozen account case; the sweeper deletes it once nothing keeps it).
+     * Answers whether it went, so that its files are asked for only then.
+     */
+    async deleteFormerAvatar(id: string): Promise<boolean> {
+      const rows = await db
+        .delete(postMedia)
+        .where(and(eq(postMedia.id, id), eq(postMedia.kind, "avatar"), isNull(postMedia.profileId), isNull(postMedia.postId)))
+        .returning({ id: postMedia.id });
+      return rows.length === 1;
+    },
+
+    /**
+     * The avatars of these profiles as every reader of a view gets them (7.5), in one statement on post_media_avatar_idx:
+     * the row set as the profile's picture that serve would serve publicly: ready, visible, not erased, its profile not
+     * deleted. A profile without one is absent from the map, and its monogram is drawn. `viewer` is the reader, whom Task 4
+     * (7.6) shows their own picture while R1's review withholds it from everyone else; nothing else depends on it.
+     */
+    async avatarsOf(profileIds: readonly string[], viewer: string | null): Promise<Map<string, AvatarView>> {
+      const found = new Map<string, AvatarView>();
+      if (profileIds.length === 0) return found;
+      const rows = (await db.execute(sql`
+        select m.profile_id, m.id from post_media m join profiles p on p.id = m.profile_id
+         where m.profile_id = any(${uuidArray([...new Set(profileIds)])}) and m.status = 'ready' and m.moderation_state = 'visible'
+           and m.erased_at is null and p.deleted_at is null`)) as unknown as { profile_id: string; id: string }[];
+      for (const row of rows) found.set(row.profile_id, avatarView(row.id));
+      return found;
+    },
+
+    /**
+     * The account's picture as the data export names it (7.8, 11.2): its id and size while it is set and exportable
+     * (EXPORTABLE: ready, a state its owner sees, not erased, not refused), or null. Its file is among readyImages.
+     */
+    async exportAvatar(ownerId: string): Promise<{ id: string; width: number; height: number } | null> {
+      const [row] = await db
+        .select({ id: postMedia.id, width: postMedia.width, height: postMedia.height })
+        .from(postMedia)
+        .leftJoin(posts, eq(posts.id, postMedia.postId))
+        .where(and(eq(postMedia.profileId, ownerId), eq(postMedia.ownerId, ownerId), EXPORTABLE))
+        .limit(1);
+      return row && row.width !== null && row.height !== null ? { id: row.id, width: row.width, height: row.height } : null;
     },
 
     /**
@@ -490,7 +660,12 @@ export function createMediaRepo(db: Db) {
      * own cleanup (deleteImportLeftovers), however long the preparation takes.
      */
     async deleteUnattachedBefore(before: Date): Promise<string[]> {
-      const rows = await db.delete(postMedia).where(and(isNull(postMedia.postId), lt(postMedia.createdAt, before), isNull(postMedia.importJobId))).returning({ id: postMedia.id });
+      // 2d Task 3 (design, section 7.8): "on no post and no profile for a day": a current avatar is never swept, an avatar's
+      // upload never set goes after a day, and a former one that a hold or a freeze keeps goes once nothing keeps it.
+      const rows = await db
+        .delete(postMedia)
+        .where(and(isNull(postMedia.postId), isNull(postMedia.profileId), lt(postMedia.createdAt, before), isNull(postMedia.importJobId)))
+        .returning({ id: postMedia.id });
       return rows.map((row) => row.id);
     },
 

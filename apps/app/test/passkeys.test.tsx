@@ -345,6 +345,7 @@ describe("the re-authentication panel", () => {
     user: { id: "0f7b3c2e-4a1d-4c6b-9e8f-1a2b3c4d5e6f", email: "alice@example.org", role: "user", onboarded: true, mfaEnabled: true, hasPassword: true, passkeys: 1 },
     profile: null,
     standing: null,
+    avatar: null,
   };
   /** The method chips, in order: each is a pressed or unpressed native button. */
   const chips = (out: string): string[] => [...out.matchAll(/<button[^>]*aria-pressed="(?:true|false)"[^>]*>([^<]*)<\/button>/g)].map((m) => m[1] ?? "");

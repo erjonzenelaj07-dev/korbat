@@ -553,7 +553,7 @@ describe("a decision's screen", () => {
 describe("the chips and the labels", () => {
   const post = (extra: Partial<PostView> = {}): PostView => ({
     id: id(1),
-    author: { id: id(900), handle: "ada", displayName: "Ada", verified: false },
+    author: { id: id(900), handle: "ada", displayName: "Ada", verified: false, avatar: null },
     body: "my own post",
     createdAt: TIME,
     state: "removed",
@@ -724,6 +724,7 @@ describe("3e: a retired handle in the app (design, sections 9.4, 9.5 and 9.8)", 
     user: { id: id(1), email: "ada@example.com", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 0 },
     profile: { id: id(1), handle, displayName: "Ada", handleChangedAt, verified: false, showInExplore: true, sharePreviews: false },
     standing: null,
+    avatar: null,
   });
   const section = (handle: string, handleChangedAt: string | null = null) => textOf(html(<HandleSection me={me(handle, handleChangedAt)} run={async () => undefined} refresh={async () => undefined} />));
 
@@ -925,7 +926,7 @@ function sheetOf(card: string, decisionId: string): string {
   expect(hrefs(card).filter((href) => href.startsWith("/settings/cases"))).toEqual([]);
   const post: PostView = {
     id: id(1),
-    author: { id: id(900), handle: "ada", displayName: "Ada", verified: false },
+    author: { id: id(900), handle: "ada", displayName: "Ada", verified: false, avatar: null },
     body: "my own post",
     createdAt: TIME,
     state: "removed",

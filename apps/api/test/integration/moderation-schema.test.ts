@@ -67,7 +67,8 @@ const COLUMN_UPDATES: Record<string, string[]> = {
   // 3b (0044_imported_posts): the five import columns, which posts_import_guard lets an update only clear, all at once,
   // with the post's tombstone. 2d (0050_post_options): hide_counts, its author's switch over the like and repost counts.
   posts: ["body", "state", "deleted_at", "like_count", "repost_count", "reply_count", "quote_count", "import_job_id", "import_source", "original_created_at", "import_shortened", "import_key", "hide_counts"],
-  post_media: ["status", "error", "post_id", "position", "width", "height", "blurhash", "alt_text", "nsfw_score"],
+  // 2d Task 3 (0051_avatars): profile_id, the profile an avatar is the picture of, under post_media_avatar_guard.
+  post_media: ["status", "error", "post_id", "position", "width", "height", "blurhash", "alt_text", "nsfw_score", "profile_id"],
 };
 const READ_ONLY = ["moderation_limits", "seal_posts"];
 
@@ -172,16 +173,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect((await updatableColumns("korbat_api", "public.posts")).sort()).toEqual([...COLUMN_UPDATES.posts!].sort());
     });
 
-    test("post_media: UPDATE of the nine columns the API writes, never of the moderation state, the hold or the erasure time; DELETE stays, TRUNCATE never", async () => {
+    test("post_media: UPDATE of the ten columns the API writes (2d added profile_id), never of the moderation state, the hold or the erasure time; DELETE stays, TRUNCATE never", async () => {
       expect(await tablePrivileges("korbat_api", "public.post_media")).toEqual(["SELECT", "INSERT", "DELETE"]);
       expect((await updatableColumns("korbat_api", "public.post_media")).sort()).toEqual([...COLUMN_UPDATES.post_media!].sort());
     });
 
-    test("profiles: SELECT and INSERT, and since 3e UPDATE of the twelve columns the API writes (2d added share_previews), never DELETE or TRUNCATE", async () => {
+    test("profiles: SELECT and INSERT, and since 3e UPDATE of the eleven columns the API writes (2d added share_previews and dropped avatar_path), never DELETE or TRUNCATE", async () => {
       // 3e (design, section 6.1): the table's UPDATE became column grants, so the three derived columns stay the database's.
-      // 2d (0050_post_options): the link-preview switch is the twelfth.
+      // 2d (0050_post_options): the link-preview switch; 2d Task 3 (0051_avatars): avatar_path dropped with its grant.
       expect(await tablePrivileges("korbat_api", "public.profiles")).toEqual(["SELECT", "INSERT"]);
-      expect(await updatableColumns("korbat_api", "public.profiles")).toHaveLength(12);
+      expect(await updatableColumns("korbat_api", "public.profiles")).toHaveLength(11);
     });
 
     test("it has no access to the auth schema, nor to any of the four new auth tables", async () => {
@@ -468,6 +469,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       // two of 0026_messages_alerts: the order rules and the alert tick's time-driven rows.
       const callable = all.filter((f) => f.owner === "korbat_migrate" && f.api).map((f) => f.name);
       expect(callable).toEqual([
+        // 2d Task 3 (0051_avatars): the freeze's account arm, which the media repository's disposal reads for an avatar on
+        // no post, as it reads post_frozen for an image on a post.
+        "public.account_frozen",
         "public.alert_steps",
         "public.appeal_deadline",
         "public.appeal_informed_at",
@@ -699,6 +703,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         intakes_insert: "BEFORE INSERT ON public.intakes FOR EACH ROW",
         media_holds_apply: "AFTER INSERT OR UPDATE ON public.media_holds FOR EACH ROW",
         media_holds_insert: "BEFORE INSERT ON public.media_holds FOR EACH ROW",
+        // 2d Task 3 (0051_avatars): profile_id moves only from null to the owner's own profile, or back to null. By name, it
+        // fires before post_media_refused.
+        post_media_avatar_guard: "BEFORE UPDATE OF profile_id ON public.post_media FOR EACH ROW",
         post_media_guard: 'BEFORE UPDATE OF post_id, owner_id, alt_text, "position", width, height, blurhash ON public.post_media FOR EACH ROW',
         // 3b (0044_imported_posts): an imported image is attached only to its own import's post; it is inserted only with a
         // preparing job of its owner, and a native one names no job. By name, the import's insert check runs first.
@@ -708,10 +715,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         post_media_keep: "BEFORE DELETE ON public.post_media FOR EACH ROW",
         // 3d review M12 (0041_review): an image that stops being sealed weighs its lost files' notices again.
         post_media_lost_told: "AFTER UPDATE OF moderation_state ON public.post_media FOR EACH ROW",
-        // 3d Task 7 (0039_known_material): a refused upload is attached to no post, whatever the API sends.
-        post_media_refused: "BEFORE UPDATE OF post_id ON public.post_media FOR EACH ROW",
-        // 3d Task 3 (0035_edge_purges): the edge's outbox row of an image that stops being public, after the statement.
-        post_media_purge: "AFTER DELETE OR UPDATE OF moderation_state, erased_at ON public.post_media FOR EACH ROW",
+        // 3d Task 7 (0039_known_material): a refused upload is attached to no post, whatever the API sends. 2d Task 3: nor set
+        // as an avatar.
+        post_media_refused: "BEFORE UPDATE OF post_id, profile_id ON public.post_media FOR EACH ROW",
+        // 3d Task 3 (0035_edge_purges): the edge's outbox row of an image that stops being public, after the statement. 2d
+        // Task 3: and of an avatar that is detached.
+        post_media_purge: "AFTER DELETE OR UPDATE OF moderation_state, erased_at, profile_id ON public.post_media FOR EACH ROW",
         // 3e's reporting counts (0022_reporting_counts) add the tally of each report after it is stored, on the same table.
         report_tallies_count: "AFTER INSERT ON public.intakes FOR EACH ROW",
         staff_texts_insert: "BEFORE INSERT ON public.staff_texts FOR EACH ROW",

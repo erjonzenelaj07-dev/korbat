@@ -22,7 +22,7 @@ import {
 
 /** 2d's Activity contracts (design, sections 5.5, 5.7, 5.8 and 9.3; tests of 12.2). */
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const author = (n: number) => ({ id: id(n), handle: `user${n}`, displayName: `User ${n}`, verified: false });
+const author = (n: number) => ({ id: id(n), handle: `user${n}`, displayName: `User ${n}`, verified: false, avatar: null });
 const post = {
   id: id(50),
   author: author(1),

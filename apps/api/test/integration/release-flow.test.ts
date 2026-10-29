@@ -9,6 +9,7 @@ import { STAFF_USAGE, runStaffCommand } from "../../src/cli/staff";
 import { loadConfig } from "../../src/config";
 import { storedImageName } from "../../src/media";
 import { createMediaRepo } from "../../src/media/repo";
+import { WITHOUT_MEDIA } from "../../src/social/context";
 import { getPost } from "../../src/social/flows/posts";
 import { ModerationError } from "../../src/moderation";
 import { appealsList } from "../../src/moderation/appeals";
@@ -111,7 +112,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the release, as an admin
   /** The post's images as a reader's PostView carries them, through the social module's own read and the media module's. */
   async function mediaOf(viewer: string | null, seal: Sealed) {
     const repo = createMediaRepo(apiDb);
-    const social = socialHarness(apiDb, { media: { attach: (tx, input) => repo.attach(tx, input), detachAll: (tx, postId) => repo.detachAll(tx, postId), requestDeletion: async () => undefined, forPosts: (ids) => repo.forPosts(ids) } });
+    // 2d Task 3: no avatar is set here; WITHOUT_MEDIA's avatar members answer none.
+    const social = socialHarness(apiDb, { media: { ...WITHOUT_MEDIA, attach: (tx, input) => repo.attach(tx, input), detachAll: (tx, postId) => repo.detachAll(tx, postId), requestDeletion: async () => undefined, forPosts: (ids) => repo.forPosts(ids) } });
     return (await getPost(social.deps, viewer, seal.postId)).media;
   }
   /** How many of the post's image rows the API's role can delete, in a transaction that is rolled back: none while the post is frozen. */

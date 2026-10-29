@@ -1,10 +1,13 @@
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 import {
+  AVATAR_VARIANTS,
+  AvatarJob,
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_STALE_MS,
   Heartbeat,
   MAX_ATTEMPTS,
+  MAX_JOB_BYTES,
   MAX_SIDE,
   MEDIA_FORMATS,
   PIXEL_CAP,
@@ -30,6 +33,8 @@ describe("limits", () => {
     expect(PIXEL_CAP).toEqual({ jpeg: 50_000_000, png: 50_000_000, webp: 50_000_000, gif: 50_000_000, avif: 16_000_000 });
     expect(MAX_SIDE).toBe(16_383);
     expect(VARIANTS).toEqual({ large: { edge: 2048, quality: 82 }, small: { edge: 1024, quality: 80 } });
+    // 2d Task 3 (design, sections 7.1 and 7.4): an avatar's two squares, under the same two names.
+    expect(AVATAR_VARIANTS).toEqual({ large: { edge: 400, quality: 82 }, small: { edge: 128, quality: 80 } });
     expect(MAX_ATTEMPTS).toBe(3);
     expect(HEARTBEAT_STALE_MS).toBeGreaterThan(HEARTBEAT_INTERVAL_MS * 3);
   });
@@ -63,6 +68,10 @@ describe("layout", () => {
     // A deletion that is owed is no request: its marker lies beside the requests, in a directory the worker never reads.
     expect(up.owed).toBe(path.join("x", "uploads", "delete-owed"));
     expect(up.owedDeletion(ID)).toBe(path.join("x", "uploads", "delete-owed", ID));
+    // 2d Task 3 (design, section 7.2): an avatar's job file lies beside its upload, under a name that is no media id, so the
+    // worker's scan of incoming/ never takes it for an upload of its own.
+    expect(up.avatarJob(ID)).toBe(path.join("x", "uploads", "incoming", `${ID}.avatar`));
+    expect(isMediaId(path.basename(up.avatarJob(ID)))).toBe(false);
   });
 
   test("the store volume shards image folders by the id's first two characters", () => {
@@ -80,7 +89,7 @@ describe("layout", () => {
     const up = uploadsLayout("u");
     const store = storeLayout("s");
     for (const bad of ["../../etc/passwd", "..", "", ID.toUpperCase(), `${ID}/x`]) {
-      for (const make of [up.part, up.upload, up.deletion, up.owedDeletion, store.shard, store.imageDir, store.result, store.attempt]) expect(() => make(bad)).toThrow("not a media id");
+      for (const make of [up.part, up.upload, up.deletion, up.owedDeletion, up.avatarJob, store.shard, store.imageDir, store.result, store.attempt]) expect(() => make(bad)).toThrow("not a media id");
       expect(() => store.image(bad, "large")).toThrow("not a media id");
     }
   });
@@ -109,7 +118,7 @@ describe("result and heartbeat files", () => {
   });
 
   test("results are parsed strictly: no other version, no extra keys, no other id shape", () => {
-    expect(ResultFile.safeParse({ ...ready, v: 3 }).success).toBe(false);
+    expect(ResultFile.safeParse({ ...ready, v: 4 }).success).toBe(false);
     expect(ResultFile.safeParse({ ...ready, v: 0 }).success).toBe(false);
     expect(ResultFile.safeParse({ ...ready, path: "/etc/passwd" }).success).toBe(false);
     expect(ResultFile.safeParse({ ...ready, id: "../x" }).success).toBe(false);
@@ -118,7 +127,6 @@ describe("result and heartbeat files", () => {
 
   test("3d Task 6: version 2 is version 1 with v 2 and, on a ready result, the scorer's model and score and the PDQ hash", () => {
     const v2 = { ...ready, v: 2 };
-    expect(RESULT_VERSION).toBe(2);
     expect(ResultFile.parse(v2)).toEqual(v2);
     const scored = { ...v2, r1: { model: R1_TEST_MODEL, score: 1 }, pdq: { impl: 1, hash: "ab".repeat(32), quality: 100 } };
     expect(ResultFile.parse(scored)).toEqual(scored);
@@ -165,6 +173,34 @@ describe("result and heartbeat files", () => {
     expect(carriesR1Marker(image(8, 8, magenta), 8, 8, 3)).toBe(false);
     expect(carriesR1Marker(image(200, 100, magenta, 1), 200, 100, 1)).toBe(false);
     expect(carriesR1Marker(new Uint8Array(10), 200, 100, 3)).toBe(false);
+  });
+
+  test("2d Task 3: version 3 is version 2 with v 3 and, on a ready result of an avatar's job alone, the mark avatar: true", () => {
+    const v3 = { ...ready, v: 3 };
+    expect(RESULT_VERSION).toBe(3);
+    expect(ResultFile.parse(v3)).toEqual(v3);
+    expect(ResultFile.parse({ ...v3, width: 400, height: 400, avatar: true })).toEqual({ ...v3, width: 400, height: 400, avatar: true });
+    const scored = { ...v3, avatar: true, r1: { model: R1_TEST_MODEL, score: 0.5 }, pdq: { impl: 1, hash: "ab".repeat(32), quality: 100 } };
+    expect(ResultFile.parse(scored)).toEqual(scored);
+    expect(ResultFile.safeParse({ v: 3, id: ID, status: "failed", reason: "corrupt_image" }).success).toBe(true);
+    // The mark is only ever true, and only on a ready result of version 3: a failed result, and versions 1 and 2, carry none.
+    expect(ResultFile.safeParse({ ...v3, avatar: false }).success).toBe(false);
+    expect(ResultFile.safeParse({ v: 3, id: ID, status: "failed", reason: "corrupt_image", avatar: true }).success).toBe(false);
+    expect(ResultFile.safeParse({ ...ready, avatar: true }).success).toBe(false);
+    expect(ResultFile.safeParse({ ...ready, v: 2, avatar: true }).success).toBe(false);
+    // Version 4 is refused, as every version a build does not know.
+    expect(ResultFile.safeParse({ ...ready, v: 4 }).success).toBe(false);
+    expect(ResultFile.safeParse({ ...ready, v: 4, avatar: true }).success).toBe(false);
+  });
+
+  test("2d Task 3: an avatar's job file is one line of JSON, its version and its crop, read strictly and bounded", () => {
+    expect(AvatarJob.parse({ v: 1, crop: "centre" })).toEqual({ v: 1, crop: "centre" });
+    for (const crop of ["start", "centre", "end"]) expect(AvatarJob.parse({ v: 1, crop }).crop).toBe(crop);
+    for (const bad of [{ v: 1 }, { v: 2, crop: "centre" }, { v: 1, crop: "center" }, { v: 1, crop: "centre", size: 400 }, { crop: "centre" }, "centre", null]) {
+      expect(AvatarJob.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+    expect(MAX_JOB_BYTES).toBe(256);
+    expect(JSON.stringify({ v: 1, crop: "centre" }).length).toBeLessThan(MAX_JOB_BYTES);
   });
 
   test("the heartbeat is a version and a time", () => {

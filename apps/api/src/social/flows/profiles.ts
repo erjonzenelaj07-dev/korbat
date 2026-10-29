@@ -1,4 +1,4 @@
-import type { Pagination, ProfileListItem, ProfilePage, ProfileView } from "@korbat/contracts";
+import type { AvatarView, Pagination, ProfileListItem, ProfilePage, ProfileView } from "@korbat/contracts";
 import { SocialError, type SocialDeps, type ViewerId } from "../context";
 import { decodeCursor } from "../cursor";
 import type { ProfileListRow, ProfileRow } from "../repo";
@@ -22,9 +22,10 @@ export async function visibleProfile(deps: SocialDeps, viewer: ViewerId, handle:
 
 /**
  * The public facts of a profile row, as every viewer sees them; `profile` adds the viewer's relation to someone else's. 3b
- * (9.3, 10.6): `hasImported`, whether the account has a visible imported top-level post, the same for every reader.
+ * (9.3, 10.6): `hasImported`, whether the account has a visible imported top-level post, the same for every reader. 2d
+ * Task 3 (7.5): `avatar`, the profile's picture as the media module's avatarsOf answers it, or null.
  */
-export function profileView(target: ProfileRow, hasImported: boolean): ProfileView {
+export function profileView(target: ProfileRow, hasImported: boolean, avatar: AvatarView | null): ProfileView {
   return {
     id: target.id,
     handle: target.handle,
@@ -34,12 +35,19 @@ export function profileView(target: ProfileRow, hasImported: boolean): ProfileVi
     createdAt: target.createdAt.toISOString(),
     counts: { posts: target.postCount, followers: target.followerCount, following: target.followingCount },
     hasImported,
+    avatar,
   };
+}
+
+/** 2d Task 3: one profile's view with its picture, for the profile route and the owner's edits. */
+export async function profileViewOf(deps: SocialDeps, viewer: ViewerId, target: ProfileRow): Promise<ProfileView> {
+  const [hasImported, avatars] = await Promise.all([deps.repo.hasImported(target.id), deps.media.avatarsOf([target.id], viewer)]);
+  return profileView(target, hasImported, avatars.get(target.id) ?? null);
 }
 
 export async function profile(deps: SocialDeps, viewer: ViewerId, handle: string): Promise<ProfileView> {
   const target = await visibleProfile(deps, viewer, handle);
-  const view = profileView(target, await deps.repo.hasImported(target.id));
+  const view = await profileViewOf(deps, viewer, target);
   if (viewer && viewer !== target.id) {
     const relation = await deps.repo.relation(viewer, target.id);
     view.viewer = { following: relation.following, followedBy: relation.followedBy, blocked: relation.blocked, muted: relation.muted };
@@ -53,12 +61,13 @@ export async function profile(deps: SocialDeps, viewer: ViewerId, handle: string
  */
 export async function profileItems(deps: SocialDeps, viewer: string, rows: ProfileListRow[]): Promise<ProfileListItem[]> {
   const ids = rows.map((row) => row.profileId);
-  const [profiles, blocked, followed] = await Promise.all([deps.repo.findProfiles(ids), deps.repo.blockedEitherWay(viewer, ids), deps.repo.followedBy(viewer, ids)]);
+  // 2d Task 3 (7.5): the page's avatars in one statement beside the profiles.
+  const [profiles, blocked, followed, avatars] = await Promise.all([deps.repo.findProfiles(ids), deps.repo.blockedEitherWay(viewer, ids), deps.repo.followedBy(viewer, ids), deps.media.avatarsOf(ids, viewer)]);
   const items: ProfileListItem[] = [];
   for (const id of ids) {
     const row = profiles.get(id);
     if (!row || blocked.has(id)) continue;
-    items.push({ ...authorOf(row), bio: row.bio, viewerFollows: followed.has(id) });
+    items.push({ ...authorOf(row, avatars.get(id) ?? null), bio: row.bio, viewerFollows: followed.has(id) });
   }
   return items;
 }

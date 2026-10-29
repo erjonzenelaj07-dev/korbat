@@ -22,7 +22,7 @@ import { createAuthRepo, type AuthRepo } from "../../src/auth/repo";
 import type { Session } from "../../src/auth/sessions";
 import { loadConfig } from "../../src/config";
 import { createImports, importSettingsFrom } from "../../src/imports";
-import { mediaForAccount } from "../../src/media";
+import { mediaForAccount, mediaForPosts } from "../../src/media";
 import { status } from "../../src/media/flows/status";
 import { upload } from "../../src/media/flows/upload";
 import { MemoryStore } from "../../src/middleware/rate-limit";
@@ -30,6 +30,7 @@ import { createProfileStore } from "../../src/profiles/store";
 import { SocialError } from "../../src/social/context";
 import { exportProfile } from "../../src/social/flows/export";
 import { createPost, deletePost } from "../../src/social/flows/posts";
+import { setAvatar } from "../../src/social/flows/profile-edit";
 import { SoftAuthenticator, type SoftFlags } from "../auth/soft-authenticator";
 import { TEST_TERMS, flowHarness, onboardedUser, type FlowHarness } from "./flow-harness";
 import { mediaHarness, type MediaHarness } from "./media-harness";
@@ -83,12 +84,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     h = flowHarness(authRepo);
     m = await mediaHarness(apiDb);
     s = socialHarness(apiDb, {
-      media: {
-        attach: (tx, input) => m.deps.repo.attach(tx, input),
-        detachAll: (tx, postId) => m.deps.repo.detachAll(tx, postId),
-        requestDeletion: (ids) => m.files.requestDeletion(ids),
-        forPosts: (postIds) => m.deps.repo.forPosts(postIds),
-      },
+      // 2d Task 3: the media module's interface for posts as createMedia builds it, avatars included.
+      media: mediaForPosts(m.deps),
     });
   });
   afterAll(async () => {
@@ -312,7 +309,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     const json = await read();
     expect(json.profile).toMatchObject({ handle: placeholder, handleHistory: [owner.handle, placeholder], retiredHandles: [{ handle: owner.handle, retiredAt: at }] });
     // The member comes after the Explore switch, as the format adds members; 2d's link-preview switch after it.
-    expect(Object.keys(json.profile)).toEqual(["handle", "displayName", "bio", "createdAt", "handleHistory", "showInExplore", "retiredHandles", "sharePreviews"]);
+    // 2d Task 3: the picture, between the retired handles and the preview switch.
+    expect(Object.keys(json.profile)).toEqual(["handle", "displayName", "bio", "createdAt", "handleHistory", "showInExplore", "retiredHandles", "avatar", "sharePreviews"]);
     // Lifted, as unretire_handle clears it: the handle is the account's again and the list is empty.
     await migrateDb.execute(sql`update handle_history set retired_at = null where handle_lower = ${handle}`);
     expect((await read()).profile.retiredHandles).toEqual([]);
@@ -433,6 +431,32 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     // Moderation entries are the moderation member's: none is repeated here.
     expect(json.activity.received.every((row) => ["reply", "mention", "quote", "follow"].includes(row.kind))).toBe(true);
     await migrateDb.execute(sql`delete from blocks where blocker_id = ${userId}::uuid and blocked_id = ${fay.id}::uuid`);
+  });
+
+  test("2d Task 3 (7.8, 11.2): the profile names the account's picture with its entry, which holds the 400 px square; an avatar's upload never set and a replaced picture are in neither the profile nor the archive", async () => {
+    const owner = await account();
+    const userId = owner.user.id;
+    const archive = async () => {
+      const chunks: Uint8Array[] = [];
+      await writeExport(createZipWriter(async (chunk) => void chunks.push(Uint8Array.from(chunk))), await buildExport(deps(), userId, owner.session.handle, new Date()));
+      const files = unzipSync(Buffer.concat(chunks));
+      return { names: Object.keys(files).sort(), json: ExportFormat.parse(JSON.parse(strFromU8(files["export.json"]!))), files };
+    };
+    expect((await archive()).json.profile.avatar).toBeNull();
+    const first = await m.readyAvatar(userId);
+    expect((await archive()).names).not.toContain(`media/${first}.webp`);
+    await setAvatar(s.deps, userId, first);
+    const set = await archive();
+    expect(Object.keys(set.json.profile).slice(-3)).toEqual(["retiredHandles", "avatar", "sharePreviews"]);
+    expect(set.json.profile.avatar).toEqual({ id: first, file: `media/${first}.webp`, width: 400, height: 400 });
+    expect(strFromU8(set.files[`media/${first}.webp`]!)).toBe(readFileSync(m.files.store.image(first, "large"), "utf8"));
+    expect(set.json.missingMedia).toEqual([]);
+    const second = await m.readyAvatar(userId, "start");
+    await setAvatar(s.deps, userId, second);
+    const replaced = await archive();
+    expect(replaced.json.profile.avatar?.id).toBe(second);
+    expect(replaced.names.filter((name) => name.includes(first))).toEqual([]);
+    expect(replaced.names).toContain(`media/${second}.webp`);
   });
 
   test("3b Task 6: this file left no import row behind", async () => {

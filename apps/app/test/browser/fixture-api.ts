@@ -57,9 +57,9 @@ export const FIXTURE_WEBP = Buffer.from("UklGRh4AAABXRUJQVlA4TBEAAAAvAUAAAAfQmWr
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
-export const ADA: Author = { id: id(1), handle: "ada", displayName: "Ada Lovelace", verified: false };
-export const GRACE: Author = { id: id(2), handle: "grace", displayName: "Grace Hopper", verified: true };
-export const LINUS: Author = { id: id(3), handle: "linus", displayName: "Linus", verified: false };
+export const ADA: Author = { id: id(1), handle: "ada", displayName: "Ada Lovelace", verified: false, avatar: null };
+export const GRACE: Author = { id: id(2), handle: "grace", displayName: "Grace Hopper", verified: true, avatar: null };
+export const LINUS: Author = { id: id(3), handle: "linus", displayName: "Linus", verified: false, avatar: null };
 
 /** Post number n's id, for a step that acts on one post of the timelines: Grace writes 1, 4, 7..., Linus 2, 5, 8..., Ada 3, 6, 9.... */
 export const postIdOf = (n: number): string => id(100 + n);
@@ -187,6 +187,8 @@ function profile(author: Author, signedIn: boolean) {
       counts: { posts: 42, followers: 128, following: 64 },
       // 3b Task 7: Grace has imported posts, so her profile shows the Imported tab to every reader (10.6).
       hasImported: author.id === GRACE.id,
+      // 2d Task 3: nobody has a picture yet; Task 5 draws avatars and gives the fixture two squares.
+      avatar: author.avatar,
       // The reader follows nobody yet, so the follow step starts from Follow.
       ...(signedIn && !self ? { viewer: { following: false, followedBy: false, blocked: false, muted: false } } : {}),
     },
@@ -201,6 +203,7 @@ function me() {
       user: { id: ADA.id, email: "ada@korbat.local", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 1 },
       profile: { id: ADA.id, handle: ADA.handle, displayName: ADA.displayName, handleChangedAt: null, verified: false, showInExplore: true, sharePreviews: false },
       standing: { activeStrikes: 0, measure: null, reporting: null, handleRetired: false },
+      avatar: null,
     },
     "me",
   );

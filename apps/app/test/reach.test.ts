@@ -13,8 +13,8 @@ import { UI_WORDS } from "../src/lib/ui-words";
  * blocked account cannot read a public post, and the sentence of a withheld or removed post names korbat's moderators.
  */
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const ADA = { id: id(1), handle: "ada", displayName: "Ada", verified: false };
-const BEN = { id: id(2), handle: "ben", displayName: "Ben", verified: false };
+const ADA = { id: id(1), handle: "ada", displayName: "Ada", verified: false, avatar: null };
+const BEN = { id: id(2), handle: "ben", displayName: "Ben", verified: false, avatar: null };
 
 function post(extra: Partial<PostView> = {}): PostView {
   return {

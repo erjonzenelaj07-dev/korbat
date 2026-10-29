@@ -10,7 +10,8 @@ export const profiles = pgTable(
     handle: text("handle").notNull(),
     displayName: text("display_name").notNull(),
     bio: text("bio").notNull().default(""),
-    avatarPath: text("avatar_path"),
+    // 2d Task 3 (decision 18, migration 0051_avatars): avatar_path, never written since 1b, is dropped; a profile's picture is
+    // the post_media row of kind avatar whose profile_id names it.
     verifiedAt: ts("verified_at"),
     /** Counters kept exact by the application, in the same transaction as the follow, unfollow, block or post. */
     followerCount: integer("follower_count").notNull().default(0),

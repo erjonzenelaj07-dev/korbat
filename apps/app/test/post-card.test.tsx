@@ -74,8 +74,8 @@ function byId(markup: string, id: string): string {
 }
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
-const ADA = { id: id(900), handle: "ada", displayName: "Ada Lovelace", verified: false };
-const BEN = { id: id(901), handle: "ben", displayName: "Ben", verified: false };
+const ADA = { id: id(900), handle: "ada", displayName: "Ada Lovelace", verified: false, avatar: null };
+const BEN = { id: id(901), handle: "ben", displayName: "Ben", verified: false, avatar: null };
 const NOW = new Date("2026-10-04T13:00:00.000Z");
 
 function post(extra: Partial<PostView> = {}): PostView {

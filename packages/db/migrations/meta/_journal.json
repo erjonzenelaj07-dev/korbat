@@ -358,6 +358,13 @@
       "when": 1793176357864,
       "tag": "0050_post_options",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1793194434601,
+      "tag": "0051_avatars",
+      "breakpoints": true
     }
   ]
 }

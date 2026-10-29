@@ -56,7 +56,10 @@ export function socialErrorMessage(code: SocialErrorKind): string {
 /** The account making a request, or null when signed out. Reads accept null; writes never do. */
 export type ViewerId = string | null;
 
-/** Posts without images: what the module runs with when no media module is wired, as in the 2a tests. */
+/**
+ * Posts without images: what the module runs with when no media module is wired, as in the 2a tests. 2d Task 3: and without
+ * avatars: no upload exists to set (not_found), there is none to remove, and every author is drawn with its monogram.
+ */
 export const WITHOUT_MEDIA: MediaForPosts = {
   attach: async (_tx, input) => {
     if (input.items.length > 0) throw new MediaError("media_unavailable", 400);
@@ -64,6 +67,12 @@ export const WITHOUT_MEDIA: MediaForPosts = {
   detachAll: async () => [],
   requestDeletion: async () => undefined,
   forPosts: async () => new Map(),
+  attachAvatar: async () => {
+    throw new MediaError("not_found", 404);
+  },
+  detachAvatar: async () => null,
+  dropFormerAvatar: async () => undefined,
+  avatarsOf: async () => new Map(),
 };
 
 /** Security events about an account go to the auth module's table; this is its appendEvent, as the server wires it. */

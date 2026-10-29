@@ -4,8 +4,8 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, rename, rm, stat, statfs, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
-import { MEDIA_SIZES, type MediaSize } from "@korbat/contracts";
-import { Heartbeat, MAX_RESULT_BYTES, MAX_VARIANT_BYTES, ResultFile, SNIFF_BYTES, isMediaId, storeLayout, uploadsLayout } from "@korbat/media-protocol";
+import { MEDIA_SIZES, type AvatarCrop, type MediaSize } from "@korbat/contracts";
+import { Heartbeat, MAX_RESULT_BYTES, MAX_VARIANT_BYTES, ResultFile, SNIFF_BYTES, isMediaId, storeLayout, uploadsLayout, type AvatarJob } from "@korbat/media-protocol";
 import { MediaError } from "./context";
 
 /**
@@ -109,8 +109,17 @@ export function createMediaFiles(options: MediaFilesOptions) {
 
   const namesIn = (dir: string): Promise<string[]> => readdir(dir).catch(() => []);
 
-  /** receive's body, with the three hashers when asked: each chunk is hashed as it is written, in the order it arrived. */
-  async function receiveInto(id: string, body: ReadableStream<Uint8Array> | null, maxBytes: number, accept: (head: Uint8Array) => void, hash: boolean): Promise<{ bytes: number; hashes: ReceivedHashes | null }> {
+  /**
+   * receive's body, with the three hashers when asked: each chunk is hashed as it is written, in the order it arrived. 2d
+   * Task 3: `"sha256"` takes the SHA-256 alone, an avatar's while the comparison is off; `"all"` the three; `"none"` none.
+   */
+  async function receiveInto(
+    id: string,
+    body: ReadableStream<Uint8Array> | null,
+    maxBytes: number,
+    accept: (head: Uint8Array) => void,
+    hash: "none" | "sha256" | "all",
+  ): Promise<{ bytes: number; digests: Buffer[] }> {
     const reader = body?.getReader();
     const first: Uint8Array[] = [];
     let buffered = 0;
@@ -131,7 +140,7 @@ export function createMediaFiles(options: MediaFilesOptions) {
       throw err;
     }
 
-    const hashers = hash ? [createHash("sha256"), createHash("sha1"), createHash("md5")] : [];
+    const hashers = hash === "all" ? [createHash("sha256"), createHash("sha1"), createHash("md5")] : hash === "sha256" ? [createHash("sha256")] : [];
     const part = uploads.part(id);
     const handle = await open(part, "wx");
     let bytes = 0;
@@ -156,9 +165,22 @@ export function createMediaFiles(options: MediaFilesOptions) {
       await rm(part, { force: true });
       throw err;
     }
-    if (!hash) return { bytes, hashes: null };
-    const [sha256, sha1, md5] = hashers.map((hasher) => hasher.digest());
-    return { bytes, hashes: { sha256: sha256!, sha1: sha1!, md5: md5! } };
+    return { bytes, digests: hashers.map((hasher) => hasher.digest()) };
+  }
+
+  /** The three digests of receiveInto's "all", in their order. */
+  const threeHashes = (digests: Buffer[]): ReceivedHashes => ({ sha256: digests[0]!, sha1: digests[1]!, md5: digests[2]! });
+
+  /** Writes a small file under tmp/, flushed, then renames it into place: the reader never sees half of it. */
+  async function writeRenamed(temp: string, target: string, text: string): Promise<void> {
+    const handle = await open(temp, "w");
+    try {
+      await handle.writeFile(text);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temp, target);
   }
 
   return {
@@ -177,7 +199,7 @@ export function createMediaFiles(options: MediaFilesOptions) {
      * declared length can be absent or wrong; one byte over `maxBytes` ends the upload.
      */
     async receive(id: string, body: ReadableStream<Uint8Array> | null, maxBytes: number, accept: (head: Uint8Array) => void): Promise<number> {
-      return (await receiveInto(id, body, maxBytes, accept, false)).bytes;
+      return (await receiveInto(id, body, maxBytes, accept, "none")).bytes;
     },
 
     /**
@@ -187,8 +209,18 @@ export function createMediaFiles(options: MediaFilesOptions) {
      * knows. Only called while the comparison is on; with MEDIA_MATCH=off nothing is hashed.
      */
     async receiveHashed(id: string, body: ReadableStream<Uint8Array> | null, maxBytes: number, accept: (head: Uint8Array) => void): Promise<{ bytes: number; hashes: ReceivedHashes }> {
-      const received = await receiveInto(id, body, maxBytes, accept, true);
-      return { bytes: received.bytes, hashes: received.hashes! };
+      const received = await receiveInto(id, body, maxBytes, accept, "all");
+      return { bytes: received.bytes, hashes: threeHashes(received.digests) };
+    },
+
+    /**
+     * 2d Task 3 (design, sections 7.2 and 7.7): an avatar's upload, received as any upload, with its SHA-256 always, in
+     * lowercase hex, which its row keeps so that a picture a moderator reset is known again; and the three hashes of the
+     * comparison only while it is on (`matching`), of which the SHA-256 is the same digest.
+     */
+    async receiveAvatar(id: string, body: ReadableStream<Uint8Array> | null, maxBytes: number, accept: (head: Uint8Array) => void, matching: boolean): Promise<{ bytes: number; sha256: string; hashes: ReceivedHashes | null }> {
+      const received = await receiveInto(id, body, maxBytes, accept, matching ? "all" : "sha256");
+      return { bytes: received.bytes, sha256: received.digests[0]!.toString("hex"), hashes: matching ? threeHashes(received.digests) : null };
     },
 
     /**
@@ -199,7 +231,8 @@ export function createMediaFiles(options: MediaFilesOptions) {
      */
     async receiveWorkFile(id: string, file: { handle: FileHandle; size: number }, maxBytes: number, accept: (head: Uint8Array) => void, hash: boolean): Promise<{ bytes: number; hashes: ReceivedHashes | null }> {
       const body = Readable.toWeb(file.handle.createReadStream({ start: 0, autoClose: false })) as ReadableStream<Uint8Array>;
-      return receiveInto(id, body, maxBytes, accept, hash);
+      const received = await receiveInto(id, body, maxBytes, accept, hash ? "all" : "none");
+      return { bytes: received.bytes, hashes: hash ? threeHashes(received.digests) : null };
     },
 
     /** 3b Task 5: removes tmp/<id>.part alone, never a complete upload in incoming/, which may be in the worker's hands. */
@@ -218,12 +251,26 @@ export function createMediaFiles(options: MediaFilesOptions) {
     },
     hasResult: (id: string): Promise<boolean> => lstat(store.result(id)).then(() => true, () => false),
 
-    /** The upload becomes visible to the worker. A rename inside one volume is atomic. */
-    commit: (id: string): Promise<void> => rename(uploads.part(id), uploads.upload(id)),
+    /**
+     * The upload becomes visible to the worker. A rename inside one volume is atomic. 2d Task 3 (design, section 7.2): for
+     * an avatar, its job file (AvatarJob, one line of JSON) is written first, through tmp/ and a rename, so the worker never
+     * sees an avatar's upload without its crop; a crash between the two leaves the job file alone, which the reconcile
+     * pass removes (storedUploads lists it).
+     */
+    async commit(id: string, job?: { avatar: AvatarCrop }): Promise<void> {
+      if (job !== undefined) {
+        const line: AvatarJob = { v: 1, crop: job.avatar };
+        await writeRenamed(path.join(uploads.tmp, `${id}.avatar`), uploads.avatarJob(id), `${JSON.stringify(line)}${String.fromCharCode(10)}`);
+      }
+      await rename(uploads.part(id), uploads.upload(id));
+    },
 
-    /** Removes an upload, complete or not. A file the worker still holds open on Windows is left for the sweeper. */
+    /**
+     * Removes an upload, complete or not. A file the worker still holds open on Windows is left for the sweeper. 2d Task 3:
+     * and an avatar's job file beside it.
+     */
     async discardUpload(id: string): Promise<void> {
-      for (const file of [uploads.part(id), uploads.upload(id)]) {
+      for (const file of [uploads.part(id), uploads.upload(id), uploads.avatarJob(id)]) {
         await rm(file, { force: true }).catch((err: unknown) => log.warn({ id, code: (err as NodeJS.ErrnoException).code }, "media uploads: an upload could not be removed yet"));
       }
     },
@@ -336,7 +383,9 @@ export function createMediaFiles(options: MediaFilesOptions) {
         const stats = await stat(file).catch(() => null);
         if (stats) found.push({ id, ageMs: now - stats.mtimeMs });
       };
-      for (const name of await namesIn(uploads.incoming)) await add(name, path.join(uploads.incoming, name));
+      // 2d Task 3 (design, section 7.2): an avatar's job file is listed under its upload's id, so that one left alone by a
+      // crash between its write and the upload's rename is removed with the upload's other files.
+      for (const name of await namesIn(uploads.incoming)) await add(name.endsWith(".avatar") ? name.slice(0, -".avatar".length) : name, path.join(uploads.incoming, name));
       for (const name of await namesIn(uploads.tmp)) if (name.endsWith(".part")) await add(name.slice(0, -".part".length), path.join(uploads.tmp, name));
       return found;
     },

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { DisplayName, HandleInput } from "./auth";
 import { ImportSource } from "./imports";
-import { HiddenMedia, MEDIA_MAX_PER_POST, MediaAttachment, MediaView } from "./media";
+import { AvatarView, HiddenMedia, MEDIA_MAX_PER_POST, MediaAttachment, MediaId, MediaView } from "./media";
 import { RULE_IDS } from "./moderation";
 import { FORBIDDEN_CONTROL, FORBIDDEN_FORMAT, normalizePostBody, postLength, visibleLength } from "./text";
 
@@ -65,7 +65,8 @@ export type CreatePostRequest = z.infer<typeof CreatePostRequest>;
 
 // ---------------------------------------------------------------- posts
 
-export const Author = z.object({ id: z.uuid(), handle: z.string(), displayName: z.string(), verified: z.boolean() });
+/** 2d Task 3 (7.5, 9.3): `avatar`, the author's picture as every reader of a view gets it, or null for the monogram. */
+export const Author = z.object({ id: z.uuid(), handle: z.string(), displayName: z.string(), verified: z.boolean(), avatar: AvatarView.nullable() });
 export type Author = z.infer<typeof Author>;
 
 /** Stands in for a post where its absence would break structure: an ancestor in a thread or a quoted embed. */
@@ -233,6 +234,8 @@ export const ProfileView = z.object({
    * reader alike.
    */
   hasImported: z.boolean(),
+  /** 2d Task 3 (7.5, 9.3): the profile's picture, or null while it has none or none is shown. */
+  avatar: AvatarView.nullable(),
   /** Present only for a signed-in viewer looking at someone else. */
   viewer: ViewerProfileState.optional(),
 });
@@ -262,6 +265,15 @@ export const ProfileEditRequest = z
   .object({ displayName: DisplayName.optional(), bio: Bio.optional() })
   .refine((edit) => edit.displayName !== undefined || edit.bio !== undefined, { message: "nothing to change" });
 export type ProfileEditRequest = z.infer<typeof ProfileEditRequest>;
+
+/**
+ * 2d Task 3 (7.3, 9.2): PUT /api/me/avatar sets the account's picture to one of its own uploads of kind avatar that is
+ * ready; DELETE /api/me/avatar takes no body. Both answer AvatarResponse: the picture now, or null after a removal.
+ */
+export const AvatarRequest = z.object({ mediaId: MediaId });
+export type AvatarRequest = z.infer<typeof AvatarRequest>;
+export const AvatarResponse = z.object({ avatar: AvatarView.nullable() });
+export type AvatarResponse = z.infer<typeof AvatarResponse>;
 
 /** The handle rules and the 30-day cooldown are enforced by the flow, which answers with a specific error code. */
 export const HandleChangeRequest = z.object({ handle: HandleInput });

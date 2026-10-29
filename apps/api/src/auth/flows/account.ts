@@ -3,8 +3,11 @@ import { AuthError, type AuthDeps } from "../context";
 import type { Session } from "../sessions";
 import { notifyAccount } from "./notify";
 
-/** /api/me without the account's standing, which the moderation module reads (3e design, section 7.12). */
-export type MeWithoutStanding = Omit<MeResponse, "standing">;
+/**
+ * /api/me without the account's standing, which the moderation module reads (3e design, section 7.12), and (2d Task 3)
+ * without its avatar, which the media module reads: app.ts composes the route from the three.
+ */
+export type MeWithoutStanding = Omit<MeResponse, "standing" | "avatar">;
 
 /**
  * The signed-in account. The only response in the API that contains the email address. 3e: everything of /api/me but

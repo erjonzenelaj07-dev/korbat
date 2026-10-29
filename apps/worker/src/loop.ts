@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
-import { MAX_ATTEMPTS, RESULT_VERSION, isMediaId, resultFileId, type Heartbeat, type MediaFormat, type ResultFile, type StoreLayout, type UploadsLayout } from "@korbat/media-protocol";
+import type { AvatarCrop } from "@korbat/contracts";
+import { AvatarJob, MAX_ATTEMPTS, MAX_JOB_BYTES, RESULT_VERSION, isMediaId, resultFileId, type Heartbeat, type MediaFormat, type ResultFile, type StoreLayout, type UploadsLayout } from "@korbat/media-protocol";
 import type { Processed } from "./pipeline";
 
 export interface LoopDeps {
@@ -12,8 +13,11 @@ export interface LoopDeps {
   formats: readonly MediaFormat[];
   log: Logger;
   now: () => number;
-  /** The image pipeline. Tests pass a stand-in; the process passes processImage. */
-  process: (path: string, formats: readonly MediaFormat[]) => Promise<Processed>;
+  /**
+   * The image pipeline. Tests pass a stand-in; the process passes processImage. 2d Task 3: `avatar`, the crop of the
+   * upload's job file, for an avatar's upload; undefined for a post's.
+   */
+  process: (path: string, formats: readonly MediaFormat[], avatar?: { crop: AvatarCrop }) => Promise<Processed>;
   /** Ends the process when one upload takes too long. Docker restarts the container, and the attempt counter does the rest. */
   abort: (reason: string) => void;
   watchdogMs: number;
@@ -66,6 +70,25 @@ async function readAttempts(store: StoreLayout, id: string): Promise<number> {
 const writeResult = (store: StoreLayout, result: ResultFile) => writeAtomic(store, store.result(result.id), JSON.stringify(result));
 
 /**
+ * 2d Task 3 (design, sections 7.2 and 7.4): the upload's job file, which the API writes before the upload itself. None for
+ * a post's upload (no file of that name); its crop for an avatar's; "malformed" for anything else that has the name: an
+ * entry that is not a plain file, one over MAX_JOB_BYTES, or text that is not exactly AvatarJob. Read from a volume this
+ * process does not trust, so it is looked at before it is opened, read whole only within its bound, and parsed strictly.
+ */
+async function avatarJob(uploads: UploadsLayout, id: string): Promise<{ crop: AvatarCrop } | null | "malformed"> {
+  const file = uploads.avatarJob(id);
+  const entry = await lstat(file).catch((err: NodeJS.ErrnoException) => (err.code === "ENOENT" ? null : err));
+  if (entry === null) return null;
+  if (entry instanceof Error || !entry.isFile() || entry.size > MAX_JOB_BYTES) return "malformed";
+  try {
+    const parsed = AvatarJob.safeParse(JSON.parse(await readFile(file, "utf8")));
+    return parsed.success ? { crop: parsed.data.crop } : "malformed";
+  } catch {
+    return "malformed";
+  }
+}
+
+/**
  * A deletion request stays until the API sees the image gone and removes it, so this runs for the
  * same id on several ticks. It only acts while something is left, which makes repeats free, and it
  * also catches files that were written after the request arrived.
@@ -92,12 +115,19 @@ async function processOne(deps: LoopDeps, id: string): Promise<void> {
     return;
   }
   await writeAtomic(store, store.attempt(id), String(attempts + 1));
+  // 2d Task 3: an avatar's upload whose job file cannot be read as a crop fails for good, before any decoder runs.
+  const job = await avatarJob(uploads, id);
+  if (job === "malformed") {
+    await writeResult(store, { v: RESULT_VERSION, id, status: "failed", reason: "processing_failed" });
+    log.warn({ id }, "upload failed: its avatar job file is malformed");
+    return;
+  }
 
   const started = deps.now();
   const watchdog = setTimeout(() => deps.abort(`upload ${id} took longer than ${deps.watchdogMs} ms`), deps.watchdogMs);
   let processed: Processed;
   try {
-    processed = await deps.process(uploads.upload(id), deps.formats);
+    processed = await deps.process(uploads.upload(id), deps.formats, job ?? undefined);
   } catch (err) {
     if (!existsSync(uploads.upload(id))) return; // The API withdrew the upload while it was being read.
     log.error({ id, err }, "processing threw; the upload will be tried again");
@@ -114,8 +144,9 @@ async function processOne(deps: LoopDeps, id: string): Promise<void> {
   await mkdir(store.imageDir(id), { recursive: true });
   await writeAtomic(store, store.image(id, "large"), processed.large);
   await writeAtomic(store, store.image(id, "small"), processed.small);
-  // The result is the commit point: it is written last, when both files are in place. 3d Task 6: version 2, with the
-  // scorer's model and score while one runs. The score is not logged: it is a fact about an image the API alone keeps.
+  // The result is the commit point: it is written last, when both files are in place. 3d Task 6: with the scorer's model
+  // and score while one runs. The score is not logged: it is a fact about an image the API alone keeps. 2d Task 3: version
+  // 3, and the mark of an avatar's two squares on an avatar's ready result alone, which the API holds against the row's kind.
   await writeResult(store, {
     v: RESULT_VERSION,
     id,
@@ -124,6 +155,7 @@ async function processOne(deps: LoopDeps, id: string): Promise<void> {
     height: processed.height,
     blurhash: processed.blurhash,
     ...(processed.r1 !== undefined ? { r1: processed.r1 } : {}),
+    ...(job !== null ? { avatar: true as const } : {}),
   });
   log.info({ id, width: processed.width, height: processed.height, ms: deps.now() - started }, "upload processed");
 }

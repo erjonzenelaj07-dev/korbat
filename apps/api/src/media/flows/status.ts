@@ -20,8 +20,9 @@ export async function finalize(deps: MediaDeps, id: string): Promise<boolean> {
   if (!result) return false;
   // 3d Task 6: a ready result of version 2 may carry the scorer's model and score. The score is kept only from this
   // server's own model; another model's is dropped, with the image, which is ready all the same, left unscored. The score
-  // itself is never logged.
-  const r1 = result.v === 2 && result.status === "ready" ? result.r1 : undefined;
+  // itself is never logged. 2d Task 3: version 3 carries them as version 2 does, and its avatar mark, which both writers of
+  // the verdict (repo.finalize and storeVerdict) hold against the row's kind.
+  const r1 = (result.v === 2 || result.v === 3) && result.status === "ready" ? result.r1 : undefined;
   if (r1 !== undefined && r1.model !== deps.r1Model) deps.log.error({ id, model: r1.model }, "media store: dropped a score from a model this server does not run");
   const score = r1 !== undefined && r1.model === deps.r1Model ? r1.score : null;
   // 3d review L3: a ready result without a score while this server's check is on: the worker does not score (it was left

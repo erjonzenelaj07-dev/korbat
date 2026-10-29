@@ -217,8 +217,8 @@ describe("suspensions at once and the account's standing (3e design, sections 7.
     expect(AccountStanding.safeParse({ ...running, measure: { ...running.measure, kind: "strike" } }).success).toBe(false);
     expect(AccountStanding.safeParse({ ...running, measure: { ...running.measure, state: "ended" } }).success).toBe(false);
     const user = { id: decisionId, email: "a@b.io", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 0 };
-    expect(MeResponse.parse({ user, profile: null, standing: null }).standing).toBeNull();
-    expect(MeResponse.parse({ user, profile: null, standing: running }).standing?.measure?.state).toBe("running");
+    expect(MeResponse.parse({ user, profile: null, standing: null, avatar: null }).standing).toBeNull();
+    expect(MeResponse.parse({ user, profile: null, standing: running, avatar: null }).standing?.measure?.state).toBe("running");
     // The member is always there: null without the moderation module or a profile, never missing.
     expect(MeResponse.safeParse({ user, profile: null }).success).toBe(false);
   });

@@ -25,6 +25,16 @@ export const VARIANTS = {
   small: { edge: 1024, quality: 80 },
 } as const;
 
+/**
+ * 2d Task 3 (design, sections 7.1 and 7.4): an avatar's two squares, under the two names of every image: `edge` is the
+ * square's side, never enlarged. 40 px in lists and 32 px in the composer use the small one up to three device pixels per
+ * CSS pixel; the profile's header and a card use the large one.
+ */
+export const AVATAR_VARIANTS = {
+  large: { edge: 400, quality: 82 },
+  small: { edge: 128, quality: 80 },
+} as const;
+
 /** How often processing of one upload may start. A file that kills the worker is retried at most this often. */
 export const MAX_ATTEMPTS = 3;
 
@@ -33,6 +43,8 @@ export const HEARTBEAT_STALE_MS = 60_000;
 
 /** Bounds for files the API reads from the store, which it treats as untrusted. */
 export const MAX_RESULT_BYTES = 16 * 1024;
+/** 2d Task 3: the most an avatar's job file may hold, which the worker reads from the volume the API writes. */
+export const MAX_JOB_BYTES = 256;
 export const MAX_VARIANT_BYTES = 32 * 1024 * 1024;
 
 /**

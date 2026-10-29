@@ -5,7 +5,7 @@ import path from "node:path";
 import { eq } from "drizzle-orm";
 import pino from "pino";
 import { postMedia, posts, type Db } from "@korbat/db";
-import type { MediaFailure } from "@korbat/contracts";
+import type { AvatarCrop, MediaFailure } from "@korbat/contracts";
 import { MEDIA_FORMATS, storeLayout, type MediaFormat, type StoreLayout } from "@korbat/media-protocol";
 import type { MediaDeps } from "../../src/media/context";
 import { matchAdapterFrom, type MatchAdapter } from "../../src/media/match-adapter";
@@ -62,6 +62,16 @@ export function fakeWorker(store: StoreLayout | string) {
       writeFileSync(layout.image(id, "small"), `small-webp-of-${id}`);
       writeFileSync(layout.result(id), JSON.stringify({ v: 1, id, status: "ready", ...size, blurhash: "L2Eo_P_3jb_3~qoL" }));
     },
+    /**
+     * 2d Task 3 (design, section 7.4): what the worker leaves behind for an avatar's job: its two squares, 400 by 400
+     * unless a size is given, and a result of version 3 with the mark of an avatar.
+     */
+    readyAvatar(id: string, size: { width: number; height: number } = { width: 400, height: 400 }) {
+      mkdirSync(layout.imageDir(id), { recursive: true });
+      writeFileSync(layout.image(id, "large"), `large-square-of-${id}`);
+      writeFileSync(layout.image(id, "small"), `small-square-of-${id}`);
+      writeFileSync(layout.result(id), JSON.stringify({ v: 3, id, status: "ready", ...size, blurhash: "L2Eo_P_3jb_3~qoL", avatar: true }));
+    },
     /** What it leaves behind for one it refused. */
     failed(id: string, reason: MediaFailure) {
       writeFileSync(layout.result(id), JSON.stringify({ v: 2, id, status: "failed", reason }));
@@ -111,6 +121,14 @@ export async function mediaHarness(db: Db, options: { formats?: readonly MediaFo
     return sent.id;
   }
 
+  /** 2d Task 3: an avatar's upload of this account with its crop, which the worker made into its squares: ready, not set. */
+  async function readyAvatar(ownerId: string, crop: AvatarCrop = "centre"): Promise<string> {
+    const sent = await upload(deps, ownerId, { contentType: "image/jpeg", contentLength: undefined, body: bodyOf(BYTES.jpeg), avatar: { crop } });
+    worker.readyAvatar(sent.id);
+    await status(deps, ownerId, sent.id);
+    return sent.id;
+  }
+
   /** A post by this account with ready images on it, written straight to the tables. */
   async function postWithImages(authorId: string, count = 1, body = "a post with images"): Promise<{ postId: string; mediaIds: string[] }> {
     const postId = await newPost(createSocialRepo(db), authorId, clock.next(), body);
@@ -140,6 +158,7 @@ export async function mediaHarness(db: Db, options: { formats?: readonly MediaFo
     clock,
     worker,
     readyImage,
+    readyAvatar,
     postWithImages,
     setPostState,
     jpeg: () => ({ contentType: "image/jpeg", contentLength: undefined, body: bodyOf(BYTES.jpeg) }),

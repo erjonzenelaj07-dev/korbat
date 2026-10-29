@@ -15,7 +15,7 @@ import { createZipWriter } from "../../src/account/zip";
 import type { AccountExport } from "../../src/auth";
 import { createAuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
-import { mediaForAccount, mediaForCases, type MediaForCases, type MediaForPosts } from "../../src/media";
+import { mediaForAccount, mediaForCases, mediaForPosts, type MediaForCases, type MediaForPosts } from "../../src/media";
 import { serve } from "../../src/media/flows/serve";
 import { status } from "../../src/media/flows/status";
 import { createMediaRepo, type MediaRepo } from "../../src/media/repo";
@@ -142,6 +142,14 @@ const METHODS: Record<keyof MediaRepo, Role> = {
   importedProcessing: { is: "neither", why: "answers the ids of imported uploads still processing, which are on no post, for the feeder's count" },
   importedAmong: { is: "neither", why: "says which of these upload ids are imported images', for the feeder's wait behind people's own uploads" },
   importRefusal: { is: "neither", why: "answers the id of the refusal of an import's image, for the import's link to its notice; never an image" },
+  // 2d Task 3 (design, sections 7.3, 7.5 and 7.8): the avatar's set and its detach write profile_id and give nothing of an
+  // image; a replaced or removed avatar's deletion is a deleter (run below); the views' avatars and the export's are
+  // readers, run against a sealed avatar in "an avatar" below.
+  attachAvatar: { is: "neither", why: "sets profile_id on the account's own ready avatar upload, answering its two paths to its owner alone" },
+  detachAvatar: { is: "neither", why: "clears profile_id of the account's current avatar, answering its id for the deletion after the commit" },
+  deleteFormerAvatar: { is: "deleter" },
+  avatarsOf: { is: "reader" },
+  exportAvatar: { is: "reader" },
 };
 const methodsThatAre = (role: Role["is"]) => (Object.keys(METHODS) as (keyof MediaRepo)[]).filter((name) => METHODS[name].is === role).sort();
 
@@ -177,6 +185,13 @@ const DELETERS = {
   deleteRow: async (f: Frozen) => {
     for (const id of f.mediaIds) await f.repo.deleteRow(id);
     return [] as string[];
+  },
+  // 2d Task 3: a former avatar's deletion, asked for the post's very rows: they are on a post and no avatar, and the keep
+  // trigger would keep them besides.
+  deleteFormerAvatar: async (f: Frozen) => {
+    const gone: string[] = [];
+    for (const id of f.mediaIds) if (await f.repo.deleteFormerAvatar(id)) gone.push(id);
+    return gone;
   },
   // Batch after batch until one is not full: everything that is disposable now.
   dropDisposable: async (f: Frozen) => {
@@ -237,12 +252,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
       await staffProfile(tx, admin);
       const h = await mediaHarness(tx as unknown as Db);
       // The media module's interface for posts, as createMedia hands it out.
-      const forPosts: MediaForPosts = {
-        attach: (within, input) => h.deps.repo.attach(within, input),
-        detachAll: (within, postId) => h.deps.repo.detachAll(within, postId),
-        requestDeletion: (ids) => h.files.requestDeletion(ids),
-        forPosts: (postIds) => h.deps.repo.forPosts(postIds),
-      };
+      const forPosts: MediaForPosts = mediaForPosts(h.deps);
       try {
         await fn({ tx, h, s: socialHarness(tx as unknown as Db, { media: forPosts }), repo: h.deps.repo, cases: mediaForCases(h.deps) });
       } finally {
@@ -324,10 +334,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
 
     test("every deleter has a run against a frozen post, and every method that does neither says why", () => {
       expect(Object.keys(DELETERS).sort()).toEqual(methodsThatAre("deleter"));
-      expect(methodsThatAre("deleter")).toEqual(["deleteImportLeftovers", "deleteRow", "deleteUnattached", "deleteUnattachedBefore", "detachAll", "dropDisposable", "purgeOwner"]);
+      expect(methodsThatAre("deleter")).toEqual(["deleteFormerAvatar", "deleteImportLeftovers", "deleteRow", "deleteUnattached", "deleteUnattachedBefore", "detachAll", "dropDisposable", "purgeOwner"]);
       // The readers are run through what calls them: serve (fileAccess), the lists (forPosts), the export's files
-      // (readyImages and isExportable), the status (find) and the staff's image (staffAccess).
-      expect(methodsThatAre("reader")).toEqual(["fileAccess", "find", "forPosts", "isExportable", "readyImages", "staffAccess"]);
+      // (readyImages and isExportable), the status (find) and the staff's image (staffAccess). 2d Task 3: the views' avatars
+      // (avatarsOf) and the export's (exportAvatar), run in "an avatar" below.
+      expect(methodsThatAre("reader")).toEqual(["avatarsOf", "exportAvatar", "fileAccess", "find", "forPosts", "isExportable", "readyImages", "staffAccess"]);
       for (const name of methodsThatAre("neither")) {
         const role = METHODS[name];
         expect(role.is === "neither" && role.why.length > 20, `${name}: ${role.is === "neither" ? role.why : ""}`).toBe(true);
@@ -843,6 +854,45 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
         // The image itself is not restricted: its post's chip says what the post is.
         expect("moderation" in view).toBe(false);
       });
+    });
+  });
+
+  describe("2d Task 3: an avatar (design, sections 7.5 and 7.8)", () => {
+    test("the current, visible avatar is given by every reader of avatars; sealed, erased, replaced or of a deleted account, by none, its owner included", async () => {
+      // As the migrator, which alone writes an image's state and erasure; the guard on profile_id skips it.
+      await inWorld(async (w) => {
+        const [ada, bob] = [await w.s.established(), await w.s.established()];
+        const readers = async (id: string, owner: string) => ({
+          serve: [(await ask(w, id, owner)).kind, (await ask(w, id, null)).kind],
+          views: (await w.repo.avatarsOf([owner], owner)).get(owner)?.large === mediaPath(id, "large"),
+          export: (await w.repo.exportAvatar(owner))?.id === id,
+          files: (await w.repo.readyImages(owner)).includes(id),
+        });
+        const shown = { serve: ["file", "file"], views: true, export: true, files: true };
+        const hidden = { serve: ["not_found", "not_found"], views: false, export: false, files: false };
+        const current = await w.h.readyAvatar(ada.id);
+        await w.repo.attachAvatar(w.tx, ada.id, current);
+        expect(await readers(current, ada.id)).toEqual(shown);
+        for (const [label, change] of [
+          ["sealed", sql`moderation_state = 'sealed'`],
+          ["erased", sql`erased_at = now()`],
+        ] as const) {
+          await w.tx.execute(sql`update post_media set ${change} where id = ${current}::uuid`);
+          expect(await readers(current, ada.id), label).toEqual(hidden);
+          await w.tx.execute(sql`update post_media set moderation_state = 'visible', erased_at = null where id = ${current}::uuid`);
+        }
+        expect(await readers(current, ada.id)).toEqual(shown);
+        // Replaced: the former one is detached, and no reader gives it, though a hold may keep its row.
+        const next = await w.h.readyAvatar(ada.id);
+        expect((await w.repo.attachAvatar(w.tx, ada.id, next)).former).toBe(current);
+        expect(await readers(current, ada.id)).toEqual(hidden);
+        expect(await readers(next, ada.id)).toEqual(shown);
+        // A deleted account's: from the purge's transaction on, whatever the row's fate.
+        const bobs = await w.h.readyAvatar(bob.id);
+        await w.repo.attachAvatar(w.tx, bob.id, bobs);
+        await w.tx.execute(sql`update profiles set deleted_at = now() where id = ${bob.id}::uuid`);
+        expect(await readers(bobs, bob.id)).toEqual(hidden);
+      }, migrateDb);
     });
   });
 

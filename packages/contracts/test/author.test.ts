@@ -31,7 +31,7 @@ const TIME = "2026-10-04T10:00:00.000Z";
 
 const post = (extra: Record<string, unknown> = {}) => ({
   id: id(1),
-  author: { id: id(900), handle: "ada", displayName: "Ada", verified: false },
+  author: { id: id(900), handle: "ada", displayName: "Ada", verified: false, avatar: null },
   body: "a post",
   createdAt: TIME,
   state: "removed",

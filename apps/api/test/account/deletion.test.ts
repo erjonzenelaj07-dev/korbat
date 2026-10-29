@@ -117,6 +117,7 @@ function harness() {
         requested.push([...ids]);
       },
       exportImages: async () => [],
+      exportAvatar: async () => null,
     },
     limits: new MemoryStore(() => t),
     log: pino({ level: "info" }, { write: (line: string) => void lines.push(JSON.parse(line) as LogLine) }),

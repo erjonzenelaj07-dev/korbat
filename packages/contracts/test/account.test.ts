@@ -23,7 +23,7 @@ const full = {
       { name: "Security key", createdAt: at, lastUsedAt: null, synced: false, createdOn: null },
     ],
   },
-  profile: { handle: "ada", displayName: "Ada", bio: "hello", createdAt: at, handleHistory: ["ada_l", "ada"], showInExplore: false, retiredHandles: [{ handle: "ada_l", retiredAt: at }], sharePreviews: false },
+  profile: { handle: "ada", displayName: "Ada", bio: "hello", createdAt: at, handleHistory: ["ada_l", "ada"], showInExplore: false, retiredHandles: [{ handle: "ada_l", retiredAt: at }], avatar: null, sharePreviews: false },
   posts: [
     { id: id(2), body: "first", createdAt: at, replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [{ id: id(3), file: `media/${id(3)}.webp`, altText: "a cat", width: 2048, height: 1536 }], imported: null, mentions: ["grace", "old_name"], countsHidden: true },
     { id: id(4), body: "", createdAt: at, replyToId: id(2), quoteOfId: null, state: "deleted_by_author", deletedAt: at, media: [], imported: null, mentions: [], countsHidden: false },
@@ -216,6 +216,15 @@ describe("export format", () => {
   test("2d (11.2): the profile's link-preview switch, each post's mentions and hidden counts, and the account's Activity last, with every entry it received and why one is not shown", () => {
     expect(Object.keys(ExportFormat.shape.profile.shape).at(-1)).toBe("sharePreviews");
     expect(ExportFormat.safeParse({ ...full, profile: { ...full.profile, sharePreviews: undefined } }).success).toBe(false);
+    // 2d Task 3 (7.8, 11.2): the avatar, after retiredHandles and before sharePreviews: its id, its file (the 400 px square
+    // as media/<id>.webp) and its size, or null.
+    expect(Object.keys(ExportFormat.shape.profile.shape).slice(-3)).toEqual(["retiredHandles", "avatar", "sharePreviews"]);
+    const media = "00000000-0000-4000-8000-000000000009";
+    const avatar = { id: media, file: `media/${media}.webp`, width: 400, height: 400 };
+    expect(ExportFormat.parse({ ...full, profile: { ...full.profile, avatar } }).profile.avatar).toEqual(avatar);
+    expect(ExportFormat.safeParse({ ...full, profile: { ...full.profile, avatar: undefined } }).success).toBe(false);
+    expect(ExportFormat.safeParse({ ...full, profile: { ...full.profile, avatar: { ...avatar, width: 0 } } }).success).toBe(false);
+    expect(ExportFormat.safeParse({ ...full, profile: { ...full.profile, avatar: { id: media, file: avatar.file } } }).success).toBe(false);
     const [post] = full.posts;
     const withPost = (over: Record<string, unknown>) => ExportFormat.safeParse({ ...full, posts: [{ ...post, ...over }] }).success;
     expect(withPost({ mentions: undefined })).toBe(false);

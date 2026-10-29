@@ -126,7 +126,8 @@ async function oldPurge(db: Db, id: string, now: Date): Promise<void> {
     await tx.execute(sql`delete from blocks where blocker_id = ${id}::uuid or blocked_id = ${id}::uuid`);
     await tx.execute(sql`delete from mutes where muter_id = ${id}::uuid or muted_id = ${id}::uuid`);
     if (row) await tx.execute(sql`insert into handle_history (handle_lower, profile_id, changed_at) values (${row.handle.toLowerCase()}, ${id}::uuid, ${now.toISOString()}::timestamptz) on conflict do nothing`);
-    await tx.execute(sql`update profiles set display_name = 'Deleted account', bio = '', avatar_path = null, verified_at = null, follower_count = 0, following_count = 0, post_count = 0, deleted_at = ${now.toISOString()}::timestamptz
+    // 2d Task 3: as purgeProfile writes it since profiles.avatar_path was dropped (0051_avatars).
+    await tx.execute(sql`update profiles set display_name = 'Deleted account', bio = '', verified_at = null, follower_count = 0, following_count = 0, post_count = 0, deleted_at = ${now.toISOString()}::timestamptz
                          where id = ${id}::uuid and deleted_at is null`);
   });
 }

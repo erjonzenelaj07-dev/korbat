@@ -138,8 +138,14 @@ describe("auth requests and responses", () => {
       user: { id: userId, email: "a@b.io", role: "user", onboarded: false, mfaEnabled: false, hasPassword: false, passkeys: 0 },
       profile: null,
       standing: null,
+      avatar: null,
     };
     expect(MeResponse.parse(me)).toEqual(me);
+    // 2d Task 3 (9.3): the account's own avatar, its two paths or null, always present.
+    const avatar = { small: `/api/media/${userId}/small.webp`, large: `/api/media/${userId}/large.webp` };
+    expect(MeResponse.parse({ ...me, avatar }).avatar).toEqual(avatar);
+    const { avatar: _none, ...withoutAvatar } = me;
+    expect(MeResponse.safeParse(withoutAvatar).success).toBe(false);
     // The count decides whether the app offers a passkey re-authentication and the suggestion card (1c design, section 9), so it is never left out.
     expect(MeResponse.parse({ ...me, user: { ...me.user, passkeys: 3 } }).user.passkeys).toBe(3);
     expect(MeResponse.safeParse({ ...me, user: { ...me.user, passkeys: undefined } }).success).toBe(false);
@@ -149,12 +155,12 @@ describe("auth requests and responses", () => {
   test("the own profile in the me response says when the handle last changed, whether the badge is held and whether the account's posts show in Explore", () => {
     const user = { id: userId, email: "a@b.io", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 0 };
     const profile = { id: userId, handle: "ada", displayName: "Ada", handleChangedAt: null, verified: false, showInExplore: true, sharePreviews: false };
-    expect(MeResponse.parse({ user, profile, standing: null })).toEqual({ user, profile, standing: null });
+    expect(MeResponse.parse({ user, profile, standing: null, avatar: null })).toEqual({ user, profile, standing: null, avatar: null });
     expect(MeProfile.parse({ ...profile, handleChangedAt: "2026-09-24T10:00:00.000Z", verified: true }).verified).toBe(true);
     // The author's own switch (2c design, section 8), off as well as on.
     expect(MeProfile.parse({ ...profile, showInExplore: false }).showInExplore).toBe(false);
     // The three fields are facts the account and privacy screens rely on, so a profile without them is not a valid answer.
-    expect(MeResponse.safeParse({ user, profile: { id: userId, handle: "ada", displayName: "Ada" }, standing: null }).success).toBe(false);
+    expect(MeResponse.safeParse({ user, profile: { id: userId, handle: "ada", displayName: "Ada" }, standing: null, avatar: null }).success).toBe(false);
     expect(MeProfile.safeParse({ ...profile, handleChangedAt: "yesterday" }).success).toBe(false);
     expect(MeProfile.safeParse({ ...profile, verified: "yes" }).success).toBe(false);
     expect(MeProfile.safeParse({ ...profile, showInExplore: undefined }).success).toBe(false);

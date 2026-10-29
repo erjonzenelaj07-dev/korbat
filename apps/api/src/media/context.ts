@@ -1,4 +1,4 @@
-import type { MediaAttachment, MediaErrorCode, MediaView } from "@korbat/contracts";
+import type { AvatarView, MediaAttachment, MediaErrorCode, MediaView } from "@korbat/contracts";
 import type { DbTx } from "@korbat/db";
 import type { MediaFormat } from "@korbat/media-protocol";
 import type { Logger } from "pino";
@@ -19,6 +19,9 @@ const MESSAGES: Record<MediaErrorKind, string> = {
   media_unavailable: "One of the images is not available. Remove it and add it again.",
   // 3d Task 7 (design, sections 9.5 and 9.7, [upload.refusedPost]): a post that attaches an upload korbat did not accept.
   upload_refused: "This image was not accepted, so the post was not sent. Remove the image to post. Its notice is under Settings, Cases.",
+  // 2d Task 3 (design, section 9.4): PUT /api/me/avatar's two refusals of the upload it names.
+  avatar_not_ready: "This picture is not ready to be your profile picture. Wait until it has uploaded, or choose another.",
+  not_an_avatar: "This image was uploaded for a post. Choose the picture again as your profile picture.",
   not_found: "Not found.",
   invalid_request: "Some details are missing or invalid.",
   // 3e (design, sections 7.2 and 9.8): an upload while the account's suspension runs, in the social module's words.
@@ -57,12 +60,22 @@ export type PostImage = (Omit<MediaView, "moderation"> & { state: "visible" | "w
  * rolled back. `detachAll` answers only the images that are really gone: a row a case holds, and every
  * row of a frozen post, stays, and no deletion may be requested for its files. `forPosts` never lists
  * an image of a deleted post or an erased image.
+ *
+ * 2d Task 3 (design, sections 7.3 and 7.5): the avatar's writes run inside the social module's transaction as `attach`
+ * does, so that only this module names the image table: `attachAvatar` (setAvatar's steps 2 to 4, which answers the
+ * detached former avatar) and `detachAvatar` (removeAvatar's write); `dropFormerAvatar` is step 6, after the commit. And
+ * `avatarsOf`, every view's avatars in one statement per page.
  */
 export interface MediaForPosts {
   attach(tx: DbTx, input: { postId: string; ownerId: string; items: readonly MediaAttachment[] }): Promise<void>;
   detachAll(tx: DbTx, postId: string): Promise<string[]>;
   requestDeletion(ids: readonly string[]): Promise<void>;
   forPosts(postIds: readonly string[]): Promise<Map<string, PostImage[]>>;
+  attachAvatar(tx: DbTx, accountId: string, mediaId: string): Promise<{ avatar: AvatarView; former: string | null }>;
+  detachAvatar(tx: DbTx, accountId: string): Promise<string | null>;
+  /** The former avatar's row and files, after the commit, unless something keeps the row; null asks for nothing. */
+  dropFormerAvatar(id: string | null): Promise<void>;
+  avatarsOf(profileIds: readonly string[], viewer: string | null): Promise<Map<string, AvatarView>>;
 }
 
 /** How many uploads one account may hold that are not on a post yet. */

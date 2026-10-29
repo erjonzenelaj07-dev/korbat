@@ -28,13 +28,13 @@ const REL = "nofollow ugc noopener noreferrer";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 // An account @ada exists on korbat: the author of this card.
-const ADA = { id: id(1), handle: "ada", displayName: "Ada Lovelace", verified: false };
+const ADA = { id: id(1), handle: "ada", displayName: "Ada Lovelace", verified: false, avatar: null };
 const BODY = "Thanks @ada and @grace_h, notes at https://example.org/notes and http://example.com/x";
 
 function post(extra: Partial<PostView> = {}): PostView {
   return {
     id: id(10),
-    author: { id: id(2), handle: "grace", displayName: "Grace Hopper", verified: false },
+    author: { id: id(2), handle: "grace", displayName: "Grace Hopper", verified: false, avatar: null },
     body: BODY,
     createdAt: "2026-10-21T10:00:00.000Z",
     state: "visible",
