@@ -62,6 +62,11 @@ export const posts = pgTable(
     originalCreatedAt: ts("original_created_at"),
     importShortened: boolean("import_shortened"),
     importKey: bytea("import_key"),
+    /**
+     * 2d (design, section 6.4, decision 26; migration 0050_post_options): its author hid the post's like and repost counts
+     * from everyone else, in the composer or from the post's More menu. Declared last, as the column is the table's last.
+     */
+    hideCounts: boolean("hide_counts").notNull().default(false),
   },
   (t) => [
     index("posts_author_created_idx").on(t.authorId, t.createdAt),

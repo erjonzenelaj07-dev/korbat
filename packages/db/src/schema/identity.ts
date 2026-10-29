@@ -36,6 +36,12 @@ export const profiles = pgTable(
     suspendedUntil: ts("suspended_until"),
     /** The end of a restriction of the account's reports under the rules. */
     reportsRestrictedUntil: ts("reports_restricted_until"),
+    /**
+     * 2d (design, section 6.4, decision 21; migration 0050_post_options): "Show a preview when someone shares a link to my
+     * posts or profile". Off until the person turns it on; while off, a shared link unfurls into a card that names only
+     * korbat. Declared last, as the column is the table's last.
+     */
+    sharePreviews: boolean("share_previews").notNull().default(false),
   },
   (t) => [
     uniqueIndex("profiles_handle_lower_idx").on(sql`lower(${t.handle})`),

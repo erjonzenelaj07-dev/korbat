@@ -65,8 +65,8 @@ const COLUMN_UPDATES: Record<string, string[]> = {
   intake_items: ["outcome_mail"],
   decisions: ["author_mail", "author_mail_at"],
   // 3b (0044_imported_posts): the five import columns, which posts_import_guard lets an update only clear, all at once,
-  // with the post's tombstone.
-  posts: ["body", "state", "deleted_at", "like_count", "repost_count", "reply_count", "quote_count", "import_job_id", "import_source", "original_created_at", "import_shortened", "import_key"],
+  // with the post's tombstone. 2d (0050_post_options): hide_counts, its author's switch over the like and repost counts.
+  posts: ["body", "state", "deleted_at", "like_count", "repost_count", "reply_count", "quote_count", "import_job_id", "import_source", "original_created_at", "import_shortened", "import_key", "hide_counts"],
   post_media: ["status", "error", "post_id", "position", "width", "height", "blurhash", "alt_text", "nsfw_score"],
 };
 const READ_ONLY = ["moderation_limits", "seal_posts"];
@@ -167,7 +167,7 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect(await tablePrivileges("korbat_api", "public.measures_in_force")).toEqual(["SELECT"]);
     });
 
-    test("posts: UPDATE of the twelve columns the API writes (3b added the five import columns), never of the moderation level or the erasure time; no DELETE, no TRUNCATE", async () => {
+    test("posts: UPDATE of the thirteen columns the API writes (3b added the five import columns, 2d hide_counts), never of the moderation level or the erasure time; no DELETE, no TRUNCATE", async () => {
       expect(await tablePrivileges("korbat_api", "public.posts")).toEqual(["SELECT", "INSERT"]);
       expect((await updatableColumns("korbat_api", "public.posts")).sort()).toEqual([...COLUMN_UPDATES.posts!].sort());
     });
@@ -177,10 +177,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect((await updatableColumns("korbat_api", "public.post_media")).sort()).toEqual([...COLUMN_UPDATES.post_media!].sort());
     });
 
-    test("profiles: SELECT and INSERT, and since 3e UPDATE of the eleven columns the API writes, never DELETE or TRUNCATE", async () => {
+    test("profiles: SELECT and INSERT, and since 3e UPDATE of the twelve columns the API writes (2d added share_previews), never DELETE or TRUNCATE", async () => {
       // 3e (design, section 6.1): the table's UPDATE became column grants, so the three derived columns stay the database's.
+      // 2d (0050_post_options): the link-preview switch is the twelfth.
       expect(await tablePrivileges("korbat_api", "public.profiles")).toEqual(["SELECT", "INSERT"]);
-      expect(await updatableColumns("korbat_api", "public.profiles")).toHaveLength(11);
+      expect(await updatableColumns("korbat_api", "public.profiles")).toHaveLength(12);
     });
 
     test("it has no access to the auth schema, nor to any of the four new auth tables", async () => {
@@ -507,6 +508,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         // 3d Task 1 (0033_quarantine): the six functions by which the API's role reaches the quarantine, which answer counts,
         // one time and booleans: a lost image's notice owed and told, an image's custody, the home's counts and a seal's.
         "public.lost_told",
+        // 2d Task 1 (0049_activity): the lost images whose notice was handled, ids and times only, for Activity's list.
+        "public.lost_told_for",
         "public.lost_untold",
         // 3d Task 7 (0039_known_material): the adapter's listed and acting pairs, the end of a held upload's hold, its
         // release and the release block's facts.
@@ -740,6 +743,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         // 3b (0044_imported_posts): only a statement that names one of the five import columns meets the import's guard, so
         // a counter's update (every like) never does; by name it runs after posts_guard_insert.
         posts_import_guard: "BEFORE INSERT OR UPDATE OF import_job_id, import_source, original_created_at, import_shortened, import_key ON public.posts FOR EACH ROW",
+        // 2d Task 1 (0049_activity): a post whose erased_at becomes set loses its stored mentions.
+        post_mentions_erase: "AFTER UPDATE OF erased_at ON public.posts FOR EACH ROW",
         // 3d Task 3 (0035_edge_purges): one outbox row for each image of a post whose level or state leaves visible.
         posts_purge: "AFTER UPDATE OF moderation_level, state ON public.posts FOR EACH ROW",
       });

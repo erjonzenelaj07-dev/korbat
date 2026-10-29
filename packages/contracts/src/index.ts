@@ -28,6 +28,8 @@ export const Pagination = z.object({
 export type Pagination = z.infer<typeof Pagination>;
 
 export * from "./account";
+// 2d Task 1: Activity's contracts. It reads ./social for PostView and Author, and nothing reads it.
+export * from "./activity";
 export * from "./auth";
 // 3d Task 6: the automated decision's numbers and closed lists. It imports nothing, so every module below can read it.
 export * from "./automation";
@@ -36,6 +38,8 @@ export * from "./explore";
 // (social.ts, moderation.ts, staff.ts, account.ts) can read it while they load.
 export * from "./imports";
 export * from "./media";
+// 2d Task 1: the one tokenizer of mentions. It imports nothing, so every module may read it while it loads.
+export * from "./mentions";
 // Evaluated before ./staff, and importing nothing from it: staff.ts can read this module's constants while it loads.
 export * from "./moderation";
 // 3f: imports nothing from the other modules, so moderation.ts can read its constants while it loads.

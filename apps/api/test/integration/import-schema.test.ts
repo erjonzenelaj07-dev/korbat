@@ -854,7 +854,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
       ]);
       expect(await updatableColumns("korbat_api", "import_picks")).toEqual(["left_out", "alts"]);
       expect(await updatableColumns("korbat_api", "import_keys")).toEqual([]);
-      expect((await updatableColumns("korbat_api", "posts")).slice(-5)).toEqual(["import_job_id", "import_source", "original_created_at", "import_shortened", "import_key"]);
+      // The five import columns, in column order; 2d's hide_counts (0050_post_options) follows them as the last.
+      expect((await updatableColumns("korbat_api", "posts")).slice(-6, -1)).toEqual(["import_job_id", "import_source", "original_created_at", "import_shortened", "import_key"]);
       // post_media: INSERT names the two new columns; no UPDATE of either.
       expect(await updatableColumns("korbat_api", "post_media")).not.toEqual(expect.arrayContaining(["imported"]));
       expect(await updatableColumns("korbat_api", "post_media")).not.toEqual(expect.arrayContaining(["import_job_id"]));

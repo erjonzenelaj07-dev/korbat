@@ -5,3 +5,4 @@ export * from "./moderation";
 export * from "./safety";
 export * from "./transparency";
 export * from "./imports";
+export * from "./activity";

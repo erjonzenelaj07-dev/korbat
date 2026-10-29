@@ -46,7 +46,7 @@ describe("content schema", () => {
 });
 
 describe("trust and safety schema", () => {
-  test("there are 72 tables in total", () => {
+  test("there are 75 tables in total", () => {
     // 28 before 3c, minus the five retired tables, plus the twelve moderation tables and the four auth tables; then 3e's
     // three: suspension_replies, unfounded_marks and report_tallies; then 3f's first four: contact_messages, alert_outbox,
     // notify_state and notify_folders; then the three of order records: legal_orders, legal_order_items and
@@ -57,8 +57,9 @@ describe("trust and safety schema", () => {
     // 4), transparency_editions and recipient_months; then the head's (Task 5), head_publications; then the automated
     // decision's two (Task 6), automated_signals and automated_objections; then known material's three (Task 7),
     // media_hashes, media_matches and upload_refusals; then 3b's three (Task 2, migration 0043_imports): import_jobs,
-    // import_picks and import_keys.
-    expect(tables.length).toBe(72);
+    // import_picks and import_keys; then 2d's three (Task 1, migration 0049_activity): activity_items, activity_state and
+    // post_mentions.
+    expect(tables.length).toBe(75);
   });
 
   test("3d Task 7's known material (section 6.7): the hashes of an image, a match's record and a held upload's refusal, each under its closed lists, with its keys and indexes", () => {
@@ -1877,8 +1878,8 @@ describe("import from other platforms 3b", () => {
       expect(column("posts", name)?.notNull, name).toBe(false);
       expect(column("posts", name)?.hasDefault, name).toBe(false);
     }
-    // The last five columns, after Explore's three.
-    expect(shape("posts").slice(-5).map(([name]) => name)).toEqual(["import_job_id", "import_source", "original_created_at", "import_shortened", "import_key"]);
+    // The five columns after Explore's three; 2d's hide_counts (0050_post_options) follows them as the last.
+    expect(shape("posts").slice(-6, -1).map(([name]) => name)).toEqual(["import_job_id", "import_source", "original_created_at", "import_shortened", "import_key"]);
     expect(checks("posts")).toEqual(["posts_body_len", "posts_counts_nonnegative", "posts_import_columns"]);
     expect(checkSql("posts", "posts_import_columns")).toBe(
       `("posts"."import_job_id" is null) = ("posts"."import_source" is null) and ("posts"."import_job_id" is null) = ("posts"."original_created_at" is null) and ("posts"."import_job_id" is null) = ("posts"."import_shortened" is null) and ("posts"."import_job_id" is null) = ("posts"."import_key" is null)`,
@@ -1921,5 +1922,148 @@ describe("import from other platforms 3b", () => {
     expect(indexes("post_media").filter(([name]) => name === "post_media_import_unattached_idx")).toEqual([
       ["post_media_import_unattached_idx", ["import_job_id"], false, "import_job_id is not null and post_id is null"],
     ]);
+  });
+});
+
+/**
+ * 2d, engagement (design, sections 6.1 to 6.4; Task 1): the three tables of 0049_activity and the two switches of
+ * 0050_post_options, as the schema declares them and drizzle writes them. The CHECKs and enums hold the contracts' lists
+ * and numbers as literals (this package does not depend on @korbat/contracts: ACTIVITY_KINDS, ACTIVITY_REACH and
+ * MENTION_STORE_MAX); apps/api's activity-schema.test.ts holds the migrated ones equal to them.
+ */
+describe("engagement 2d", () => {
+  const column = (table: string, name: string) => byName.get(table)!.columns.find((c) => c.name === name);
+  /** Name, SQL type and not-null of every column, in order. */
+  const shape = (table: string) => byName.get(table)!.columns.map((c) => [c.name, c.getSQLType(), c.notNull]);
+  const checks = (table: string) => byName.get(table)!.checks.map((c) => c.name).sort();
+  const checkSql = (table: string, name: string) => new PgDialect().sqlToQuery(byName.get(table)!.checks.find((c) => c.name === name)!.value).sql;
+  const policies = (table: string) => byName.get(table)!.policies.map((p) => [p.name, p.for, p.to]);
+  /** Name, columns, unique, predicate and method of every index, by name. */
+  const indexes = (table: string) =>
+    byName
+      .get(table)!
+      .indexes.map((i) => [
+        i.config.name,
+        i.config.columns.map((c) => (c as { name?: string }).name),
+        i.config.unique ?? false,
+        i.config.where ? new PgDialect().sqlToQuery(i.config.where).sql : null,
+        i.config.method ?? "btree",
+      ])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  const foreignKeys = (table: string) =>
+    byName
+      .get(table)!
+      .foreignKeys.map((k) => [k.reference().columns.map((c) => c.name).join(","), getTableConfig(k.reference().foreignTable).name, k.onDelete])
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+  const TABLES = ["activity_items", "activity_state", "post_mentions"];
+
+  test("the three tables are public, with row level security and one allow-all policy for the API role", () => {
+    for (const name of TABLES) {
+      const cfg = byName.get(name);
+      expect(cfg, name).toBeDefined();
+      expect(cfg!.schema, name).toBeUndefined();
+      expect(cfg!.enableRLS, name).toBe(true);
+      expect(policies(name), name).toEqual([[`${name}_api_all`, "all", apiRole]]);
+    }
+  });
+
+  test("the two enums: the four kinds of entry and the four reaches, in the contracts' order", () => {
+    expect(schema.activityKind.enumName).toBe("activity_kind");
+    expect(schema.activityKind.enumValues).toEqual(["reply", "mention", "quote", "follow"]);
+    expect(schema.activityReach.enumName).toBe("activity_reach");
+    expect(schema.activityReach.enumValues).toEqual(["everyone", "older", "following", "off"]);
+  });
+
+  test("activity_items (6.1): ids and a kind, never a text; a post exactly when it is not a follow, never one's own act", () => {
+    expect(shape("activity_items")).toEqual([
+      ["id", "uuid", true],
+      ["recipient_id", "uuid", true],
+      ["kind", "activity_kind", true],
+      ["actor_id", "uuid", true],
+      ["post_id", "uuid", false],
+      ["created_at", "timestamp with time zone", true],
+    ]);
+    expect(column("activity_items", "id")?.primary).toBe(true);
+    expect(column("activity_items", "id")?.hasDefault).toBe(true);
+    // activity_items_insert forces it to now() for every role but the migrator; the default serves the migrator.
+    expect(column("activity_items", "created_at")?.hasDefault).toBe(true);
+    // No on delete clause on the two profiles: no profile row is ever deleted, and the purge deletes the rows. The post's
+    // rows go with it.
+    expect(foreignKeys("activity_items")).toEqual([
+      ["actor_id", "profiles", "no action"],
+      ["post_id", "posts", "cascade"],
+      ["recipient_id", "profiles", "no action"],
+    ]);
+    expect(checks("activity_items")).toEqual(["activity_items_not_self", "activity_items_post"]);
+    // The kind is compared as text, as 2d compares every enum (section 6).
+    expect(checkSql("activity_items", "activity_items_post")).toBe(`("activity_items"."kind"::text = 'follow') = ("activity_items"."post_id" is null)`);
+    expect(checkSql("activity_items", "activity_items_not_self")).toBe(`"activity_items"."recipient_id" <> "activity_items"."actor_id"`);
+  });
+
+  test("activity_items: the list and its count, one entry per recipient and post, one follow entry per pair, deletePost's, block's and the purge's lookups, and a BRIN index for retention", () => {
+    expect(indexes("activity_items")).toEqual([
+      ["activity_items_actor_idx", ["actor_id"], false, null, "btree"],
+      ["activity_items_created_brin", ["created_at"], false, null, "brin"],
+      // A label of the enum, not text: an index predicate takes only immutable expressions, and the type is new in the
+      // same migration, so its labels are usable at once.
+      ["activity_items_follow_once", ["recipient_id", "actor_id"], true, "kind = 'follow'", "btree"],
+      ["activity_items_post_idx", ["post_id"], false, "post_id is not null", "btree"],
+      ["activity_items_post_once", ["recipient_id", "post_id"], true, "post_id is not null", "btree"],
+      ["activity_items_recipient_idx", ["recipient_id", "created_at", "id"], false, null, "btree"],
+    ]);
+  });
+
+  test("activity_state (6.2): the seen marker, null until the first visit, the three reaches at everyone and the follow switch on; no updated_at", () => {
+    expect(shape("activity_state")).toEqual([
+      ["account_id", "uuid", true],
+      ["seen_at", "timestamp with time zone", false],
+      ["replies", "activity_reach", true],
+      ["mentions", "activity_reach", true],
+      ["quotes", "activity_reach", true],
+      ["follows", "boolean", true],
+    ]);
+    expect(column("activity_state", "account_id")?.primary).toBe(true);
+    expect(column("activity_state", "seen_at")?.hasDefault).toBe(false);
+    for (const name of ["replies", "mentions", "quotes"]) expect(column("activity_state", name)?.default, name).toBe("everyone");
+    expect(column("activity_state", "follows")?.default).toBe(true);
+    expect(foreignKeys("activity_state")).toEqual([["account_id", "profiles", "no action"]]);
+    expect(checks("activity_state")).toEqual([]);
+    expect(indexes("activity_state")).toEqual([]);
+  });
+
+  test("post_mentions (6.3): the post, the account named and the handle as written, by position; a CHECK each, keyed by post and account, one position each, and the purge's index", () => {
+    expect(shape("post_mentions")).toEqual([
+      ["post_id", "uuid", true],
+      ["account_id", "uuid", true],
+      ["handle", "text", true],
+      ["position", "smallint", true],
+    ]);
+    const keys = byName.get("post_mentions")!.primaryKeys;
+    expect(keys.map((k) => k.columns.map((c) => c.name))).toEqual([["post_id", "account_id"]]);
+    expect(foreignKeys("post_mentions")).toEqual([
+      ["account_id", "profiles", "no action"],
+      ["post_id", "posts", "cascade"],
+    ]);
+    // The unique index has the name post_mentions_position, so the position's CHECK takes another.
+    expect(checks("post_mentions")).toEqual(["post_mentions_handle", "post_mentions_position_range"]);
+    expect(checkSql("post_mentions", "post_mentions_handle")).toBe(`"post_mentions"."handle" ~ '^[a-z0-9_]{3,20}$'`);
+    // MENTION_STORE_MAX - 1.
+    expect(checkSql("post_mentions", "post_mentions_position_range")).toBe(`"post_mentions"."position" between 0 and 19`);
+    expect(indexes("post_mentions")).toEqual([
+      ["post_mentions_account_idx", ["account_id"], false, null, "btree"],
+      ["post_mentions_position", ["post_id", "position"], true, null, "btree"],
+    ]);
+  });
+
+  test("posts gain hide_counts and profiles share_previews (6.4), each off by default and the last column of its table", () => {
+    for (const [table, name] of [
+      ["posts", "hide_counts"],
+      ["profiles", "share_previews"],
+    ] as const) {
+      expect(column(table, name)?.getSQLType(), name).toBe("boolean");
+      expect(column(table, name)?.notNull, name).toBe(true);
+      expect(column(table, name)?.default, name).toBe(false);
+      expect(shape(table).at(-1)?.[0], name).toBe(name);
+    }
   });
 });

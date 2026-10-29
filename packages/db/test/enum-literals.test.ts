@@ -322,7 +322,11 @@ describe("3b's migrations: two enums created whole, no value added to an existin
     const journal = JSON.parse(readFileSync(path.join(MIGRATIONS, "meta", "_journal.json"), "utf8")) as { entries: { idx: number; tag: string }[] };
     const first = journal.entries.find((entry) => entry.tag === "0043_imports");
     expect(first?.idx).toBe(43);
-    const files = journal.entries.filter((entry) => entry.idx >= first!.idx);
+    // 2d Task 1: 3b's six files, 0043_imports to 0048_import_staff_end. 2d's migrations create enums of their own and add
+    // values to action_kind, each read by a describe of its own below.
+    const last = journal.entries.find((entry) => entry.tag === "0048_import_staff_end");
+    expect(last?.idx).toBe(48);
+    const files = journal.entries.filter((entry) => entry.idx >= first!.idx && entry.idx <= last!.idx);
     expect(files.slice(0, 3).map((entry) => entry.tag)).toEqual(["0043_imports", "0044_imported_posts", "0045_import_readers"]);
     const created: Record<string, string[]> = {};
     for (const entry of files) {
@@ -335,6 +339,35 @@ describe("3b's migrations: two enums created whole, no value added to an existin
     expect(created).toEqual({
       import_source: ["x", "mastodon", "bluesky"],
       import_status: ["uploading", "scanning", "ready", "preparing", "publishing", "done", "stopped", "undoing", "undone", "failed", "cancelled", "expired"],
+    });
+  });
+});
+
+/**
+ * 2d (design, sections 6 and 6.8; Task 1): the migrations activity and post_options create two enums of their own and add
+ * no value to any enum that exists, so 3e's rule has nothing new to hold in them; the 3e, 3f and 3d describes above read
+ * them all the same, from their first files on. This case reads those two files alone, by tag: 2d's later migrations
+ * create media_kind (Task 3) and add values to action_kind (Task 4's avatar_kinds), each under a describe of its own.
+ */
+describe("2d's migrations activity and post_options: two enums created whole, no value added to an existing one", () => {
+  test("0049_activity and 0050_post_options add no value with ALTER TYPE, and create activity_kind and activity_reach with their values", () => {
+    const journal = JSON.parse(readFileSync(path.join(MIGRATIONS, "meta", "_journal.json"), "utf8")) as { entries: { idx: number; tag: string }[] };
+    const files = journal.entries.filter((entry) => entry.tag === "0049_activity" || entry.tag === "0050_post_options");
+    expect(files.map((entry) => [entry.idx, entry.tag])).toEqual([
+      [49, "0049_activity"],
+      [50, "0050_post_options"],
+    ]);
+    const created: Record<string, string[]> = {};
+    for (const entry of files) {
+      const text = flat(withoutComments(readFileSync(path.join(MIGRATIONS, `${entry.tag}.sql`), "utf8")));
+      expect(text, entry.tag).not.toMatch(/ALTER TYPE [^ ]+ ADD VALUE/i);
+      for (const match of text.matchAll(/CREATE TYPE "public"."([a-z_]+)" AS ENUM ?[(]([^)]*)[)]/g)) {
+        created[match[1]!] = [...match[2]!.matchAll(/'([a-z_]+)'/g)].map((value) => value[1]!);
+      }
+    }
+    expect(created).toEqual({
+      activity_kind: ["reply", "mention", "quote", "follow"],
+      activity_reach: ["everyone", "older", "following", "off"],
     });
   });
 });
