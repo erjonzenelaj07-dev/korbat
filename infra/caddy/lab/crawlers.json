@@ -1,0 +1,38 @@
+{
+  "about": "The requests of the link-preview fetchers korbat's share cards are made for (2d design, sections 8.2 and 12.1), as their official pages give them; the card lab and the smoke test send them. robotsToken is the agent's name in infra/caddy/robots.txt, null for a fetcher robots.txt does not name. No request carries a cookie. A note says where a value is not from an official page.",
+  "crawlers": [
+    {
+      "name": "Twitterbot",
+      "robotsToken": "Twitterbot",
+      "headers": { "User-Agent": "Twitterbot/1.0", "Accept-Encoding": "gzip, deflate" }
+    },
+    {
+      "name": "facebookexternalhit",
+      "robotsToken": "facebookexternalhit",
+      "headers": { "User-Agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)", "Range": "bytes=0-524288", "Accept-Encoding": "gzip, deflate" }
+    },
+    {
+      "name": "Slackbot-LinkExpanding",
+      "robotsToken": "Slackbot-LinkExpanding",
+      "headers": { "User-Agent": "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)", "Range": "bytes=0-32767", "Accept-Encoding": "gzip, deflate" },
+      "note": "Slack's page says it fetches as little of a page as it can with Range headers and gives no size: the 32 KiB range is the lab's own."
+    },
+    {
+      "name": "Discordbot",
+      "robotsToken": "Discordbot",
+      "headers": { "User-Agent": "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)", "Accept-Encoding": "gzip, deflate" }
+    },
+    {
+      "name": "LinkedInBot",
+      "robotsToken": "LinkedInBot",
+      "headers": { "User-Agent": "LinkedInBot/1.0 (compatible; Mozilla/5.0; Apache-HttpClient +http://www.linkedin.com)", "Accept-Encoding": "gzip, deflate" },
+      "note": "No official LinkedIn page gives its fetcher's User-Agent (inputs 3.3, unconfirmed); this string carries the robots.txt token LinkedInBot."
+    },
+    {
+      "name": "Mastodon",
+      "robotsToken": null,
+      "headers": { "User-Agent": "Mastodon/4.5.0 (http.rb/5.2.0; +https://mastodon.example/) Bot", "Accept-Encoding": "gzip, deflate" },
+      "note": "The form of mastodon/mastodon's lib/mastodon/version.rb at a8b8d37 for an instance at mastodon.example; its link cards read no robots.txt."
+    }
+  ]
+}

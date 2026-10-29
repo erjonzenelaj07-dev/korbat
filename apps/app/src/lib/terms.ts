@@ -1,5 +1,6 @@
 import {
   ACCOUNT_MEASURE_SCOPE,
+  ACTIVITY_KEEP_DAYS,
   APPEAL_MONTHS,
   IMPORT_RULES,
   AUTOMATION_RULES,
@@ -292,6 +293,20 @@ const AUTOMATION_DATA = [
   `The periods for the automated tools and for sealed images: the record of a match: ${count(R.matchKeepDays, "day")} after its case closed, its hold ended or its images were released, or, for an upload that was accepted and never posted, after the comparison; longer only while images sealed for good and not released, or a held upload, rest on it. The record that an upload was not accepted: with your account until the record of its match is erased, and without it afterwards; when korbat reported the upload, the record of that report names your account for as long as korbat keeps its records to authorities. Your email address after an upload of yours was not accepted: up to ${count(R.reportHoldDays, "day")} from the refusal, also if you delete your account; less when the hold ends without a report. The record that a cached copy was to be dropped: ${count(R.edgePurgeDays, "day")} after it closed. Fingerprints of an uploaded image: as long as the image, and only while a comparison is switched on; all are deleted when it is switched off. The rating of an image under rule R1: as long as the image, and only while the check is switched on; all are deleted when it is switched off. The monthly count of readers: two numbers a month, kept; the counting sketches are deleted at the month's end, and the day's key after ${count(RECIPIENT_RULES.saltHours, "hour")}. The record of a release, of the leave or instruction it rests on, and of each destroyed file's digest: as korbat's records to authorities (${count(R.orderRecordYears, "year")}).`,
 ];
 
+/**
+ * 2d (design, section 11.3): the privacy text's four drafts, last in "Your data", joining the draft without a new
+ * TERMS_VERSION, as 3d's drafts did; counsel reviews them before korbat opens (sub-project 4): what Activity keeps and for
+ * how long, by the contracts' ACTIVITY_KEEP_DAYS, the days the retention job deletes by, and that nothing is mailed or pushed
+ * about it; what a mention stores and whom it tells; that a profile picture is public, checked and reset like the rest of
+ * the profile; and what a shared link shows elsewhere, what other sites keep, robots.txt and the request not to index.
+ */
+const ENGAGEMENT_DATA = [
+  `Activity lists the replies to your posts, the posts that mention your account, the quotes of your posts and your new followers, beside what korbat told you about decisions on your own content. For each it keeps who acted, what kind of act it was, which post and when, never a text, and deletes it ${count(ACTIVITY_KEEP_DAYS, "day")} after it was written, or sooner when its post is deleted, when one of the two accounts blocks the other or when either account is deleted. It also keeps when you last looked at Activity and your choices in Settings > Activity, as long as your account exists. korbat sends no email and no push notification about Activity: you see it only when you open it.`,
+  "When a post names an account by its handle, korbat stores which account held that handle when the post was written. The handle links to that account only while it still holds the handle, and that account is told in its Activity, as far as its own settings allow and never across a block. A handle in an imported post is plain text and tells no one.",
+  "A profile picture is public: anyone who can see your profile, signed in or not, sees it. It passes the same checks as every image you upload, a moderator can reset it under the rules as a display name or a bio, and it is deleted with your account.",
+  "When someone shares a link to a public post or profile on another site, that site shows a card that names only korbat, until the author turns on link previews in Settings > Privacy; then the card shows what anyone sees without signing in: the name and handle, the text or the bio and the first image or the profile picture, never a count. The sites that show a card keep their own copy, which korbat cannot change or delete, so a post deleted on korbat may still show there for a while. korbat's robots.txt turns away every automated visitor but the link-preview fetchers of the sites it names, and korbat asks search engines not to show its posts and profiles in their results, which a search engine may or may not honour.",
+];
+
 export const TERMS_SECTIONS: { title: string; body: string }[] = [
   {
     title: "Draft",
@@ -419,6 +434,8 @@ export const TERMS_SECTIONS: { title: string; body: string }[] = [
       "Your account's export holds the decisions its Cases screens list and your own reports. If you ask for your data at the address under Contact, you receive, within a month, every case about you (cases without action included), the copies korbat keeps, where each case came from (a report by another user, a notice, a moderator) and, where the law requires it after weighing the writer's rights, the words of a report without who wrote it.",
       // 3b (11.3): the import's record and how long it is kept (6.1, decision 25), by IMPORT_RULES' days.
       `An import's record (its source, its state, its times, your choice and its counts, never a file name or the other account) is kept while a post of it exists and at least ${IMPORT_RULES.recordDays} days after the import ended, and goes with your account.`,
+      // 2d (11.3): the four drafts, last.
+      ...ENGAGEMENT_DATA,
     ),
   },
 ];

@@ -36,6 +36,10 @@ RUN case "$EXPO_PUBLIC_HOME_STATE" in "") ;; [A-Z][A-Z]) ;; *) echo "the EXPO_PU
 RUN if [ -n "$EXPO_PUBLIC_CONTACT_POINT" ] && [ -z "$EXPO_PUBLIC_HOME_STATE" ]; then echo "EXPO_PUBLIC_CONTACT_POINT needs EXPO_PUBLIC_HOME_STATE: the terms name the state whose authorities write to it" >&2; exit 1; fi
 RUN if [ "$KORBAT_ENV" = "production" ] && [ -n "$EXPO_PUBLIC_CONTACT_POINT" ]; then case "$(printf %s "${EXPO_PUBLIC_CONTACT_POINT##*@}" | tr A-Z a-z)" in *.local|*.localhost|*.test|*.invalid|*.example|example.com|example.org|example.net) echo "EXPO_PUBLIC_CONTACT_POINT is a placeholder address; a production build needs the address authorities write to" >&2; exit 1;; esac; fi
 RUN cd apps/app && EXPO_PUBLIC_TURNSTILE_SITE_KEY="$EXPO_PUBLIC_TURNSTILE_SITE_KEY" EXPO_PUBLIC_BADGE="$EXPO_PUBLIC_BADGE" EXPO_PUBLIC_CONTACT_EMAIL="$EXPO_PUBLIC_CONTACT_EMAIL" EXPO_PUBLIC_CONTACT_POINT="$EXPO_PUBLIC_CONTACT_POINT" EXPO_PUBLIC_HOME_STATE="$EXPO_PUBLIC_HOME_STATE" npx expo export --platform web
+# 2d (design, section 8.2): card.html, the export's index.html with one line inserted right after its charset's meta element:
+# the one template action, which prints the API's Korbat-Card header decoded. Caddy runs templates on it for a post's or a
+# profile's page and nowhere else. The build fails unless the action is there exactly once and the file holds no other {{.
+RUN cd apps/app/dist && action='    {{placeholder "http.reverse_proxy.header.Korbat-Card" | b64dec}}' && awk -v marker='<meta charset="utf-8" />' -v action="$action" '{ print } index($0, marker) > 0 && !done { print action; done = 1 }' index.html > card.html && test "$(grep -c "{{" card.html)" = 1 && test "$(grep -cxF -e "$action" card.html)" = 1 || { echo "card.html needs the card's template action exactly once, after the charset's meta element, and no other {{" >&2; exit 1; }
 
 # The staff console (apps/admin), in a stage of its own: its page takes no build argument and holds no secret, and its
 # packages never meet the app's. esbuild writes dist/: index.html, favicon.svg and the hashed script and stylesheet.
@@ -60,6 +64,9 @@ RUN if [ "$TUNNEL" = "on" ]; then : > /etc/caddy/cf-header.caddy; else echo "hea
 # every phone, so that one client's wrong tokens would shut every phone out; there it takes CF-Connecting-IP's value.
 RUN if [ "$TUNNEL" = "on" ]; then echo "header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}" > /etc/caddy/push-header.caddy; else : > /etc/caddy/push-header.caddy; fi
 COPY --from=web /repo/apps/app/dist /srv
+# 2d (design, section 8.2, decision 20): robots.txt, which the files' handle serves as it serves any file of /srv: the pages
+# that carry cards and their images open to the link-preview fetchers it names, everything closed to every other agent.
+COPY infra/caddy/robots.txt /srv/robots.txt
 # The console's site serves /console, a folder outside the app's /srv, so the app's site can never serve the console.
 COPY --from=console /repo/apps/admin/dist /console
 # The image's binary carries cap_net_bind_service as a file capability; with every capability dropped, the

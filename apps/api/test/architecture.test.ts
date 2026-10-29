@@ -26,9 +26,10 @@ const AUTH_KEYS_ALLOWED = new Set(["config.ts"]);
 
 /**
  * Modules that may only be entered through their index file. 3d Task 4 adds the seventh, transparency; 3b Task 4 the eighth,
- * imports; 2d Task 2 the ninth, activity (design, section 5.4), so the rules about who imports it have something to stand on.
+ * imports; 2d Task 2 the ninth, activity (design, section 5.4), so the rules about who imports it have something to stand on;
+ * 2d Task 6 the tenth, cards (design, sections 8.1 and 12.2), which reads no session (below).
  */
-const MODULES = ["auth", "social", "media", "account", "staff", "moderation", "transparency", "imports", "activity"] as const;
+const MODULES = ["auth", "social", "media", "account", "staff", "moderation", "transparency", "imports", "activity", "cards"] as const;
 
 function walk(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -1194,6 +1195,66 @@ describe("the recipients' count keeps nothing on disk (3d review H3)", () => {
       "index.ts: createTransparency is given apiDb, redis, auth: auth.forTransparency, config, logger",
       "compose.yml: counts lacks --appendonly no",
       "compose.yml: counts has volumes:",
+    ]);
+  });
+});
+
+/**
+ * The cards module (2d design, sections 8.1 and 12.2; Task 6): a card answers the same for everyone, so the module reads no
+ * session, no cookie and no request header, and no table: a file under cards/ imports nothing of @korbat/db and nothing of
+ * another module but the social module's index (its interface for cards), and names none of the ways a request's session
+ * or headers are read. And app.ts mounts its routes before the session's resolution, as it mounts the status route.
+ */
+const CARDS_READS: { pattern: RegExp; what: string }[] = [
+  { pattern: /\bc[.]get\(\s*["']session["']/, what: "the session" },
+  { pattern: /\b(resolveSession|requireSession|requireFreshAuth)\b/, what: "the auth module's session guard" },
+  { pattern: /\bgetCookie\b|hono[/]cookie/, what: "a cookie" },
+  { pattern: /\breq[.](header|raw|cookie)\b/, what: "the request's headers" },
+];
+
+function findCardsViolations(files: SourceFile[]): string[] {
+  const violations: string[] = [];
+  for (const { path, source } of files) {
+    if (!path.startsWith("cards/")) continue;
+    if (dbImports(source).length > 0 || specifiers(source).some((spec) => spec === "@korbat/db" || spec.startsWith("@korbat/db/"))) violations.push(`${path}: imports @korbat/db (the cards module reads through the social module's interface)`);
+    for (const spec of specifiers(source)) {
+      if (!spec.startsWith(".")) continue;
+      const target = posix.normalize(posix.join(posix.dirname(path), spec)).replace(/[.]ts$/, "");
+      if (!target.startsWith("cards/") && target !== "social" && target !== "social/index") violations.push(`${path}: imports ${spec} (the cards module uses the social module's index alone)`);
+    }
+    for (const { pattern, what } of CARDS_READS) if (pattern.test(source)) violations.push(`${path}: reads ${what}`);
+  }
+  return violations;
+}
+
+describe("the cards module reads no session (2d Task 6)", () => {
+  test("the module exists, its files read no session, cookie, header or table, and app.ts mounts it before the session's resolution", () => {
+    const files = loadSources();
+    expect(files.map((file) => file.path)).toEqual(expect.arrayContaining(["cards/index.ts", "cards/build.ts", "cards/words.ts"]));
+    expect(findCardsViolations(files)).toEqual([]);
+    const app = files.find((file) => file.path === "app.ts")!.source;
+    const mounted = app.indexOf('app.route("/api", cards.routes)');
+    expect(mounted).toBeGreaterThan(app.indexOf('rateLimit({ name: "global"'));
+    expect(mounted).toBeGreaterThan(app.indexOf('app.route("/api", social.statusRoutes)'));
+    expect(mounted).toBeLessThan(app.indexOf("auth.resolveSession(c, next)"));
+  });
+
+  test("catches a session, a cookie, a header, a table and another module's inside", () => {
+    const files: SourceFile[] = [
+      { path: "cards/index.ts", source: 'r.get("/cards/post/:id", async (c) => c.get("session"));' },
+      { path: "cards/build.ts", source: 'import { getCookie } from "hono/cookie"; const ua = c.req.header("user-agent");' },
+      { path: "cards/words.ts", source: 'import { profiles } from "@korbat/db"; import { createSocialRepo } from "../social/repo"; import type { SocialForCards } from "../social";' },
+      { path: "cards/guard.ts", source: 'import { requireSession } from "../auth";' },
+      { path: "social/routes.ts", source: 'c.get("session");' },
+    ];
+    expect(findCardsViolations(files)).toEqual([
+      "cards/index.ts: reads the session",
+      "cards/build.ts: reads a cookie",
+      "cards/build.ts: reads the request's headers",
+      "cards/words.ts: imports @korbat/db (the cards module reads through the social module's interface)",
+      "cards/words.ts: imports ../social/repo (the cards module uses the social module's index alone)",
+      "cards/guard.ts: imports ../auth (the cards module uses the social module's index alone)",
+      "cards/guard.ts: reads the auth module's session guard",
     ]);
   });
 });

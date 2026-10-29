@@ -226,6 +226,8 @@ describe("the console site's routes", () => {
     expect(lines(app)).toContain("@push remote_ip {$PUSH_SUBNET}");
     expect(lines(routeFor(app, "/api/me").block)).toContain("respond @push 403");
     expect(lines(routeFor(app, "/").block)).toContain("respond @push 403");
+    // 2d Task 6 (design, section 12.4): a post's page and a profile's page, each handle's first line.
+    for (const p of ["/post/x", "/u/x"]) expect(routeFor(app, p).block.children![0]!.tokens, p).toEqual(["respond", "@push", "403"]);
   });
 
   test("/api/staff and /api/staff/* go to the API as on the app's site: 64KB bodies, no Server header, cf-header, the browser's Host", () => {
@@ -439,48 +441,91 @@ describe("Compose and infra/.env.example carry the console", () => {
 /**
  * 3f (design, sections 5 and 7.12; invariant 19, Caddy's part): a post's page is served under the status the API gives
  * the post, and APP_SITE closes the app's site. Task 4's first step tried both on Caddy 2.11.4 itself; these tests hold
- * the Caddyfile to what was tried.
+ * the Caddyfile to what was tried. 2d Task 6 (design, section 8.2) moves the pins of a post's page to the share card: the
+ * post's page and a profile's page each ask the API for their card, whose 204 serves card.html through templates, the
+ * only templates of the site; the card lab and the first step tried that on the same image.
  */
 describe("3f: the status of a post's page, and APP_SITE", () => {
   const appSite = (env: Record<string, string> = {}) => site(readCaddyfile(env), APP_SITE);
+  const PAGES = [
+    { page: "/post/*", path: "/post/2b7c1d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e", card: "/api/cards/post/{http.request.uri.path.1}" },
+    { page: "/u/*", path: "/u/ada", card: "/api/cards/profile/{http.request.uri.path.1}" },
+  ];
 
-  test("/post/* asks the API for the post's status and serves the app's shell under it: 200 for 204, 404 for 404, 200 for anything else", () => {
-    const route = routeFor(appSite(), "/post/2b7c1d3e-4f5a-4b6c-8d7e-9f0a1b2c3d4e");
-    expect(route.match?.paths).toEqual(["/post/*"]);
-    const block = lines(route.block);
-    expect(block).toContain("respond @push 403");
-    expect(block).toContain("encode gzip");
-    const proxy = route.block.children!.find((node) => node.tokens[0] === "reverse_proxy")!;
-    expect(proxy.tokens).toEqual(["reverse_proxy", "api:3000"]);
-    const asked = lines(proxy);
-    for (const line of ["import /etc/caddy/cf-header.caddy", "method GET", "rewrite /api/posts/{http.request.uri.path.1}/status", "@shown status 204", "@gone status 404"]) expect(asked).toContain(line);
-    const answers = proxy.children!.filter((node) => node.tokens[0] === "handle_response");
-    expect(answers.map((node) => node.tokens)).toEqual([["handle_response", "@shown"], ["handle_response", "@gone"], ["handle_response"]]);
-    // Each answer is the same shell, index.html from /srv; only the 404 changes the status.
-    for (const answer of answers) expect(lines(answer).filter((line) => line !== "file_server" && !line.startsWith("status"))).toEqual(["root * /srv", "rewrite * /index.html"]);
-    expect(lines(answers[1]!)).toContain("status 404");
-    expect(lines(answers[0]!).concat(lines(answers[2]!)).some((line) => line.startsWith("status"))).toBe(false);
+  test("2d: /post/* and /u/* ask the API for the page's card and serve card.html through templates for 204, the shell with 404 for 404, the shell with 200 for anything else", () => {
+    for (const { page, path: p, card } of PAGES) {
+      const route = routeFor(appSite(), p);
+      expect(route.match?.paths, p).toEqual([page]);
+      expect(route.block.children![0]!.tokens, p).toEqual(["respond", "@push", "403"]);
+      const block = lines(route.block);
+      for (const line of ["encode gzip", "request_header -Range", "header Cache-Control no-cache", "header X-Robots-Tag noindex"]) expect(block, `${p}: ${line}`).toContain(line);
+      const proxy = route.block.children!.find((node) => node.tokens[0] === "reverse_proxy")!;
+      expect(proxy.tokens).toEqual(["reverse_proxy", "api:3000"]);
+      const asked = lines(proxy);
+      for (const line of ["import /etc/caddy/cf-header.caddy", "method GET", `rewrite ${card}`, "@shown status 204", "@gone status 404"]) expect(asked, `${p}: ${line}`).toContain(line);
+      const answers = proxy.children!.filter((node) => node.tokens[0] === "handle_response");
+      expect(answers.map((node) => node.tokens)).toEqual([["handle_response", "@shown"], ["handle_response", "@gone"], ["handle_response"]]);
+      // The card is card.html through templates; the other two the same shell, index.html from /srv, 404 only for 404.
+      expect(lines(answers[0]!), p).toEqual(["root * /srv", "rewrite * /card.html", "templates", "file_server"]);
+      expect(lines(answers[1]!), p).toEqual(["root * /srv", "rewrite * /index.html", "file_server", "status 404"]);
+      expect(lines(answers[2]!), p).toEqual(["root * /srv", "rewrite * /index.html", "file_server"]);
+    }
+    // templates runs in those two handle_response blocks and nowhere else, so no other answer and no proxied body is evaluated.
+    expect(lines(appSite()).filter((line) => line.split(" ")[0] === "templates")).toEqual(["templates", "templates"]);
+    expect(lines(site(readCaddyfile(), CONSOLE_SITE)).some((line) => line.split(" ")[0] === "templates")).toBe(false);
     // Never 451.
     expect(lines(appSite()).some((line) => line.includes("451"))).toBe(false);
   });
 
-  test("a post's page carries the same security headers as the app's files, and the API's own headers never reach it", () => {
+  test("a post's page and a profile's page carry the same security headers as the app's files, and the API's own headers never reach them", () => {
     const headerBlock = (handle: Handle) => handle.block.children!.filter((node) => node.tokens[0] === "header" && node.tokens.length === 1).flatMap((node) => lines(node));
-    const page = headerBlock(routeFor(appSite(), "/post/x"));
-    expect(page.length).toBeGreaterThan(5);
-    expect(page).toEqual(headerBlock(routeFor(appSite(), "/")));
-    expect(lines(routeFor(appSite(), "/post/x").block)).toContain("header Cache-Control no-cache");
-    expect(lines(routeFor(appSite(), "/post/x").block).some((line) => /copy_response|header_down/.test(line))).toBe(false);
+    for (const p of ["/post/x", "/u/x"]) {
+      const page = headerBlock(routeFor(appSite(), p));
+      expect(page.length, p).toBeGreaterThan(5);
+      expect(page, p).toEqual(headerBlock(routeFor(appSite(), "/")));
+      expect(lines(routeFor(appSite(), p).block), p).toContain("header Cache-Control no-cache");
+      expect(lines(routeFor(appSite(), p).block).some((line) => /copy_response|header_down/.test(line)), p).toBe(false);
+    }
+    // 8.2: X-Robots-Tag is never set and then dropped, so the shared headers do not carry it.
+    expect(headerBlock(routeFor(appSite(), "/")).some((line) => line.startsWith("X-Robots-Tag"))).toBe(false);
   });
 
-  test("when the API cannot be asked, handle_errors serves a post's page the same shell with 200 and the same headers", () => {
+  test("when the API cannot be asked, handle_errors serves a post's or a profile's page the same shell with 200, the same headers and noindex", () => {
     const errors = appSite().children!.find((node) => node.tokens[0] === "handle_errors")!;
-    expect(lines(errors)).toContain("@postpage path /post/*");
-    const page = errors.children!.find((node) => node.tokens[0] === "handle" && node.tokens[1] === "@postpage")!;
+    expect(lines(errors)).toContain("@pages path /post/* /u/*");
+    const page = errors.children!.find((node) => node.tokens[0] === "handle" && node.tokens[1] === "@pages")!;
     const shown = lines(page);
-    for (const line of ["root * /srv", "rewrite * /index.html", "file_server", "status 200", "encode gzip", "header Cache-Control no-cache"]) expect(shown).toContain(line);
+    for (const line of ["root * /srv", "rewrite * /index.html", "file_server", "status 200", "encode gzip", "header Cache-Control no-cache", "header X-Robots-Tag noindex"]) expect(shown).toContain(line);
     const headers = page.children!.filter((node) => node.tokens[0] === "header" && node.tokens.length === 1).flatMap((node) => lines(node));
     expect(headers).toEqual(routeFor(appSite(), "/").block.children!.filter((node) => node.tokens[0] === "header" && node.tokens.length === 1).flatMap((node) => lines(node)));
+  });
+
+  test("2d: /card.html asked by its own path answers 404 with no body; the files' handle says noindex on every page but the five that name no account", () => {
+    const card = routeFor(appSite(), "/card.html");
+    expect(card.match?.paths).toEqual(["/card.html"]);
+    expect(card.block.children![0]!.tokens).toEqual(["respond", "@push", "403"]);
+    expect(card.block.children!.filter((node) => node.tokens[0] === "respond" && !node.tokens[1]?.startsWith("@")).map((node) => node.tokens)).toEqual([["respond", "", "404"]]);
+    expect(lines(card.block)).toContain("header X-Robots-Tag noindex");
+    expect(lines(card.block).some((line) => /file_server|reverse_proxy|templates/.test(line))).toBe(false);
+    const files = routeFor(appSite(), "/");
+    expect(pathMatchers(files.block).get("@named")).toEqual({ paths: ["/", "/rules", "/transparency", "/explore/about", "/terms"], file: false, not: true });
+    expect(lines(files.block)).toContain("header @named X-Robots-Tag noindex");
+  });
+
+  test("2d: robots.txt is 8.2's, byte for byte, its named agents the unfurlers of the card lab's crawlers.json; the image copies it to /srv and writes card.html after the export", () => {
+    const robots = ["User-agent: Twitterbot", "User-agent: facebookexternalhit", "User-agent: Slackbot-LinkExpanding", "User-agent: Discordbot", "User-agent: LinkedInBot", "Allow: /post/", "Allow: /u/", "Allow: /api/media/", "Disallow: /", "", "User-agent: *", "Disallow: /", ""].join(String.fromCharCode(10));
+    expect(read("infra", "caddy", "robots.txt")).toBe(robots);
+    const crawlers = JSON.parse(read("infra", "caddy", "lab", "crawlers.json")) as { crawlers: { robotsToken: string | null }[] };
+    expect(crawlers.crawlers.flatMap((crawler) => (crawler.robotsToken === null ? [] : [crawler.robotsToken]))).toEqual(["Twitterbot", "facebookexternalhit", "Slackbot-LinkExpanding", "Discordbot", "LinkedInBot"]);
+    const dockerfile = read("infra", "caddy", "Dockerfile");
+    const copied = dockerfile.indexOf("COPY infra/caddy/robots.txt /srv/robots.txt");
+    expect(copied).toBeGreaterThan(dockerfile.indexOf("COPY --from=web /repo/apps/app/dist /srv"));
+    const written = dockerfile.indexOf("> card.html");
+    expect(written).toBeGreaterThan(dockerfile.indexOf("npx expo export --platform web"));
+    expect(written).toBeLessThan(dockerfile.indexOf("AS console"));
+    const action = '{{placeholder "http.reverse_proxy.header.Korbat-Card" | b64dec}}';
+    expect(dockerfile.split(action).length - 1).toBe(1);
+    expect(dockerfile).toContain('test "$(grep -c "{{" card.html)" = 1');
   });
 
   test("APP_SITE names the app's site: open by default; closed answers every path, the API's included, 503 with one fixed sentence; any other value names no snippet, and Caddy refuses to start", () => {

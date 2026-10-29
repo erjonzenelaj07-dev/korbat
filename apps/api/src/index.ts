@@ -5,6 +5,7 @@ import { createAccount } from "./account";
 import { createActivity } from "./activity";
 import { createApp } from "./app";
 import { createAuth, verificationProviderFrom } from "./auth";
+import { createCards } from "./cards";
 import { loadConfig } from "./config";
 import { createImports, importSettingsFrom, importsForModeration } from "./imports";
 import { redisJobLock } from "./lib/jobs";
@@ -126,6 +127,10 @@ const social = createSocial({
 // Explore's ranking: a round at once, so Explore is filled on a new database or after downtime, then one every five minutes.
 const stopExplore = social.startExplore(jobLock);
 
+// 2d Task 6: the share cards. They read a post or a profile as a signed-out reader gets it through the social module's
+// interface for cards, and build every address on APP_ORIGIN; no table, no session and no job of their own.
+const cards = createCards({ social: social.forCards, appOrigin: config.APP_ORIGIN });
+
 // 2d: Activity. Built after the social and moderation modules, whose interfaces give it the posts' views, the follow
 // groups' accounts and the moderation entries (authorActivity), and before the account module, whose export lists the
 // account's entries through it. Its limits count in the store the per-IP limit uses, through the social module's table.
@@ -209,6 +214,7 @@ const app = createApp({
   transparency,
   imports,
   activity,
+  cards,
 });
 
 const server = serve({ fetch: app.fetch, port: config.PORT, hostname: "0.0.0.0" }, (info) => {

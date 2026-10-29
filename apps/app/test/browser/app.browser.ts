@@ -248,7 +248,7 @@ beforeAll(async () => {
     await exportWeb(out);
   }
   fixtures = createFixtureApi();
-  site = await startAppSite({ dist: out, api: fixtures.handle, postStatus: fixtures.postStatus });
+  site = await startAppSite({ dist: out, api: fixtures.handle, postStatus: fixtures.postStatus, profileStatus: fixtures.profileStatus });
   origin = site.origin;
   browser = await chromium.launch({ channel: CHANNEL, headless: true });
 });
@@ -666,6 +666,12 @@ describe("the app in Chromium, under the app site's policy", () => {
     }
     expect((await fetch(`${origin}/post/${POST_ID}`)).status).toBe(200);
     expect((await fetch(`${origin}/post/${MISSING_POST_ID}`)).status).toBe(404);
+    // 2d Task 6: a profile's page takes its card's status the same way; both pages say noindex, and / does not.
+    const profilePage = await fetch(`${origin}/u/grace`);
+    expect([profilePage.status, profilePage.headers.get("x-robots-tag")]).toEqual([200, "noindex"]);
+    expect((await fetch(`${origin}/u/nobody_here`)).status).toBe(404);
+    expect((await fetch(`${origin}/post/${POST_ID}`)).headers.get("x-robots-tag")).toBe("noindex");
+    expect((await fetch(`${origin}/`)).headers.get("x-robots-tag")).toBeNull();
     expect(fixtures.state.problems.splice(0)).toEqual([]);
   });
 

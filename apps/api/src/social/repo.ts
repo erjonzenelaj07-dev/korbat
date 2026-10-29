@@ -1292,6 +1292,16 @@ export function createSocialRepo(db: Db) {
       const raw = await rows<RawProfile>(sql`${PROFILE_SELECT} where id = any(${uuidArray(ids)})`);
       return new Map(raw.map((r) => [r.id, toProfile(r)]));
     },
+    /**
+     * 2d (design, sections 8.1 and 8.4): the link-preview switch of these profiles, by id, for the share cards, which the
+     * public reads' profile row leaves out as it leaves out the Explore switch. A deleted profile is not in the answer, so
+     * a post of an account deleted while its purge runs has no card.
+     */
+    async sharePreviewsOf(ids: readonly string[]): Promise<Map<string, boolean>> {
+      if (ids.length === 0) return new Map();
+      const raw = await rows<{ id: string; share_previews: boolean }>(sql`select id, share_previews from profiles where id = any(${uuidArray([...ids])}) and deleted_at is null`);
+      return new Map(raw.map((r) => [r.id, r.share_previews]));
+    },
 
     // ------------------------------------------------------------ the owner's own profile
 

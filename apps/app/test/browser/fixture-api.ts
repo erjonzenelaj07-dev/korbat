@@ -732,8 +732,10 @@ export interface FixtureState {
 export interface FixtureApi {
   state: FixtureState;
   handle(req: IncomingMessage, res: ServerResponse, url: URL, body: Buffer): Promise<void>;
-  /** What GET /api/posts/<id>/status answers, for the post page's handle: 204 for a post the API shows, 404 otherwise. */
+  /** What GET /api/cards/post/<id> answers, for the post page's handle: 204 for a post the API shows, 404 otherwise. */
   postStatus(id: string): number;
+  /** 2d Task 6: what GET /api/cards/profile/<handle> answers, for the profile page's handle: 204 for a profile the API answers, 404 otherwise. */
+  profileStatus(handle: string): number;
 }
 
 type Answer = { status: number; json?: unknown; raw?: Buffer; type?: string };
@@ -1001,6 +1003,8 @@ export function createFixtureApi(): FixtureApi {
   return {
     state,
     postStatus: (asked) => (asked === POST_ID || asked === id(103) || state.written.some((view) => view.id === asked) ? 204 : 404),
+    // The profiles GET /api/profiles/<handle> answers, compared as the card route compares a handle (an @ and the case left out).
+    profileStatus: (asked) => (AUTHORS.some((author) => author.handle === asked.replace(/^@/, "").toLowerCase()) ? 204 : 404),
     async handle(req, res, url, body) {
       const method = req.method ?? "GET";
       state.requests.push({ method, path: `${url.pathname}${url.search}`, at: Date.now() });

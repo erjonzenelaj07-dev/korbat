@@ -40,9 +40,10 @@
  *     it without a user (403); from inside the ntfy container, on the push network, the app's and the console's sites
  *     answer 403. The contact point's routes (/api/staff/contact) stand behind the console's two doors like the case
  *     routes, in step 2.
- * 17. 3f: a post's page (/post/<id>) answers the app's shell with 200 while the post is public and the same bytes, with
- *     the same security headers, with 404 once its author deleted it, and 404 for a post that does not exist or a
- *     malformed id: Caddy asks the API's status route, GET /api/posts/<id>/status, which answers 204 or 404 with no body.
+ * 17. 3f: a post's page (/post/<id>) answers 200 while the post is public, the shell with its share card in its head (2d
+ *     Task 6, step 23), and the plain shell, the same bytes as /, with the same security headers and noindex, with 404 once
+ *     its author deleted it, and 404 for a post that does not exist or a malformed id: Caddy asks the API's card route, GET
+ *     /api/cards/post/<id>; 3f's status route, GET /api/posts/<id>/status, still answers 204 or 404 with no body.
  * 18. With --closed (3f, the stack started with APP_SITE=closed, as for a restore): every path of the app's site, the
  *     API's included, answers 503 with Caddy's one sentence, the console's site still serves its page, and nothing else
  *     runs, since nothing else can be reached through the app's site.
@@ -72,6 +73,12 @@
  *     Caddy with kind=avatar&crop=centre and made square by the real worker (version 3 of its result); PUT /api/me/avatar
  *     sets it, /api/me and the author of the account's post carry its two paths, and large.webp is a 400 px square cut
  *     from the centre, served to anyone under the public header. It stays the account's picture.
+ * 23. 2d Task 6: the share cards through the real Caddy, with Twitterbot's request from infra/caddy/lab/crawlers.json and no
+ *     cookie. The first account's post (/post/<id>) and profile (/u/<handle>) answer 200 with the generic card while its
+ *     link previews are off (the default): korbat's words alone, noindex in the header and in the head, and the served
+ *     title korbat. Once the account sets its own display name to {{env "HOME"}} and turns previews on, the full cards: the
+ *     name printed as text, escaped, with Caddy's HOME nowhere in the page and no {{ left in it; the post's text and time,
+ *     its author's picture of step 22 with its description, the profile's handle. The name and the switch are put back.
  *
  * Runs only against a local Docker context. Needs API_TURNSTILE_SECRET_KEY set to Cloudflare's always-pass test secret and API_SMTP_URL pointing
  * at Mailpit, and API_CONSOLE_ORIGIN naming the --console address. Makes its images with the sharp the worker uses.
@@ -91,6 +98,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { CONSOLE_CSP } from "../apps/admin/site-headers.mjs";
 
@@ -202,7 +210,7 @@ const SECURITY_HEADERS = ["content-security-policy", "strict-transport-security"
 async function postPage(postId) {
   const res = await fetch(`${base}/post/${postId}`, { headers: { accept: "text/html" } });
   const security = Object.fromEntries(SECURITY_HEADERS.map((name) => [name, res.headers.get(name) ?? undefined]));
-  return { status: res.status, type: res.headers.get("content-type"), bytes: Buffer.from(await res.arrayBuffer()), security };
+  return { status: res.status, type: res.headers.get("content-type"), bytes: Buffer.from(await res.arrayBuffer()), security, robots: res.headers.get("x-robots-tag") };
 }
 
 /**
@@ -310,15 +318,21 @@ async function images(token) {
   check("a symlink planted in the store by the worker is refused, and nothing leaks", planted.status === 404 && !leaked, `HTTP ${planted.status}`);
 
   const shown = await postPage(created.body.id);
-  check("3f: the post's page answers the app's shell with 200 while the post is public", shown.status === 200 && shown.type === "text/html; charset=utf-8", `HTTP ${shown.status}, ${shown.type}`);
+  // 2d Task 6: a public post's page is card.html, the shell with the card's block in its head; the plain shell is /'s bytes.
+  const shell = (await send("/")).bytes;
+  check(
+    "3f, 2d: the post's page answers 200 while the post is public, the shell with its card",
+    shown.status === 200 && shown.type === "text/html; charset=utf-8" && shown.bytes.toString("utf8").includes('<meta property="og:site_name" content="korbat" />'),
+    `HTTP ${shown.status}, ${shown.type}`,
+  );
   const removed = await send(`/api/posts/${created.body.id}`, { method: "DELETE", token });
   check("delete the post", removed.status === 204, `HTTP ${removed.status}`);
   const gone = await postPage(created.body.id);
-  check("3f: once deleted, its page answers the same shell with 404, never 451", gone.status === 404 && gone.bytes.equals(shown.bytes), `HTTP ${gone.status}`);
-  check("3f: the same security headers on both answers", isDeepStrictEqual(gone.security, shown.security) && shown.security["content-security-policy"] !== undefined, JSON.stringify(gone.security));
+  check("3f: once deleted, its page answers the plain shell with 404, never 451", gone.status === 404 && gone.bytes.equals(shell), `HTTP ${gone.status}`);
+  check("3f, 2d: the same security headers and noindex on both answers", isDeepStrictEqual(gone.security, shown.security) && shown.security["content-security-policy"] !== undefined && gone.robots === "noindex" && shown.robots === "noindex", JSON.stringify(gone.security));
   const missing = await postPage(randomUUID());
   const malformed = await postPage("not-a-post");
-  check("3f: a post that does not exist and a malformed id answer 404 with the shell", missing.status === 404 && malformed.status === 404 && missing.bytes.equals(shown.bytes), `HTTP ${missing.status}, ${malformed.status}`);
+  check("3f: a post that does not exist and a malformed id answer 404 with the plain shell", missing.status === 404 && malformed.status === 404 && missing.bytes.equals(shell) && malformed.bytes.equals(shell), `HTTP ${missing.status}, ${malformed.status}`);
   const status = await send(`/api/posts/${created.body.id}/status`);
   check("3f: the API's status route answers 404 with no body for the deleted post", status.status === 404 && status.bytes.length === 0, `HTTP ${status.status}, ${status.bytes.length} bytes`);
   const after = await send(large);
@@ -371,6 +385,84 @@ async function avatar(token, postId) {
   const at = (Math.floor(info.height / 2) * info.width + Math.floor(info.width / 2)) * info.channels;
   const centre = data.length > at + 2 ? [data[at], data[at + 1], data[at + 2]] : [0, 0, 0];
   check("2d: it is a 400 px WebP square cut from the centre", meta?.format === "webp" && meta.width === 400 && meta.height === 400 && centre[0] > 150 && centre[2] < 100, `${meta?.format} ${meta?.width}x${meta?.height}, centre ${centre.join(",")}`);
+}
+
+/** Twitterbot's request as the card lab's crawlers.json gives it: its User-Agent and Accept-Encoding, and no cookie. */
+const TWITTERBOT = JSON.parse(readFileSync(new URL("../infra/caddy/lab/crawlers.json", import.meta.url), "utf8")).crawlers.find((crawler) => crawler.name === "Twitterbot").headers;
+
+/**
+ * A page as Twitterbot asks for it through Caddy: its status, its X-Robots-Tag, its text, its served titles and its head
+ * block's tags, which are robots, description and the namespaced ones (og:, twitter:, article:, profile:); the shell's own
+ * viewport and color-scheme are no card's.
+ */
+async function cardPage(path) {
+  const res = await fetch(`${base}${path}`, { headers: TWITTERBOT });
+  const text = await res.text();
+  const tags = [...text.matchAll(/<meta (?:name|property)="([^"]+)" content="([^"]*)" [/]>/g)].map((match) => [match[1], match[2]]).filter(([key]) => key === "robots" || key === "description" || key.includes(":"));
+  return { status: res.status, robots: res.headers.get("x-robots-tag"), text, titles: text.match(/<title>[^<]*<[/]title>/g) ?? [], tags };
+}
+
+/**
+ * Step 23 (2d Task 6, design section 12.4): the share cards of the account's post and profile through the real Caddy, with
+ * Twitterbot's request: the generic card while its link previews are off, the full one once on, and a display name the
+ * account set to a template action printed as text.
+ */
+async function cards(token, postId) {
+  const me = await api("/api/me", { token });
+  const picture = me.body?.avatar?.large;
+  if (!check("2d: the account has its picture of step 22 for its cards", typeof picture === "string" && typeof postId === "string", JSON.stringify(me.body?.avatar))) return;
+  for (const [path, title] of [
+    [`/post/${postId}`, "A post on korbat"],
+    [`/u/${handle}`, "A profile on korbat"],
+  ]) {
+    const page = await cardPage(path);
+    check(
+      `2d: with previews off (the default) ${path.split("/")[1]}'s page is the generic card: korbat's words alone, noindex, the served title korbat`,
+      page.status === 200 &&
+        page.robots === "noindex" &&
+        isDeepStrictEqual(page.tags.map(([key]) => key), ["robots", "og:site_name", "og:type", "og:url", "og:title", "twitter:card"]) &&
+        page.tags.find(([key]) => key === "og:title")?.[1] === title &&
+        page.tags.find(([key]) => key === "og:url")?.[1].endsWith(path) &&
+        isDeepStrictEqual(page.titles, ["<title>korbat</title>"]) &&
+        !page.text.includes("Smoke Test") &&
+        !page.text.includes(picture),
+      `HTTP ${page.status}, ${JSON.stringify(page.tags)}`,
+    );
+  }
+
+  const named = await api("/api/me/profile", { method: "PATCH", json: { displayName: '{{env "HOME"}}' }, token });
+  const on = await api("/api/me/share-previews", { method: "POST", token });
+  if (!check("2d: the account sets its display name to a template action and turns link previews on", named.status === 200 && on.status === 200 && on.body?.sharePreviews === true, `${named.summary}, ${on.summary}`)) return;
+  const home = inside("caddy", "printenv HOME || true");
+  const escapedTitle = `&#123;&#123;env &quot;HOME&quot;&#125;&#125; (@${handle})`;
+  const post = await cardPage(`/post/${postId}`);
+  const read = (page, key) => page.tags.find(([name]) => name === key)?.[1];
+  const created = (await api(`/api/posts/${postId}`)).body?.createdAt;
+  check(
+    "2d: with previews on the post's card names its author, its text, its time and its author's picture, the display name printed as text",
+    post.status === 200 &&
+      read(post, "og:type") === "article" &&
+      read(post, "og:title") === escapedTitle &&
+      read(post, "og:description") === "smoke test post" &&
+      read(post, "og:image")?.endsWith(picture) &&
+      read(post, "og:image:alt") === `Profile picture of @${handle}` &&
+      read(post, "article:published_time") === created &&
+      read(post, "twitter:card") === "summary" &&
+      isDeepStrictEqual(post.titles, ["<title>korbat</title>"]),
+    JSON.stringify(post.tags),
+  );
+  const profile = await cardPage(`/u/${handle}`);
+  check(
+    "2d: with previews on the profile's card names it, with its picture and its handle",
+    profile.status === 200 && read(profile, "og:type") === "profile" && read(profile, "og:title") === escapedTitle && read(profile, "og:image")?.endsWith(picture) && read(profile, "profile:username") === handle,
+    JSON.stringify(profile.tags),
+  );
+  for (const page of [post, profile]) {
+    check("2d: nothing evaluated the name: no {{ in the page, and Caddy's HOME nowhere in it", !page.text.includes("{{") && (home === "" || !page.text.includes(home)), `HOME ${home === "" ? "unset" : "set"}`);
+  }
+  const back = await api("/api/me/profile", { method: "PATCH", json: { displayName: "Smoke Test" }, token });
+  const off = await api("/api/me/share-previews", { method: "DELETE", token });
+  check("2d: the display name and the switch are put back", back.status === 200 && off.status === 200 && off.body?.sharePreviews === false, `${back.summary}, ${off.summary}`);
 }
 
 /** Flat colour compresses to almost nothing, so every file is small to send and at its cap to decode. */
@@ -930,6 +1022,8 @@ async function main() {
   await images(token);
   // 2d Task 3 (step 22): the account's picture, on its post made above.
   await avatar(token, created.body?.id);
+  // 2d Task 6 (step 23): the post's and the profile's share cards, previews off and on, before the token dies at grant-role.
+  await cards(token, created.body?.id);
   if (worstCase) await worstCaseImages(token);
   await importArchive(token);
 

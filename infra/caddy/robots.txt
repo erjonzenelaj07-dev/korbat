@@ -1,0 +1,12 @@
+User-agent: Twitterbot
+User-agent: facebookexternalhit
+User-agent: Slackbot-LinkExpanding
+User-agent: Discordbot
+User-agent: LinkedInBot
+Allow: /post/
+Allow: /u/
+Allow: /api/media/
+Disallow: /
+
+User-agent: *
+Disallow: /

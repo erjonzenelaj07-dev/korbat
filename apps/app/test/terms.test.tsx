@@ -171,6 +171,8 @@ function numbersTable(c: Contracts): { constant: string; section: string; phrase
     { constant: "RETENTION.orderRecordYears", section: "Your data", phrase: `and for ${count(R.orderRecordYears, "year")} the record of a release` },
     { constant: "RETENTION.orderRecordYears", section: "Your data", phrase: `as korbat's records to authorities (${count(R.orderRecordYears, "year")})` },
     { constant: "RECIPIENT_RULES.saltHours", section: "Your data", phrase: `and the day's key after ${count(c.RECIPIENT_RULES.saltHours, "hour")}` },
+    // 2d (design, section 11.3): how long an Activity entry is kept, the days the retention job deletes by.
+    { constant: "ACTIVITY_KEEP_DAYS", section: "Your data", phrase: `and deletes it ${count(c.ACTIVITY_KEEP_DAYS, "day")} after it was written` },
   ];
 }
 
@@ -196,6 +198,8 @@ const constantPaths = (c: Contracts): string[] => [
   // 3d: of AUTOMATION_RULES the terms print a program's six limits and the target of an answer; of RECIPIENT_RULES the salt's hours.
   ...(["decisionsPerHour", "decisionsPerDay", "r2DecisionsPerHour", "r2DecisionsPerDay", "unansweredMax", "unansweredHours", "objectionTargetHours"] as const).flatMap((key) => numberPaths(`AUTOMATION_RULES.${key}`, c.AUTOMATION_RULES[key])),
   ...numberPaths("RECIPIENT_RULES.saltHours", c.RECIPIENT_RULES.saltHours),
+  // 2d: the days an Activity entry is kept.
+  ...numberPaths("ACTIVITY_KEEP_DAYS", c.ACTIVITY_KEEP_DAYS),
 ];
 
 /** A rule's name inside a sentence: its title without the leading "No". */
@@ -712,6 +716,7 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
     collect([contracts.NOTICE_LIMITS, contracts.DAILY_LIMITS, contracts.RETENTION, contracts.CSAM_NOTICE_MAX_ACCOUNTS, contracts.SUSPECT_EARLIER_MONTHS, contracts.APPEAL_MONTHS, contracts.STANDING_RULES, contracts.REPLY_AIM_HOURS]);
     collect([contracts.ORDER_RULES.reportHoldDays, contracts.ORDER_RULES.preserveMarginDays]);
     collect([contracts.AUTOMATION_RULES, contracts.RECIPIENT_RULES.saltHours, contracts.IMPORT_RULES.recordDays]); // 3b Task 7: the import's record.
+    collect([contracts.ACTIVITY_KEEP_DAYS]); // 2d Task 6: the days an Activity entry is kept.
     const outside = Object.entries(text)
       .filter(([title]) => title !== "The rules")
       .map(([, body]) => body)
@@ -755,6 +760,8 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
           // 3d: a program's limits and target, and the reader count's salt (the rest of RECIPIENT_RULES as it is).
           AUTOMATION_RULES: renumber(actual.AUTOMATION_RULES),
           RECIPIENT_RULES: { ...actual.RECIPIENT_RULES, saltHours: renumber(actual.RECIPIENT_RULES.saltHours) },
+          // 2d Task 6: the days an Activity entry is kept, which the privacy text prints.
+          ACTIVITY_KEEP_DAYS: renumber(actual.ACTIVITY_KEEP_DAYS),
           ACCOUNT_MEASURE_SCOPE: { retired: "the phrase of a retirement.", measure: "the phrase of an account measure." },
           RETIRED_HANDLE_PREFIX: "gone_",
           APPEAL_MONTHS: renumber(actual.APPEAL_MONTHS),
@@ -789,6 +796,7 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
       expect(changed.contracts.ORDER_RULES.reportHoldDays).toBeGreaterThan(100);
       expect(changed.contracts.AUTOMATION_RULES.decisionsPerHour).toBeGreaterThan(100);
       expect(changed.contracts.RECIPIENT_RULES.saltHours).toBeGreaterThan(100);
+      expect(changed.contracts.ACTIVITY_KEEP_DAYS).toBeGreaterThan(100);
       expect(changed.rules.RULES_VERSION).toBe(9);
       expect(changed.terms).not.toBe(terms);
     });
@@ -830,6 +838,7 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
       collect([c.STANDING_RULES, c.REPLY_AIM_HOURS, c.STANDING_RULES.ladderStrikes - 1, c.STANDING_RULES.reportWarnShare * 100]);
       collect([c.ORDER_RULES.reportHoldDays, c.ORDER_RULES.preserveMarginDays]);
       collect([c.AUTOMATION_RULES, c.RECIPIENT_RULES.saltHours, c.IMPORT_RULES.recordDays]); // 3b Task 7: the import's record.
+      collect([c.ACTIVITY_KEEP_DAYS]); // 2d Task 6: the days an Activity entry is kept.
       const outside = all.replace(/Article [0-9]+ of /g, " ").replace(/Article [0-9]+\([0-9]+\)|Regulation \(EU\) [0-9]+\/[0-9]+/g, " ").replace(/\bR[1-6]\b/g, " ");
       expect((outside.match(/[0-9]+/g) ?? []).filter((digits) => !values.has(digits))).toEqual(["48", "48"]);
     });
@@ -980,5 +989,67 @@ describe("Importing posts (3b, 11.3)", () => {
   test("Your data gains the import's record and how long it is kept, by IMPORT_RULES' days, without a new version", () => {
     expect(bodyOf(terms, "Your data")).toContain(`at least ${R.recordDays} days after the import ended`);
     expect(terms.TERMS_VERSION).toBe("draft-2026-09");
+  });
+});
+
+// 2d Task 6 appends below: the privacy text's four drafts (2d design, section 11.3).
+describe("2d's drafts in Your data (11.3)", () => {
+  /** The four paragraphs, last in Your data, after the import's record. */
+  const drafts = (): string[] => paragraphsOf(terms, "Your data").slice(-4);
+
+  test("Your data ends with the four drafts, after the import's record, without a new version", () => {
+    const data = paragraphsOf(terms, "Your data");
+    expect(data.at(-5)).toMatch(/^An import's record/);
+    const leads = ["Activity lists the replies to your posts,", "When a post names an account by its handle,", "A profile picture is public:", "When someone shares a link to a public post or profile"];
+    expect(drafts().map((paragraph, n) => paragraph.startsWith(leads[n]!))).toEqual([true, true, true, true]);
+    expect(terms.TERMS_VERSION).toBe("draft-2026-09");
+  });
+
+  test("Activity: what it stores and for how long, by ACTIVITY_KEEP_DAYS, its settings, and that no mail or push is sent about it", () => {
+    const [activity] = drafts();
+    expect(activity).toContain(`never a text, and deletes it ${contracts.ACTIVITY_KEEP_DAYS} days after it was written`);
+    expect(activity).toContain("or sooner when its post is deleted, when one of the two accounts blocks the other or when either account is deleted");
+    expect(activity).toContain("It also keeps when you last looked at Activity and your choices in Settings > Activity, as long as your account exists.");
+    expect(activity).toContain("korbat sends no email and no push notification about Activity: you see it only when you open it.");
+  });
+
+  test("a mention links to the account it named when the post was written and tells that account, within its settings", () => {
+    const [, mention] = drafts();
+    expect(mention).toContain("korbat stores which account held that handle when the post was written");
+    expect(mention).toContain("The handle links to that account only while it still holds the handle");
+    expect(mention).toContain("that account is told in its Activity, as far as its own settings allow and never across a block");
+    expect(mention).toContain("A handle in an imported post is plain text and tells no one.");
+  });
+
+  test("a profile picture is public, is checked like every image, can be reset by a moderator under the rules, and is deleted with the account", () => {
+    const [, , picture] = drafts();
+    expect(picture).toBe(
+      "A profile picture is public: anyone who can see your profile, signed in or not, sees it. It passes the same checks as every image you upload, a moderator can reset it under the rules as a display name or a bio, and it is deleted with your account.",
+    );
+  });
+
+  test("a shared link shows a generic card until its author turns previews on, then what a signed-out reader sees; other sites keep their copy; robots.txt and search engines", () => {
+    const [, , , cards] = drafts();
+    for (const said of [
+      "that site shows a card that names only korbat, until the author turns on link previews in Settings > Privacy",
+      "then the card shows what anyone sees without signing in",
+      "never a count",
+      "The sites that show a card keep their own copy, which korbat cannot change or delete, so a post deleted on korbat may still show there for a while.",
+      "korbat's robots.txt turns away every automated visitor but the link-preview fetchers of the sites it names",
+      "korbat asks search engines not to show its posts and profiles in their results, which a search engine may or may not honour.",
+    ]) {
+      expect(cards, said).toContain(said);
+    }
+  });
+
+  test("the drafts type no number: the days are ACTIVITY_KEEP_DAYS', and with other days the terms print those", async () => {
+    expect(drafts().join(" ").match(/[0-9]+/g)).toEqual([String(contracts.ACTIVITY_KEEP_DAYS)]);
+    vi.resetModules();
+    vi.doMock("@korbat/contracts", async (importOriginal) => ({ ...(await importOriginal<Contracts>()), ACTIVITY_KEEP_DAYS: 123 }));
+    const changed: TermsModule = await import("../src/lib/terms");
+    vi.doUnmock("@korbat/contracts");
+    const text = changed.termsParagraphs(changed.TERMS_SECTIONS.find((section: Section) => section.title === "Your data")!.body).slice(-4).join(" ");
+    expect(text).toContain("deletes it 123 days after it was written");
+    expect(text).not.toContain(`${contracts.ACTIVITY_KEEP_DAYS} days`);
   });
 });

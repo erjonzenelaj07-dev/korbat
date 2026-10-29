@@ -7,6 +7,7 @@ import type { Logger } from "pino";
 import { AccountError, type Account } from "./account";
 import { ActivityError, type Activity } from "./activity";
 import { AuthError, type Auth } from "./auth";
+import type { Cards } from "./cards";
 import type { Config } from "./config";
 import type { AppEnv } from "./env";
 import { ImportError, type Imports } from "./imports";
@@ -65,9 +66,11 @@ export interface AppDeps {
   imports?: Imports;
   /** 2d: Activity. Optional as the other modules are; the server always wires it. */
   activity?: Activity;
+  /** 2d Task 6: the share cards that Caddy asks for. Optional as the other modules are; the server always wires it. */
+  cards?: Cards;
 }
 
-export function createApp({ config, logger, rateLimitStore, healthChecks, auth, social, media, account, staff, moderation, advisoryChecks, transparency, imports, activity }: AppDeps) {
+export function createApp({ config, logger, rateLimitStore, healthChecks, auth, social, media, account, staff, moderation, advisoryChecks, transparency, imports, activity, cards }: AppDeps) {
   const app = new Hono<AppEnv>();
 
   app.use(observability(logger));
@@ -88,6 +91,10 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
   // cookies: after the global limit, which counts it against the visitor, and before the session's resolution, so it
   // reads no session. Every other path falls through to below.
   if (social) app.route("/api", social.statusRoutes);
+  // 2d (design, section 8.1): the share cards of a post's and a profile's page, which Caddy asks in the status route's place
+  // for every view of /post/* and /u/*, beside it and for the same reasons: counted against the visitor by the global limit
+  // (decision 30), and answered before any session is read, so a card is the same for everyone.
+  if (cards) app.route("/api", cards.routes);
   // 3d (design, sections 9.1 and 10.6): GET /api/public/facts and /api/public/transparency, at the same place and for the
   // same reasons: counted against the visitor by the global limit, and answered before any session is read. Each sets its
   // own Cache-Control, which noStore leaves alone.

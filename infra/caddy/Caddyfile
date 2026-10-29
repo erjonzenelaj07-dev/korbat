@@ -33,6 +33,17 @@
   rewrite * /index.html
 }
 
+# 2d (design, section 8.2): a post's or a profile's page with its share card. card.html is the shell with one template action,
+# written by the image's build, that prints the API's Korbat-Card header decoded into the head. templates runs here and
+# nowhere else, so no other answer and no proxied body is ever evaluated: the action only reads a placeholder, Go's
+# templates never evaluate what an action prints, and the API writes the delimiters as character references besides.
+(card_page) {
+  root * /srv
+  rewrite * /card.html
+  templates
+  file_server
+}
+
 # The app's site while it is open (APP_SITE=open, the default).
 (app_site_open) {
   # A client from the push network (ntfy and the watcher, 3f) is refused here: until the push site, only cloudflared could
@@ -86,26 +97,29 @@
     }
   }
 
-  # A post's page (3f design, sections 5 and 7.12): the app's shell under the status the API gives the post, so that a
-  # check from outside reads 404 for a post that is not public and never 451. Caddy asks GET /api/posts/<id>/status, with
-  # the visitor's address and cookies as every proxied request carries them (the route reads no session, and the
-  # global limit counts the question against the visitor): 204 gives the shell with 200, 404 the same shell with 404,
-  # and any other answer (a 429 of the global limit) the shell with 200, as before; handle_errors below does the same
-  # when the API cannot be asked. Only the status line differs: the bytes and the headers are the same in every case,
-  # which Task 4's first step checked on this image (Caddy 2.11.4).
+  # A post's page (3f design, sections 5 and 7.12; 2d design, section 8.2): the app's shell under the status of the post's
+  # share card, so that a check from outside reads 404 for a post that is not public and never 451, and an unfurler finds the
+  # card in the page's first bytes. Caddy asks GET /api/cards/post/<id>, with the visitor's address and cookies as every
+  # proxied request carries them (the route reads no session, and the global limit counts the question against the
+  # visitor): 204 gives card.html, the card's block in its head, with 200; 404 the plain shell with 404; any other answer (a
+  # 429 of the global limit) the plain shell with 200, which loses only the card; handle_errors below does the same when the
+  # API cannot be asked. The request's Range is dropped first, so every answer is whole: a 206 of file_server would carry a
+  # Content-Range of the template's size, which templates does not rewrite. Every answer says noindex. Task 6's first step and
+  # its card lab checked this on this image (Caddy 2.11.4), as 3f's Task 4 checked the status route.
   handle /post/* {
     respond @push 403
     import app_page_headers
     header Cache-Control "no-cache"
+    header X-Robots-Tag "noindex"
     encode gzip
+    request_header -Range
     reverse_proxy api:3000 {
       import /etc/caddy/cf-header.caddy
       method GET
-      rewrite /api/posts/{http.request.uri.path.1}/status
+      rewrite /api/cards/post/{http.request.uri.path.1}
       @shown status 204
       handle_response @shown {
-        import app_shell
-        file_server
+        import card_page
       }
       @gone status 404
       handle_response @gone {
@@ -121,6 +135,46 @@
     }
   }
 
+  # A profile's page (2d design, section 8.2): the same, under the status of the profile's card, GET
+  # /api/cards/profile/<handle>, which answers 404 for a handle no live profile holds now.
+  handle /u/* {
+    respond @push 403
+    import app_page_headers
+    header Cache-Control "no-cache"
+    header X-Robots-Tag "noindex"
+    encode gzip
+    request_header -Range
+    reverse_proxy api:3000 {
+      import /etc/caddy/cf-header.caddy
+      method GET
+      rewrite /api/cards/profile/{http.request.uri.path.1}
+      @shown status 204
+      handle_response @shown {
+        import card_page
+      }
+      @gone status 404
+      handle_response @gone {
+        import app_shell
+        file_server {
+          status 404
+        }
+      }
+      handle_response {
+        import app_shell
+        file_server
+      }
+    }
+  }
+
+  # card.html is served only through the two handles above: asked by its own path it is 404 with no body (2d, 8.2), so its
+  # template action is never sent as text.
+  handle /card.html {
+    respond @push 403
+    import app_page_headers
+    header X-Robots-Tag "noindex"
+    respond "" 404
+  }
+
   # The web app: static files, the page's security headers, and caching by kind of file.
   handle {
     respond @push 403
@@ -134,17 +188,25 @@
       not path /_expo/* /assets/*
     }
     header @page Cache-Control "no-cache"
+    # 2d (design, decision 20 and section 8.2): every page that can name an account asks search engines not to index it; the
+    # five that name none do not. Set only where it applies, never set and then dropped: a dropping line would run before
+    # the set, after app_page_headers' deferred -Server. robots.txt, a file of /srv, is served here as it is.
+    @named {
+      not path / /rules /transparency /explore/about /terms
+    }
+    header @named X-Robots-Tag "noindex"
     try_files {path} /index.html
     file_server
   }
 
-  # A post's page when the API cannot be asked (stopped, or not answering): the shell with 200, as before the status.
-  # Every other error is answered as Caddy answers it without this block.
+  # A post's or (2d) a profile's page when the API cannot be asked (stopped, or not answering): the plain shell with 200,
+  # as before the status, and noindex. Every other error is answered as Caddy answers it without this block.
   handle_errors {
-    @postpage path /post/*
-    handle @postpage {
+    @pages path /post/* /u/*
+    handle @pages {
       import app_page_headers
       header Cache-Control "no-cache"
+      header X-Robots-Tag "noindex"
       encode gzip
       import app_shell
       file_server {

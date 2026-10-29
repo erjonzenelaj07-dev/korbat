@@ -5,23 +5,37 @@ import { APP_SITE, handles, matcherTakes, pathMatchers, readCaddyfile, routeFor,
  * console's reader (apps/admin/test/caddyfile.ts), so the check serves the export under the headers Caddy really sends
  * and never from a copy: the page's security headers (the app_page_headers snippet, its policy among them) and caching by
  * kind of file, immutable for /_expo/* and /assets/*, no-cache for the page and everything else. The site is the snippet
- * that APP_SITE names, open by default, as Caddy reads it with nothing set.
+ * that APP_SITE names, open by default, as Caddy reads it with nothing set. 2d Task 6 (design, sections 8.2 and 12.4): a
+ * post's page and a profile's page each ask the API for their share card, and the files' handle says noindex on every page
+ * but the five that name no account (@named), all of which the check serves as Caddy sends them.
  */
 export { APP_SITE, routeFor };
 
-/** What a request to the app's site reaches: the API, a post's page (the shell under the post's status), or the files. */
-export type AppRoute = { kind: "api" } | { kind: "own"; status: number; body: string; headers: Record<string, string> } | { kind: "post" } | { kind: "files" };
+/**
+ * What a request to the app's site reaches: the API, a handle's own answer, a post's or (2d) a profile's page (the shell
+ * under the status of the page's card), or the files.
+ */
+export type AppRoute = { kind: "api" } | { kind: "own"; status: number; body: string; headers: Record<string, string> } | { kind: "post" } | { kind: "profile" } | { kind: "files" };
 
 /** The app's site block, with its snippets put in. */
 export function appSite(tree: CaddyNode[] = readCaddyfile()): CaddyNode {
   return site(tree, APP_SITE);
 }
 
-/** Whether a handle hands the request to the API as it is (reverse_proxy without a rewrite of its path). */
-function proxies(handle: Handle): "api" | "post" | null {
+/**
+ * Whether a handle hands the request to the API as it is (reverse_proxy without a rewrite of its path), or asks it for a
+ * page's card (2d Task 6: the rewrite names the post's or the profile's card route); a rewrite to anything else is no route
+ * this reader knows.
+ */
+function proxies(handle: Handle): "api" | "post" | "profile" | null {
   const proxy = handle.block.children?.find((node) => node.tokens[0] === "reverse_proxy");
   if (!proxy) return null;
-  return proxy.children?.some((node) => node.tokens[0] === "rewrite") ? "post" : "api";
+  const rewrite = proxy.children?.find((node) => node.tokens[0] === "rewrite");
+  if (rewrite === undefined) return "api";
+  const target = rewrite.tokens[1] ?? "";
+  if (target.startsWith("/api/cards/post/")) return "post";
+  if (target.startsWith("/api/cards/profile/")) return "profile";
+  throw new Error(`a page handle that asks the API for something this reader does not know: ${rewrite.tokens.join(" ")}`);
 }
 
 /** The `respond <body> <status>` of a handle that answers by itself, with its header lines; null for any other handle. */
@@ -42,7 +56,7 @@ export function appRoute(siteBlock: CaddyNode, pathname: string): AppRoute {
   const handle = routeFor(siteBlock, pathname);
   const proxy = proxies(handle);
   if (proxy === "api") return { kind: "api" };
-  if (proxy === "post") return { kind: "post" };
+  if (proxy === "post" || proxy === "profile") return { kind: proxy };
   const own = ownAnswer(handle);
   if (own) return { kind: "own", ...own };
   return { kind: "files" };
@@ -89,7 +103,7 @@ function headersOf(block: CaddyNode): (pathname: string, isFile: boolean) => Rec
 
 /**
  * The headers the app's site sends with a page or a file: those of the handle the path reaches (the post's page handle
- * for /post/*, the files' handle for everything else that is not the API). `isFile` says whether the path names a file of
+ * for /post/*, 2d's profile's page handle for /u/*, the files' handle for everything else that is not the API). `isFile` says whether the path names a file of
  * the export, for a matcher with `file`.
  */
 export function appSiteHeadersFromCaddyfile(tree: CaddyNode[] = readCaddyfile()): (pathname: string, isFile: boolean) => Record<string, string> {
@@ -98,5 +112,9 @@ export function appSiteHeadersFromCaddyfile(tree: CaddyNode[] = readCaddyfile())
   if (statics.length !== 1) throw new Error(`the app site needs exactly one handle without a matcher, the files; it has ${statics.length}`);
   const files = headersOf(statics[0]!.block);
   const posts = headersOf(routeFor(block, "/post/x").block);
-  return (pathname, isFile) => (appRoute(block, pathname).kind === "post" ? posts(pathname, isFile) : files(pathname, isFile));
+  const profiles = headersOf(routeFor(block, "/u/x").block);
+  return (pathname, isFile) => {
+    const kind = appRoute(block, pathname).kind;
+    return kind === "post" ? posts(pathname, isFile) : kind === "profile" ? profiles(pathname, isFile) : files(pathname, isFile);
+  };
 }

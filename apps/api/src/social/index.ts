@@ -2,7 +2,7 @@
  * The only file outside `src/social/` may import. Everything else in the module is private and the
  * architecture test fails the build if another file reaches into it.
  */
-import type { Author, PostView } from "@korbat/contracts";
+import type { Author, PostView, ProfileView } from "@korbat/contracts";
 import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
 import type { Db, DbTx } from "@korbat/db";
@@ -15,10 +15,11 @@ import { WITHOUT_MEDIA, type SocialDeps, type SocialEvents } from "./context";
 import type { StoredPostState } from "./visibility";
 import { startExplore } from "./explore";
 import { exportProfile, type ProfileExport } from "./flows/export";
+import { profileViewOf } from "./flows/profiles";
 import { publishImportedBatch, removeImportedBatch } from "./flows/imports";
 import { createSocialRepo, type AccountLockMode, type CapturedPost, type CapturedProfile, type ImportBatchJob, type ImportBatchPost, type ImportBatchResult, type LockedAccount } from "./repo";
 import { postStatusRoutes, socialRoutes } from "./routes";
-import { authorOf, isTombstone, loadPostViews } from "./views";
+import { authorOf, isTombstone, loadPostViews, postView } from "./views";
 
 export { SocialError } from "./context";
 export { enforceWriteLimit } from "./limits";
@@ -103,6 +104,22 @@ export interface SocialForActivity {
 }
 
 /**
+ * What the cards module needs from this one (2d design, sections 8.1 and 8.4): a post or a profile exactly as a signed-out
+ * reader gets it, from the same reads GET /api/posts/:id and GET /api/profiles/:handle make with no viewer, so moderation,
+ * deletion and 3f's disabled follow without a rule of the card's own; and with each the owner's link-preview switch, which no
+ * public read carries.
+ */
+export interface SocialForCards {
+  /**
+   * The post through postView with no viewer, so postAccess decides it as for anyone signed out: only a visible post, with
+   * its images as a signed-out reader gets them; null for any other state, a missing post, or an author deleted meanwhile.
+   */
+  post(postId: string): Promise<{ view: PostView; previews: boolean } | null>;
+  /** The live profile that holds this handle now, lowercased (an old handle names none), with no viewer; null when none. */
+  profile(handle: string): Promise<{ view: ProfileView; previews: boolean } | null>;
+}
+
+/**
  * The moderation module's interface over the social repository on the pool it is given. A factory of its own, not a
  * member of createSocial's result: the social module's views take facts from the moderation module, which is therefore
  * built between the two.
@@ -163,6 +180,21 @@ export function createSocial(options: CreateSocialOptions) {
       return new Map([...found].map(([id, profile]) => [id, authorOf(profile, avatars.get(id) ?? null)] as const));
     },
   };
+  const forCards: SocialForCards = {
+    async post(postId) {
+      const view = await postView(deps, null, postId);
+      if (view === null) return null;
+      const previews = (await deps.repo.sharePreviewsOf([view.author.id])).get(view.author.id);
+      return previews === undefined ? null : { view, previews };
+    },
+    async profile(handle) {
+      const row = await deps.repo.findProfileByHandle(handle);
+      if (row === null) return null;
+      const [view, switches] = await Promise.all([profileViewOf(deps, null, row), deps.repo.sharePreviewsOf([row.id])]);
+      const previews = switches.get(row.id);
+      return previews === undefined ? null : { view, previews };
+    },
+  };
   const forImports: SocialForImports = {
     importedKeys: (ownerId, keys) => deps.repo.importedKeys(ownerId, keys),
     publishImportedBatch: (job, batch, now) => publishImportedBatch(deps, job, batch, now),
@@ -176,6 +208,8 @@ export function createSocial(options: CreateSocialOptions) {
     forImports,
     /** 2d: the interface the activity module uses. */
     forActivity,
+    /** 2d Task 6: the interface the cards module uses. */
+    forCards,
     routes: socialRoutes(deps, options.requireSession, options.requireFreshAuth),
     /**
      * 3f (design, section 7.12): GET /api/posts/:id/status, a router of its own that app.ts mounts after the global limit

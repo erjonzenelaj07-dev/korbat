@@ -10,7 +10,9 @@ import { appRoute, appSite, appSiteHeadersFromCaddyfile } from "./caddyfile";
  * Caddy's app site as the browser check needs it (UI design, section 12.3), in a small Node server that takes its routes
  * and headers from infra/caddy/Caddyfile: a path the site proxies to the API goes to the fixture API; a post's page is
  * the export's index.html under the status the fixture API gives the post (204 gives 200, 404 gives 404, anything else
- * 200), as Caddy's /post/* handle asks GET /api/posts/<id>/status; everything else is a file of the export, with
+ * 200), as Caddy's /post/* handle asks GET /api/cards/post/<id> (2d Task 6; the status route before it), and a profile's
+ * page the same under the status it gives the profile, as the /u/* handle asks GET /api/cards/profile/<handle>; the check
+ * serves index.html for both, since Caddy's card.html is the image's and is drawn by the card lab; everything else is a file of the export, with
  * index.html for a path that names none (try_files), sent with the headers the site sets for the path asked for. With
  * `holdBundle` the entry bundle is answered two seconds late, so the walk can look at the first paint, which only
  * theme-boot.js has drawn. The page is opened at http://localhost:<port>, never 127.0.0.1: browsers refuse WebAuthn on an
@@ -43,8 +45,11 @@ export const HOLD_MS = 2000;
 /** Hands one API request to the fixtures, with its body read. */
 export type ApiHandler = (req: IncomingMessage, res: ServerResponse, url: URL, body: Buffer) => Promise<void>;
 
-/** What the fixture API says of a post's status, as GET /api/posts/<id>/status would: 204 shown, 404 not. */
+/** What the fixture API says of a post's status, as GET /api/cards/post/<id> would: 204 shown, 404 not. */
 export type PostStatus = (id: string) => number;
+
+/** 2d Task 6: what it says of a profile's, as GET /api/cards/profile/<handle> would: 204 for a profile it answers, 404 not. */
+export type ProfileStatus = (handle: string) => number;
 
 export interface AppSiteServer {
   origin: string;
@@ -80,7 +85,7 @@ async function fileFor(dist: string, pathname: string): Promise<string | null> {
   return info?.isFile() ? file : null;
 }
 
-export async function startAppSite(options: { dist: string; api: ApiHandler; postStatus: PostStatus }): Promise<AppSiteServer> {
+export async function startAppSite(options: { dist: string; api: ApiHandler; postStatus: PostStatus; profileStatus: ProfileStatus }): Promise<AppSiteServer> {
   const dist = path.resolve(options.dist);
   const block = appSite();
   const headersFor = appSiteHeadersFromCaddyfile();
@@ -118,10 +123,10 @@ export async function startAppSite(options: { dist: string; api: ApiHandler; pos
         res.writeHead(405, { allow: "GET, HEAD" }).end();
         return;
       }
-      if (route.kind === "post") {
-        // The second segment of the path, as Caddy's {http.request.uri.path.1} gives it.
-        const id = url.pathname.split("/")[2] ?? "";
-        const status = options.postStatus(id);
+      if (route.kind === "post" || route.kind === "profile") {
+        // The second segment of the path, as Caddy's {http.request.uri.path.1} gives it: a post's id or a profile's handle.
+        const segment = url.pathname.split("/")[2] ?? "";
+        const status = route.kind === "post" ? options.postStatus(segment) : options.profileStatus(segment);
         await sendFile(req, res, url, path.join(dist, "index.html"), false, status === 404 ? 404 : 200);
         return;
       }

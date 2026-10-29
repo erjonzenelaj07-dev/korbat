@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 import { RECIPIENT_READ_ROUTES } from "@korbat/contracts";
 import { createDb } from "@korbat/db";
 import type { AppEnv } from "../../src/env";
+import { createCards } from "../../src/cards";
 import { MemoryStore } from "../../src/middleware/rate-limit";
 import { createSocial } from "../../src/social";
 
@@ -17,6 +18,10 @@ describe("RECIPIENT_READ_ROUTES and the social module's signed-out reads (3d Tas
   const NOT_COUNTED: Record<string, string> = {
     // Caddy asks it for every view of a post's page (3f): the page's own read is what a person makes.
     "GET /api/posts/:id/status": "the page status, which Caddy asks",
+    // 2d Task 6 (design, section 8.1): the share cards, which Caddy asks for every view of a post's or a profile's page in
+    // the status route's place, before the session's resolution: the page's own read is what a person makes.
+    "GET /api/cards/post/:id": "a post's card, which Caddy asks",
+    "GET /api/cards/profile/:handle": "a profile's card, which Caddy asks",
   };
 
   function signedOutReads(): string[] {
@@ -24,7 +29,8 @@ describe("RECIPIENT_READ_ROUTES and the social module's signed-out reads (3d Tas
     const fresh: MiddlewareHandler<AppEnv> = async (_c, next) => next();
     const social = createSocial({ apiDb: createDb("postgres://a:b@localhost:55432/k", { max: 1 }), rateLimitStore: new MemoryStore(), logger: pino({ level: "silent" }), requireSession: guard, requireFreshAuth: fresh });
     const chains = new Map<string, unknown[]>();
-    for (const router of [social.routes, social.statusRoutes]) {
+    const cards = createCards({ social: social.forCards, appOrigin: "https://korbat.example" });
+    for (const router of [social.routes, social.statusRoutes, cards.routes]) {
       for (const route of router.routes) {
         if (route.method !== "GET") continue;
         const key = `GET /api${route.path}`;

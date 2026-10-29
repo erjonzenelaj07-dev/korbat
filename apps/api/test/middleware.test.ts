@@ -37,6 +37,24 @@ describe("security headers", () => {
     expect(h.get("x-content-type-options")).toBe("nosniff");
     expect(h.get("x-frame-options")).toBe("DENY");
     expect(h.get("cache-control")).toBe("no-store");
+    expect(h.get("x-robots-tag")).toBe("noindex");
+  });
+
+  test("2d (design, decision 20 and section 8.2): X-Robots-Tag noindex on every answer, an image's, a 404's and an error's included", async () => {
+    const app = base()
+      .get("/image", () => new Response("webp", { headers: { "content-type": "image/webp", "cache-control": "public, max-age=60" } }))
+      .get("/empty", (c) => c.body(null, 204))
+      .get("/boom", () => {
+        throw new Error("boom");
+      });
+    app.notFound((c) => c.json({ error: "not found" }, 404));
+    app.onError((_err, c) => c.json({ error: "internal" }, 500));
+    for (const [path, status] of [["/image", 200], ["/empty", 204], ["/none", 404], ["/boom", 500]] as const) {
+      const res = await app.request(path);
+      expect([path, res.status, res.headers.get("x-robots-tag")]).toEqual([path, status, "noindex"]);
+    }
+    // A handler's own caching stays as it set it.
+    expect((await app.request("/image")).headers.get("cache-control")).toBe("public, max-age=60");
   });
 });
 
