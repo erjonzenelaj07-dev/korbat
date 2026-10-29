@@ -105,7 +105,9 @@ const DIRECTION_ORDER: readonly QuarantineDirection[] = QUARANTINE_DIRECTIONS;
 /**
  * quarantine-list on the migrator's own connection: one read-only transaction at one snapshot, with the command line's
  * 10-second lock timeout. The lines go to standard output, as the mover reads them; the count and the posts left out to
- * standard error.
+ * standard error. 2d Task 4 (design, section 7.7): a sealed avatar's two files are named as a held upload's are, by
+ * its image id with no post: quarantine_plan lists an avatar a seal for good lists (seal_avatars) since
+ * 0053_avatar_moderation, so the list, the receipt and the record take it with no change here.
  */
 async function quarantineList(tx: DbTx): Promise<{ lines: string[]; notes: string[]; failed: boolean }> {
   const { lines, mismatched } = await quarantineNames(tx);

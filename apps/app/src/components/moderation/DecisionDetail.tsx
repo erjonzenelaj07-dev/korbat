@@ -39,7 +39,7 @@ function FieldValue({ label, value }: { label: string; value: string }) {
  * The images of a post its author deleted are kept for the case and shown to nobody. Every other image comes from the
  * app's own image route, which serves the author their withheld and removed images too.
  */
-function Content({ content }: { content: DecisionContent }) {
+function Content({ content, avatarReset = false }: { content: DecisionContent; avatarReset?: boolean }) {
   if (content.kind === "r4_redacted") return <Note>{DECISION_WORDS.r4Redacted}</Note>;
   if (content.kind === "erased") return <Note>{content.postKept ? `${DECISION_WORDS.erased(content.contentErasedOn)} ${DECISION_WORDS.postKept}` : DECISION_WORDS.erased(content.contentErasedOn)}</Note>;
   if (content.kind === "account") {
@@ -48,6 +48,8 @@ function Content({ content }: { content: DecisionContent }) {
         <FieldValue label={DECISION_WORDS.handle} value={`@${content.handle}`} />
         <FieldValue label={DECISION_WORDS.displayName} value={content.displayName} />
         <FieldValue label={DECISION_WORDS.bio} value={content.bio} />
+        {/* 2d Task 4 (7.7): the reset picture is named, never drawn: korbat serves it to nobody, its owner included (7.5). */}
+        {avatarReset ? <FieldValue label={DECISION_WORDS.avatar} value={DECISION_WORDS.avatarNotShown} /> : null}
       </View>
     );
   }
@@ -452,7 +454,7 @@ export function DecisionDetail({
       <ReportingNow view={view} />
 
       <Section title={DECISION_WORDS.content}>
-        {view.content === null ? <Note>{ORDER_TEXTS.notice.noContent}</Note> : <Content content={view.content} />}
+        {view.content === null ? <Note>{ORDER_TEXTS.notice.noContent}</Note> : <Content content={view.content} avatarReset={view.measures.some((measure) => measure.kind === "reset_avatar")} />}
       </Section>
 
       {view.appeal || view.appealUntil || view.reversedOn ? (

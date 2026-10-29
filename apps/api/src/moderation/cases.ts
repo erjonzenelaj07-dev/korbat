@@ -435,8 +435,8 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
   const q = deps.apiDb;
   const origin = deps.config.APP_ORIGIN;
 
-  // The target as it stands. An account case shows no image: a profile holds none, and the images of its posts are shown
-  // only on those posts' own cases.
+  // The target as it stands. An account case shows no image of its posts: those are shown only on the posts' own cases.
+  // 2d Task 4 (design, section 7.7): it shows its snapshot's profile picture, under gate V's account arm.
   let target: CaseTarget;
   let imagesAllowed = false;
   let authorId: string | null;
@@ -452,6 +452,7 @@ export async function caseView(deps: Pick<ModerationDeps, "apiDb" | "auth" | "me
   } else {
     const account = await liveAccount(q, row.targetId);
     target = { type: "account", id: row.targetId, handle: account?.handle ?? null, displayName: account?.displayName ?? null, bio: account?.bio ?? null, deleted: account?.deleted ?? false };
+    imagesAllowed = account?.imagesAllowed ?? false;
     authorId = row.targetId;
   }
 
@@ -711,10 +712,14 @@ export async function readDecidedCase(deps: ModerationDeps, session: ActiveStaff
  *   3. the media module's answer, and that the image it opened is on the case's own post.
  * Every refusal reads the same, and the file's handle is closed on each refusal after the open. Each view is written to
  * the access log before a byte is sent. The caller streams the file and closes it.
+ *
+ * 2d Task 4 (design, section 7.7): an account's case shows its snapshot's profile picture the same way: step 2 holds the
+ * image to a snapshot of the case, and step 3 to the case's own account (the media module opens an avatar under gate V,
+ * never while the account's case is frozen by a report of child sexual abuse material, when the console draws the
+ * placeholder in the image's place).
  */
 export async function caseImage(deps: Pick<ModerationDeps, "apiDb" | "media">, session: ActiveStaffSession, caseId: string, mediaId: string, size: MediaSize): Promise<StoredFile> {
   const row = await openableCase(deps, session, caseId);
-  if (row.targetType !== "post") throw new ModerationError("image_refused");
   // The id in the spelling the database writes, which is the one a snapshot lists its images by.
   const imageId = mediaId.toLowerCase();
   if (!(await snapshotListsImage(deps.apiDb, caseId, imageId))) throw new ModerationError("image_refused");
@@ -724,8 +729,10 @@ export async function caseImage(deps: Pick<ModerationDeps, "apiDb" | "media">, s
   if (image === "matched") throw new ModerationError("image_matched");
   if (!image) throw new ModerationError("image_refused");
   try {
-    // The image is of another post than this case's: the same answer as for an image that is not shown at all.
-    if (image.postId !== row.targetId) throw new ModerationError("image_refused");
+    // The image is of another post than this case's, or (2d) not the case's own account's picture: the same answer as for
+    // an image that is not shown at all.
+    const ours = row.targetType === "post" ? image.postId === row.targetId : image.postId === null && image.ownerId === row.targetId;
+    if (!ours) throw new ModerationError("image_refused");
     await insertAccess(deps.apiDb, { staffId: session.userId, caseId, kind: "image_viewed", mediaId: imageId });
   } catch (err) {
     await image.file.handle.close();
@@ -823,6 +830,9 @@ export async function snapshotIn(deps: Pick<ModerationDeps, "social" | "media">,
   } else {
     const profile = await deps.social.captureProfile(tx, row.targetId);
     if (!profile) throw new ModerationError("not_found");
+    // 2d Task 4 (design, section 7.7): the account's current picture, held for the case and copied by reference, as an
+    // intake copies it; null when it has none, as before 2d, so a picture set or removed is a new snapshot.
+    const avatar = (await deps.media.hold(tx, [{ caseId, accountId: row.targetId }])).get(row.targetId) ?? [];
     content = {
       caseId,
       targetType: "account",
@@ -833,7 +843,7 @@ export async function snapshotIn(deps: Pick<ModerationDeps, "social" | "media">,
       replyToId: null,
       quoteOfId: null,
       body: null,
-      media: null,
+      media: avatar.length > 0 ? avatar : null,
       displayName: profile.displayName,
       bio: profile.bio,
       handle: profile.handle,

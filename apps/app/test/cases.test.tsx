@@ -519,6 +519,13 @@ describe("a decision's screen", () => {
     expect(text).toContain(`${DECISION_WORDS.bio} what the bio said`);
     expect(text).toContain(`${DECISION_WORDS.displayName} Ada`);
     expect(text).not.toContain("Your post of");
+    // 2d Task 4 (7.7): a reset of the profile picture names the picture under its label and draws no image: korbat serves
+    // a reset picture to nobody, its owner included. A decision that resets no picture says nothing of one.
+    expect(text).not.toContain(DECISION_WORDS.avatar);
+    const avatar = screen({ ...reset, measures: [{ kind: "reset_avatar" as const, mediaId: null, noEffect: null, sealed: null }] });
+    expect(textOf(avatar)).toContain(`${DECISION_WORDS.avatar} ${DECISION_WORDS.avatarNotShown}`);
+    expect(DECISION_WORDS.avatar).toBe("Profile picture");
+    expect(loaded(avatar)).toEqual([]);
     // A later decision that lifts the reset: its statement says where the old value can be read, and the screen links there.
     const lifted = {
       kind: "correction" as const,

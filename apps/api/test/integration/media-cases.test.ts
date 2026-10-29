@@ -299,8 +299,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: holds, reach, the staff'
 
         const locks = seen.filter((statement) => /\bfor (key share|share|update|no key update)\b/.test(statement.text));
         expect(locks).toHaveLength(1);
-        // The rows are the images' own, the posts are read and never locked, and the order is the rows' ids.
-        expect(locks[0]!.text).toMatch(/from post_media m join posts p on p\.id = m\.post_id where .* order by m\.id for key share of m$/);
+        // The rows are the images' own, the posts are read and never locked, and the order is the rows' ids. 2d Task 4: a left
+        // join, so that an account's avatar (on no post) is read and locked by the same statement.
+        expect(locks[0]!.text).toMatch(/from post_media m left join posts p on p[.]id = m[.]post_id where .* order by m[.]id for key share of m$/);
         const reached = sorted([...first.mediaIds, ...second.mediaIds, ...other.mediaIds]);
         expect(locks[0]!.rows.map((row) => row.id)).toEqual(reached);
         expect(locks[0]!.rows.map((row) => row.id)).not.toContain(upload);
@@ -792,10 +793,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: holds, reach, the staff'
               for (const node of nodes) {
                 for (const condition of Object.values(node)) {
                   // 2d Task 3: the branch holds a CASE of its own, the post's freeze for a row on a post and, for an avatar on no post,
-                  // the account's (account_frozen), each read only after the marks were tested.
-                  if (typeof condition === "string" && (condition.includes("post_frozen") || condition.includes("account_frozen"))) {
+                  // the account's (account_frozen), each read only after the marks were tested. 2d Task 4: and the seal's arm
+                  // of an avatar (avatar_sealed) beside the account's freeze.
+                  if (typeof condition === "string" && (condition.includes("post_frozen") || condition.includes("account_frozen") || condition.includes("avatar_sealed"))) {
                     expect(condition, label).toMatch(
-                      /CASE WHEN [(][(]p[.]state = 'deleted_by_author'.*[)] THEN CASE WHEN [(]m[.]post_id IS NOT NULL[)] THEN [(]NOT post_frozen[(]m[.]post_id[)][)] WHEN [(]m[.]kind = 'avatar'.*[)] THEN [(]NOT account_frozen[(]m[.]owner_id[)][)] ELSE true END ELSE false END/,
+                      /CASE WHEN [(][(]p[.]state = 'deleted_by_author'.*[)] THEN CASE WHEN [(]m[.]post_id IS NOT NULL[)] THEN [(]NOT post_frozen[(]m[.]post_id[)][)] WHEN [(]m[.]kind = 'avatar'.*[)] THEN [(][(]NOT account_frozen[(]m[.]owner_id[)][)] AND [(]NOT avatar_sealed[(]m[.]id[)][)][)] ELSE true END ELSE false END/,
                     );
                   }
                 }

@@ -144,15 +144,16 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the standing ledger", ()
 
   // ---------------------------------------------------------------- the constants and the enum
 
-  test("standing_rules() holds the contracts' STANDING_RULES, name by name, and action_kind the contracts' 24 kinds in order", async () => {
+  test("standing_rules() holds the contracts' STANDING_RULES, name by name, and action_kind the contracts' 26 kinds in order", async () => {
     const [row] = await apiDb.execute<Record<string, unknown>>(sql`select * from public.standing_rules()`);
     const camel = (name: string) => name.replace(/_([a-z])/g, (_m, letter: string) => letter.toUpperCase());
     const read = Object.fromEntries(Object.entries(row!).map(([name, value]) => [camel(name), Array.isArray(value) ? value : Number(value)]));
     expect(read).toEqual({ ...STANDING_RULES, ladderDays: [...STANDING_RULES.ladderDays] });
     const values = await apiDb.execute<{ value: string }>(sql`select unnest(enum_range(null::action_kind))::text as value`);
-    // 3f: the migration orders adds an order's measure and its reversal after them, and since Task 3 they are the last two of ACTION_KINDS.
+    // 3f: the migration orders adds an order's measure and its reversal after them, and since Task 3 they are the last two of
+    // 3f's ACTION_KINDS; 2d Task 4 (0052_avatar_kinds) appends the reset of a profile picture and its reversal after those.
     expect(values.map((v) => v.value)).toEqual([...ACTION_KINDS]);
-    expect(ACTION_KINDS.slice(-2)).toEqual([...ORDER_ACTION_KINDS]);
+    expect(ACTION_KINDS.slice(-4, -2)).toEqual([...ORDER_ACTION_KINDS]);
   });
 
   // ---------------------------------------------------------------- invariant 4: a strike exactly when one is due
@@ -614,11 +615,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the standing ledger", ()
 
   // ---------------------------------------------------------------- row 24: the R4 redaction never meets 3e's measures
 
-  test("the R4 redaction's candidates name the four kinds of 3c: a suspension that cites R4 is never a candidate, however final (row 24)", async () => {
-    // The built text of the retention job and of the overview: REDACTABLE names exactly the four.
+  test("the R4 redaction's candidates name the four kinds of 3c and 2d's reset of a profile picture: a suspension that cites R4 is never a candidate, however final (row 24)", async () => {
+    // The built text of the retention job and of the overview: REDACTABLE names exactly the four, and since 2d Task 4 the
+    // reset of a profile picture, a field reset as the two of 3c (0053_avatar_moderation's redact_r4_body lists it too).
     const source = readFileSync(path.resolve(import.meta.dirname, "../../src/moderation/repo.ts"), "utf8");
     const redactable = source.slice(source.indexOf("const REDACTABLE = sql`"), source.indexOf("`;", source.indexOf("const REDACTABLE = sql`")));
-    expect(redactable).toContain("m.kind in ('remove', 'remove_media', 'reset_bio', 'reset_display_name')");
+    expect(redactable).toContain("m.kind in ('remove', 'remove_media', 'reset_bio', 'reset_display_name', 'reset_avatar')");
     await inWorld(async (tx) => {
       const account = await profile(tx);
       for (const minutes of [0, 1, 2]) await strikeIn(tx, account.id, minutes, "R4");

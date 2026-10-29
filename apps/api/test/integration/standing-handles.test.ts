@@ -275,10 +275,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the retirement of a hand
   });
 
   test("row 24: a retirement that cites R4 is final for months and never meets the R4 redaction: no candidate, no erasure, never counted as late", async () => {
-    // The built text of the retention job and of the overview: REDACTABLE names exactly 3c's four kinds.
+    // The built text of the retention job and of the overview: REDACTABLE names exactly 3c's four kinds and (2d Task 4) the
+    // reset of a profile picture, a field reset as two of them; never a retirement.
     const source = readFileSync(path.resolve(import.meta.dirname, "../../src/moderation/repo.ts"), "utf8");
     const redactable = source.slice(source.indexOf("const REDACTABLE = sql`"), source.indexOf("`;", source.indexOf("const REDACTABLE = sql`")));
-    expect(redactable).toContain("m.kind in ('remove', 'remove_media', 'reset_bio', 'reset_display_name')");
+    expect(redactable).toContain("m.kind in ('remove', 'remove_media', 'reset_bio', 'reset_display_name', 'reset_avatar')");
     const subject = await account();
     const decisionId = await retire((await reportedAccount(subject.id, subject.handle)).caseId);
     const periods = { intakeDays: 30, statementMonths: 12, draftHours: 24, accessLogMonths: 12 };

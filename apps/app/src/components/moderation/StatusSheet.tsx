@@ -106,6 +106,9 @@ export function measureLines(view: DecisionView): string[] {
         return done.reset("display_name", view.kind === "interim");
       case "reset_bio":
         return done.reset("bio", view.kind === "interim");
+      // 2d Task 4 (7.7): the profile picture, the third field an account case resets.
+      case "reset_avatar":
+        return done.reset("avatar", view.kind === "interim");
       case "seal_media": {
         const sealed = measure.sealed ?? { posts: 0, images: 0, deletedImages: 0 };
         return view.post ? STATEMENT_WORDS.sealPost(post, sealed.images) : STATEMENT_WORDS.sealAccount(sealed.images, sealed.posts);

@@ -46,8 +46,14 @@ export async function serve(deps: MediaDeps, request: ServeRequest): Promise<Ser
     // 2d Task 3 (design, sections 7.5 and 7.8; decision 29): an avatar is served, to anyone and under the public header,
     // exactly while it is a live profile's picture, visible and not erased; every other avatar row (an upload not set yet,
     // a replaced or removed one, one a hold keeps, one of a deleted account, a sealed one) is not found for everyone, its
-    // owner included. The viewer is never asked. Task 4 adds the owner's own picture while R1's review withholds it.
-    if (access.profileId === null || access.profileDeleted || access.mediaState !== "visible" || access.erased) return { kind: "not_found" };
+    // owner included. 2d Task 4 (7.5, 7.6): a set picture R1's review withholds (withheld) goes to its owner alone, under
+    // PRIVATE_CACHE, as an author's own hidden image; only that branch asks for the viewer, so a visible avatar costs one
+    // query. A reset picture is detached (no profile), so it is not found for its owner either.
+    if (access.profileId === null || access.profileDeleted || access.erased) return { kind: "not_found" };
+    if (access.mediaState === "withheld") {
+      if ((await request.viewer()) !== access.ownerId) return { kind: "not_found" };
+      cacheControl = PRIVATE_CACHE;
+    } else if (access.mediaState !== "visible") return { kind: "not_found" };
   } else {
     if (!access.postState) return { kind: "not_found" };
     if (access.erased || !isShown(access.mediaState) || !isShown(access.postState)) return { kind: "not_found" };

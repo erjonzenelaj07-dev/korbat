@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   ALT_MAX_LENGTH,
   AVATAR_CROPS,
+  AVATAR_RESET_DAYS,
   AltText,
   AvatarView,
   HiddenMedia,
@@ -33,11 +34,16 @@ describe("limits and codes", () => {
     expect([...MEDIA_ACCEPTED_TYPES]).toEqual(["image/jpeg", "image/png", "image/webp", "image/avif", "image/gif"]);
   });
 
+  test("2d Task 4 (7.7): a reset picture is refused for 30 days", () => {
+    expect(AVATAR_RESET_DAYS).toBe(30);
+  });
+
   test("error codes and failure reasons", () => {
     // 3d Task 7: upload_refused, a post that attaches an upload korbat did not accept.
     // 2d Task 3 (9.4): avatar_not_ready, an upload set as the avatar that is processing, failed or refused; not_an_avatar, a
-    // post's image sent as the avatar.
-    expect(MediaErrorCode.options).toEqual(["unsupported_media_type", "file_too_large", "too_many_pending_uploads", "uploads_unavailable", "media_unavailable", "upload_refused", "avatar_not_ready", "not_an_avatar"]);
+    // post's image sent as the avatar. 2d Task 4 (7.7, 9.4): avatar_reset, the picture a moderator reset on this account less
+    // than 30 days ago.
+    expect(MediaErrorCode.options).toEqual(["unsupported_media_type", "file_too_large", "too_many_pending_uploads", "uploads_unavailable", "media_unavailable", "upload_refused", "avatar_not_ready", "not_an_avatar", "avatar_reset"]);
     expect(MediaFailure.options).toEqual(["unsupported_format", "animated_not_supported", "image_too_large", "corrupt_image", "processing_failed"]);
   });
 

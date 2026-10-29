@@ -82,8 +82,9 @@ const retiredCase = (decided: CaseDecision = retired()): CaseView => ({
 describe("the control in the composer of an account case (8.3)", () => {
   test("the retirement is offered in a final decision on an account case to any moderator, never while deciding and never on a post case", () => {
     const view = retireCase();
-    expect(measuresOffered(view, "final")).toEqual(["reset_display_name", "reset_bio", "retire_handle"]);
-    expect(measuresOffered(view, "interim")).toEqual(["reset_display_name", "reset_bio"]);
+    // 2d Task 4 (7.7): the reset of a profile picture follows them, last in the ledger's order.
+    expect(measuresOffered(view, "final")).toEqual(["reset_display_name", "reset_bio", "retire_handle", "reset_avatar"]);
+    expect(measuresOffered(view, "interim")).toEqual(["reset_display_name", "reset_bio", "reset_avatar"]);
     expect(MEASURES.retire_handle.label).toBe("Retire the handle");
     const out = composer(view, finalRetire(view, { actions: [] }));
     expect(out).toContain(MEASURES.retire_handle.label);

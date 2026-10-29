@@ -31,8 +31,12 @@ export interface MediaRow {
   moderationState: "visible" | "withheld" | "removed" | "sealed";
 }
 
-/** One hold request of an intake: a post whose images the case holds as evidence, or an account whose images are only locked. */
-export type HoldPair = { caseId: string; postId: string } | { ownerId: string };
+/**
+ * One hold request of an intake: a post whose images the case holds as evidence, or an account whose images are only
+ * locked. 2d Task 4 (design, section 7.7): or an account case's hold on the account's current avatar, which its snapshot
+ * lists by reference.
+ */
+export type HoldPair = { caseId: string; postId: string } | { ownerId: string } | { caseId: string; accountId: string };
 
 /** An image as a case's snapshot lists it. The alt text is null for an image whose content was erased. */
 export interface HeldImage {
@@ -129,12 +133,13 @@ const EXPORTABLE = and(
  *
  * 2d Task 3: an avatar on no post is kept by post_media_keep while its owner's account case is frozen by a suspect report,
  * the database's account_frozen (0051_avatars, the freeze's account arm). It is read here too, so that the disposal does not
- * take again, round after round, a row the trigger keeps, as it does not for a frozen post.
+ * take again, round after round, a row the trigger keeps, as it does not for a frozen post. 2d Task 4: and while a seal in
+ * force lists it, the database's avatar_sealed (0053_avatar_moderation, the keep trigger's seal arm for an avatar).
  */
 const DISPOSABLE = sql`(m.hold_until is null or m.hold_until <= now())
   and case when (p.state = 'deleted_by_author' or o.deleted_at is not null or p.erased_at is not null or m.erased_at is not null)
            then (case when m.post_id is not null then not public.post_frozen(m.post_id)
-                      when m.kind = 'avatar' then not public.account_frozen(m.owner_id)
+                      when m.kind = 'avatar' then not public.account_frozen(m.owner_id) and not public.avatar_sealed(m.id)
                       else true end)
            else false end`;
 
@@ -306,6 +311,28 @@ export function createMediaRepo(db: Db) {
     },
 
     /**
+     * 2d Task 4 (design, section 7.6): signals' avatar form. The avatar with its score while it is the picture of its
+     * owner's live profile, ready and unerased (an empty list otherwise), in the same shape as a post's images: the program
+     * judges a picture only while someone may be shown it. It locks nothing.
+     */
+    async avatarSignals(q: Pick<Db, "execute"> | Pick<DbTx, "execute">, mediaId: string, ownerId: string): Promise<{ mediaId: string; score: number | null }[]> {
+      const rows = (await q.execute(sql`
+        select m.id, m.nsfw_score from public.post_media m join public.profiles p on p.id = m.profile_id
+         where m.id = ${mediaId}::uuid and m.profile_id = ${ownerId}::uuid and m.kind = 'avatar' and m.status = 'ready' and m.erased_at is null and p.deleted_at is null`)) as unknown as { id: string; nsfw_score: number | null }[];
+      return rows.map((row) => ({ mediaId: row.id, score: row.nsfw_score === null ? null : Number(row.nsfw_score) }));
+    },
+
+    /**
+     * 2d Task 4 (design, section 7.6): the owner of an avatar's row, or null when no avatar has the id. The program's step
+     * reads it before its transaction, as it reads an image's post, to take the account branch: an avatar's owner never
+     * changes. A read that holds no row.
+     */
+    async avatarOwner(q: Pick<Db, "execute"> | Pick<DbTx, "execute">, mediaId: string): Promise<string | null> {
+      const [row] = (await q.execute(sql`select owner_id from public.post_media where id = ${mediaId}::uuid and kind = 'avatar'`)) as unknown as { owner_id: string }[];
+      return row?.owner_id ?? null;
+    },
+
+    /**
      * 3d Task 6 (design, sections 5 and 7.9, MediaForCases.unsignalled): the sweep's read of images that should have a
      * signal and have none: every ready, unerased image of a post created in the last `hours` hours, the post not deleted
      * by its author, whose score is at or over `threshold` and that no r1_score signal names. The media repository names
@@ -384,6 +411,8 @@ export function createMediaRepo(db: Db) {
       kind: MediaKind;
       profileId: string | null;
       profileDeleted: boolean;
+      /** 2d Task 4: the row's owner, whom serve shows an avatar R1's review withholds (7.5). */
+      ownerId: string;
     } | null> {
       const rows = await db
         .select({
@@ -396,6 +425,7 @@ export function createMediaRepo(db: Db) {
           kind: postMedia.kind,
           profileId: postMedia.profileId,
           profileDeletedAt: profiles.deletedAt,
+          ownerId: postMedia.ownerId,
         })
         .from(postMedia)
         .leftJoin(posts, eq(posts.id, postMedia.postId))
@@ -413,6 +443,7 @@ export function createMediaRepo(db: Db) {
         kind: found.kind,
         profileId: found.profileId,
         profileDeleted: found.profileDeletedAt !== null,
+        ownerId: found.ownerId,
       };
     },
 
@@ -482,12 +513,18 @@ export function createMediaRepo(db: Db) {
      */
     async attachAvatar(tx: DbTx, accountId: string, mediaId: string): Promise<{ avatar: AvatarView; former: string | null }> {
       const [row] = (await tx.execute(sql`
-        select owner_id, kind::text as kind, status::text as status, moderation_state::text as state, erased_at is not null as erased, profile_id
-          from post_media where id = ${mediaId}::uuid for no key update`)) as unknown as { owner_id: string; kind: MediaKind; status: string; state: string; erased: boolean; profile_id: string | null }[];
+        select owner_id, kind::text as kind, status::text as status, moderation_state::text as state, erased_at is not null as erased, profile_id, avatar_sha256
+          from post_media where id = ${mediaId}::uuid for no key update`)) as unknown as { owner_id: string; kind: MediaKind; status: string; state: string; erased: boolean; profile_id: string | null; avatar_sha256: string | null }[];
       if (!row || row.owner_id !== accountId) throw new MediaError("not_found", 404);
       if (row.kind !== "avatar") throw new MediaError("not_an_avatar", 409);
       if (row.status !== "ready" || row.state !== "visible" || row.erased) throw new MediaError("avatar_not_ready", 409);
       if (row.profile_id === accountId) return { avatar: avatarView(mediaId), former: null };
+      // 2d Task 4 (design, sections 7.3 step 2 and 7.7): the very picture a moderator reset on this account, the same file by
+      // its SHA-256, is refused while the reset's 30 days run; a near copy stays a moderator's call. avatar_resets keeps the
+      // hash, so it outlives the reset row. Read after the row's lock, in a statement of its own.
+      const [reset] = (await tx.execute(sql`
+        select 1 from public.avatar_resets r where r.account_id = ${accountId}::uuid and r.sha256 = ${row.avatar_sha256} and r.until > now() limit 1`)) as unknown as unknown[];
+      if (reset !== undefined) throw new MediaError("avatar_reset", 409);
       const former = await detachCurrent(tx, accountId);
       try {
         await tx.execute(sql`update post_media set profile_id = ${accountId}::uuid where id = ${mediaId}::uuid`);
@@ -521,15 +558,17 @@ export function createMediaRepo(db: Db) {
     /**
      * The avatars of these profiles as every reader of a view gets them (7.5), in one statement on post_media_avatar_idx:
      * the row set as the profile's picture that serve would serve publicly: ready, visible, not erased, its profile not
-     * deleted. A profile without one is absent from the map, and its monogram is drawn. `viewer` is the reader, whom Task 4
-     * (7.6) shows their own picture while R1's review withholds it from everyone else; nothing else depends on it.
+     * deleted. A profile without one is absent from the map, and its monogram is drawn. `viewer` is the reader: 2d Task 4
+     * (7.6) gives the viewer their own picture while R1's review withholds it (withheld) from everyone else, as serve does;
+     * nothing else depends on it, and a sealed picture is given to nobody.
      */
     async avatarsOf(profileIds: readonly string[], viewer: string | null): Promise<Map<string, AvatarView>> {
       const found = new Map<string, AvatarView>();
       if (profileIds.length === 0) return found;
+      const own = viewer === null ? sql`false` : sql`(m.moderation_state = 'withheld' and m.profile_id = ${viewer}::uuid)`;
       const rows = (await db.execute(sql`
         select m.profile_id, m.id from post_media m join profiles p on p.id = m.profile_id
-         where m.profile_id = any(${uuidArray([...new Set(profileIds)])}) and m.status = 'ready' and m.moderation_state = 'visible'
+         where m.profile_id = any(${uuidArray([...new Set(profileIds)])}) and m.status = 'ready' and (m.moderation_state = 'visible' or ${own})
            and m.erased_at is null and p.deleted_at is null`)) as unknown as { profile_id: string; id: string }[];
       for (const row of rows) found.set(row.profile_id, avatarView(row.id));
       return found;
@@ -769,36 +808,53 @@ export function createMediaRepo(db: Db) {
      * and is not erased, in id order, which is the order the holds are released in: an owner pair gets no hold, since the
      * images of a frozen post are kept whether a hold stands or not. It answers, for each post pair, the post's images
      * in position order, an erased one without its alt text; an empty list means the images are gone.
+     *
+     * 2d Task 4 (design, section 7.7): a pair `{ caseId, accountId }` locks the account's current avatar in the same
+     * statement and id order, places the case's hold on it while it is not erased, and answers it under the account's id as
+     * the account snapshot's media, `{ id, alt: null, width, height }` (an empty list when the account has no picture). An
+     * owner pair also locks the owner's avatars, so a delete of one that races a suspect report waits and then meets the
+     * freeze's account arm.
      */
     async hold(tx: DbTx, pairs: readonly HoldPair[]): Promise<Map<string, HeldImage[]>> {
       const caseOf = new Map<string, string>();
       const owners: string[] = [];
+      const avatarCaseOf = new Map<string, string>();
       for (const pair of pairs) {
         if ("postId" in pair) caseOf.set(pair.postId, pair.caseId);
+        else if ("accountId" in pair) avatarCaseOf.set(pair.accountId, pair.caseId);
         else owners.push(pair.ownerId);
       }
-      const held = new Map<string, HeldImage[]>([...caseOf.keys()].map((postId) => [postId, []]));
-      if (caseOf.size === 0 && owners.length === 0) return held;
+      const held = new Map<string, HeldImage[]>([...caseOf.keys(), ...avatarCaseOf.keys()].map((id) => [id, []]));
+      if (caseOf.size === 0 && owners.length === 0 && avatarCaseOf.size === 0) return held;
 
+      // A left join, so that an avatar (on no post) is read and locked by the same statement as the posts' images.
       const locked = (await tx.execute(sql`
-        select m.id, m.post_id, m.position, m.width, m.height, m.alt_text, (m.erased_at is not null or p.erased_at is not null) as erased
-        from post_media m join posts p on p.id = m.post_id
-        where m.post_id = any(${uuidArray([...caseOf.keys()])}) or m.owner_id = any(${uuidArray(owners)})
-        order by m.id for key share of m`)) as unknown as { id: string; post_id: string; position: number; width: number; height: number; alt_text: string | null; erased: boolean }[];
+        select m.id, m.post_id, m.profile_id, m.position, m.width, m.height, m.alt_text, (m.erased_at is not null or p.erased_at is not null) as erased
+        from post_media m left join posts p on p.id = m.post_id
+        where m.post_id = any(${uuidArray([...caseOf.keys()])})
+           or (m.owner_id = any(${uuidArray(owners)}) and (m.post_id is not null or m.kind = 'avatar'))
+           or m.profile_id = any(${uuidArray([...avatarCaseOf.keys()])})
+        order by m.id for key share of m`)) as unknown as { id: string; post_id: string | null; profile_id: string | null; position: number | null; width: number; height: number; alt_text: string | null; erased: boolean }[];
 
-      // The rows came back in id order; the holds are placed in that order too.
-      const toHold = locked.filter((row) => caseOf.has(row.post_id) && !row.erased);
+      // The rows came back in id order; the holds are placed in that order too, each row with the case that holds it.
+      const holder = (row: (typeof locked)[number]): string | undefined =>
+        row.post_id !== null ? caseOf.get(row.post_id) : row.profile_id !== null ? avatarCaseOf.get(row.profile_id) : undefined;
+      const toHold = locked.filter((row) => holder(row) !== undefined && !row.erased);
       if (toHold.length > 0) {
         await tx.execute(sql`
           insert into media_holds (media_id, case_id)
           select v.media_id, v.case_id
-          from unnest(${uuidArray(toHold.map((row) => row.id))}, ${uuidArray(toHold.map((row) => caseOf.get(row.post_id)!))}) as v(media_id, case_id)
+          from unnest(${uuidArray(toHold.map((row) => row.id))}, ${uuidArray(toHold.map((row) => holder(row)!))}) as v(media_id, case_id)
           where not exists (select 1 from media_holds h where h.media_id = v.media_id and h.case_id = v.case_id and h.released_at is null)
           order by v.media_id`);
       }
 
-      for (const row of [...locked].sort((a, b) => a.position - b.position)) {
-        held.get(row.post_id)?.push({ id: row.id, alt: row.erased ? null : (row.alt_text ?? ""), width: row.width, height: row.height });
+      for (const row of locked.filter((r) => r.post_id !== null).sort((a, b) => (a.position ?? 0) - (b.position ?? 0))) {
+        held.get(row.post_id!)?.push({ id: row.id, alt: row.erased ? null : (row.alt_text ?? ""), width: row.width, height: row.height });
+      }
+      // The account's picture, unless it is erased: no reader is shown an erased one.
+      for (const row of locked.filter((r) => r.post_id === null && r.profile_id !== null && avatarCaseOf.has(r.profile_id) && !r.erased)) {
+        held.get(row.profile_id!)!.push({ id: row.id, alt: null, width: row.width, height: row.height });
       }
       return held;
     },
@@ -835,16 +891,20 @@ export function createMediaRepo(db: Db) {
      * whether its content or its post's was erased, and whether its post is frozen now. Null when no row has the id or
      * the image is on no post.
      */
-    async staffAccess(id: string): Promise<{ postId: string; status: MediaRow["status"]; width: number | null; height: number | null; mediaState: MediaRow["moderationState"]; erased: boolean; frozen: boolean; matched: boolean } | null> {
+    async staffAccess(id: string): Promise<{ postId: string | null; ownerId: string; status: MediaRow["status"]; width: number | null; height: number | null; mediaState: MediaRow["moderationState"]; erased: boolean; frozen: boolean; matched: boolean } | null> {
       // 3d Task 7 (design, sections 5 and 7.11; review ruling 2): also whether an unerased match record names the image,
-      // an acting match or a flag, which shuts gate V for it on every case, whatever was answered.
+      // an acting match or a flag, which shuts gate V for it on every case, whatever was answered. 2d Task 4 (7.7): an
+      // avatar is read too, with its owner and no post; it is frozen while its owner's account case is (account_frozen),
+      // which a report of child sexual abuse material about the account makes it, and a sealed one is refused by its state.
+      // Every other image on no post (an upload) is answered null, as before.
       const [row] = (await db.execute(sql`
-        select m.post_id, m.status, m.width, m.height, m.moderation_state, (m.erased_at is not null or p.erased_at is not null) as erased, public.post_frozen(m.post_id) as frozen,
+        select m.post_id, m.owner_id, m.status, m.width, m.height, m.moderation_state, (m.erased_at is not null or p.erased_at is not null) as erased,
+               case when m.post_id is not null then public.post_frozen(m.post_id) else public.account_frozen(m.owner_id) end as frozen,
                exists (select 1 from public.media_matches x where x.media_id = m.id and x.erased_at is null) as matched
-        from post_media m join posts p on p.id = m.post_id
-        where m.id = ${id}::uuid`)) as unknown as { post_id: string; status: MediaRow["status"]; width: number | null; height: number | null; moderation_state: MediaRow["moderationState"]; erased: boolean; frozen: boolean; matched: boolean }[];
+        from post_media m left join posts p on p.id = m.post_id
+        where m.id = ${id}::uuid and (m.post_id is not null or m.kind = 'avatar')`)) as unknown as { post_id: string | null; owner_id: string; status: MediaRow["status"]; width: number | null; height: number | null; moderation_state: MediaRow["moderationState"]; erased: boolean; frozen: boolean; matched: boolean }[];
       if (!row) return null;
-      return { postId: row.post_id, status: row.status, width: row.width, height: row.height, mediaState: row.moderation_state, erased: row.erased, frozen: row.frozen, matched: row.matched };
+      return { postId: row.post_id, ownerId: row.owner_id, status: row.status, width: row.width, height: row.height, mediaState: row.moderation_state, erased: row.erased, frozen: row.frozen, matched: row.matched };
     },
 
     /**
@@ -902,6 +962,18 @@ export function createMediaRepo(db: Db) {
         byPost.set(row.post_id, ids);
       }
       return [...byPost].map(([postId, mediaIds]) => ({ postId, mediaIds }));
+    },
+
+    /**
+     * 2d Task 4 (design, section 7.7): the avatars one seal lists (seal_avatars) whose rows are there and not erased, by
+     * id. Read-only, through the caller's transaction; handover-list hands over their files with the posts' images.
+     */
+    async sealAvatarRows(q: Pick<Db, "execute"> | Pick<DbTx, "execute">, sealActionId: string): Promise<string[]> {
+      const found = await q.execute<{ media_id: string }>(
+        sql`select s.media_id from public.seal_avatars s join public.post_media m on m.id = s.media_id
+             where s.action_id = ${sealActionId}::uuid and m.erased_at is null order by s.media_id`,
+      );
+      return found.map((row) => row.media_id);
     },
 
     /**

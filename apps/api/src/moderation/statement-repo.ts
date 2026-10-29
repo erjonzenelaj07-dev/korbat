@@ -118,6 +118,8 @@ export interface StatementActionRow {
   sealedImages: number;
   /** The seal's images on posts their author had deleted by the time it was recorded: nothing later is read. */
   sealedDeletedImages: number;
+  /** 2d Task 4 (design, section 7.7): the profile pictures an account seal listed (seal_avatars). */
+  sealedAvatars: number;
   /** A strike's end of counting, and the strikes of its account that stood and counted at its decision's time, this one included. */
   endsAt: string | null;
   activeThen: number | null;
@@ -164,6 +166,7 @@ export async function statementActions(q: Runner, decisionId: string): Promise<S
                (select coalesce(sum(s.images), 0)::int from seal_posts s where s.action_id = a.id) as sealed_images,
                (select coalesce(sum(s.images), 0)::int from seal_posts s join posts p on p.id = s.post_id
                  where s.action_id = a.id and p.state = 'deleted_by_author' and p.deleted_at <= a.created_at) as sealed_deleted,
+               (select count(*)::int from seal_avatars s where s.action_id = a.id) as sealed_avatars,
                case when a.kind in ('strike', 'warn_reporting') then ${iso("a.ends_at")}
                     when a.kind = 'suspend' and a.announced is false then ${iso("(a.created_at + make_interval(days => a.days))")}
                     when a.kind = 'restrict_reporting' then ${iso("(a.starts_at + make_interval(days => a.days))")} end as ends_at,
@@ -221,6 +224,7 @@ export async function statementActions(q: Runner, decisionId: string): Promise<S
     sealedPosts: row.sealed_posts as number,
     sealedImages: row.sealed_images as number,
     sealedDeletedImages: row.sealed_deleted as number,
+    sealedAvatars: row.sealed_avatars as number,
     endsAt: row.ends_at as string | null,
     activeThen: row.active_then as number | null,
     announced: row.announced as boolean | null,
@@ -279,7 +283,7 @@ export async function endedMeasures(q: Runner, decisionId: string): Promise<Ende
           join decision_actions a on a.decision_id = i.id
           join evidence_snapshots s on s.id = i.snapshot_id
          where d.id = ${decisionId}::uuid and d.kind = 'final'
-           and a.kind in ('withhold', 'seal_media', 'withhold_media', 'reset_display_name', 'reset_bio')
+           and a.kind in ('withhold', 'seal_media', 'withhold_media', 'reset_display_name', 'reset_bio', 'reset_avatar')
            and not exists (select 1 from decision_actions r where r.reverses_action_id = a.id and r.created_at <= d.decided_at)
            and case when a.kind = 'seal_media'
                  then exists (select 1 from intake_items x where x.case_id = d.case_id and x.suspect and x.answered_by = d.id and x.created_at <= i.decided_at)

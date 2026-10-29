@@ -1,4 +1,5 @@
 import {
+  AVATAR_RESET_DAYS,
   MEASURES,
   ORDER_GROUND_LABELS,
   RELEASE_POSTS_MAX,
@@ -89,6 +90,9 @@ export const SUSPECT_BANNER = {
 /** In place of every image of a post whose images cannot be opened now. */
 export const IMAGES_NOT_SHOWN =
   "Images of this post are not shown: a report or finding of child sexual abuse material about it or about its author's account is open, or its images are sealed. Decide what turns on an image on the text alone, or wait until an admin has answered that report.";
+/** 2d Task 4 (design, section 7.7): the same for an account's case, whose snapshot lists its profile picture. */
+export const PICTURE_NOT_SHOWN =
+  "The profile picture is not shown: a report or finding of child sexual abuse material about this account is open. Decide what turns on the picture on the fields alone, or wait until an admin has answered that report.";
 
 /** The reveal dialog's four reasons, as its list words them. */
 const REVEAL_REASONS: Record<RevealReasonCategory, string> = {
@@ -316,13 +320,16 @@ function Images({
   /** The words of the button behind which this case's texts open collapsed, when one of its items cites R3 or R5. */
   collapsed: string | undefined;
 }) {
-  if (view.target.type !== "post") return null;
+  // 2d Task 4 (design, section 7.7): an account's snapshot lists its profile picture, shown through the same staff reader
+  // under the same gate: the placeholder while the account's case is frozen, and never an alt text, which a picture has not.
+  const account = view.target.type === "account";
   const openable = view.imagesAllowed;
   return (
     <>
-      {openable ? null : <p className="notice">{IMAGES_NOT_SHOWN}</p>}
+      {/* An account's snapshot without a picture has nothing to keep from staff: no sentence then. */}
+      {openable || (account && media.length === 0) ? null : <p className="notice">{account ? PICTURE_NOT_SHOWN : IMAGES_NOT_SHOWN}</p>}
       {media.length === 0 ? (
-        <p className="quiet">The snapshot lists no image.</p>
+        <p className="quiet">{account ? "The snapshot lists no profile picture." : "The snapshot lists no image."}</p>
       ) : (
         <ul className="images">
           {media.map((image, index) => {
@@ -340,7 +347,7 @@ function Images({
                 ) : openable ? (
                   <div className="placeholder">
                     {shown === null || id === null ? (
-                      <span>{`Image ${index + 1}, not shown`}</span>
+                      <span>{account ? "Profile picture, not shown" : `Image ${index + 1}, not shown`}</span>
                     ) : shown.failed ? (
                       // The API refused the image, or it did not load: the console's own words in its place.
                       <span>{messageFor("image_refused")}</span>
@@ -349,13 +356,13 @@ function Images({
                     )}
                   </div>
                 ) : (
-                  <p>{`Image ${index + 1}`}</p>
+                  <p>{account ? "Profile picture" : `Image ${index + 1}`}</p>
                 )}
                 <p>{`${image.width} by ${image.height} pixels`}</p>
                 {purge === undefined ? null : (
                   <p className={purge.outcome === "failed" ? "purge notice" : "purge hint"}>{AUTOMATION_WORDS.purge(purge.outcome, bothTimes(purge.at))}</p>
                 )}
-                {image.alt === null ? (
+                {account ? null : image.alt === null ? (
                   <p className="quiet">Its alt text was erased.</p>
                 ) : image.alt === "" ? (
                   <p className="quiet">No alt text.</p>
@@ -441,6 +448,22 @@ function Snapshot({ snapshot, newest, props }: { snapshot: CaseSnapshot; newest:
           </p>
           {snapshot.displayName === null || snapshot.displayName === "" ? <p className="quiet">No display name.</p> : <Frame by="Display name. Written by the author" text={snapshot.displayName} collapsedLabel={collapsed} />}
           {snapshot.bio === null || snapshot.bio === "" ? <p className="quiet">No bio.</p> : <Frame by="Bio. Written by the author" text={snapshot.bio} collapsedLabel={collapsed} />}
+          {/* 2d Task 4 (7.7): the profile picture the snapshot holds by reference, beside the display name and the bio. */}
+          {newest ? (
+            <Images
+              view={props.view}
+              caseId={props.caseId}
+              media={snapshot.media ?? []}
+              collapsed={collapsed}
+              shownImage={props.shownImage}
+              onShowImage={props.onShowImage}
+              onShowClearly={props.onShowClearly}
+              onHideImage={props.onHideImage}
+              onImageError={props.onImageError}
+            />
+          ) : (
+            <p className="quiet">{(snapshot.media ?? []).length > 0 ? "A profile picture listed." : "No profile picture."}</p>
+          )}
         </>
       )}
     </article>
@@ -978,6 +1001,7 @@ function Decision({ decision, view, compose, release }: { decision: CaseDecision
               {action.kind === "warn_reporting" && action.countsUntil !== null ? `; counts until ${dateTime(action.countsUntil)}` : ""}
               {action.kind === "restrict_reporting" && action.days !== null ? `; ${action.days} ${action.days === 1 ? "day" : "days"}` : ""}
               {action.kind === "reset_display_name" || action.kind === "reset_bio" ? "; written once; the field as it reads now is shown above" : ""}
+              {action.kind === "reset_avatar" ? `; removed once; the same picture is refused for ${AVATAR_RESET_DAYS} days` : ""}
               {action.kind === "disable_by_order" && action.withholdAuthor !== undefined ? `; ${action.withholdAuthor ? ORDER_WORDS.caseOrder.withheld : ORDER_WORDS.caseOrder.shown}` : ""}
               {action.kind === "reinstate_by_order" && action.orderGround !== undefined ? `: ${ORDER_GROUND_LABELS[action.orderGround]}` : ""}
               {action.sealed === null ? null : <SealList sealed={action.sealed} />}

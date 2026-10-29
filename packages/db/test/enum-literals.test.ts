@@ -394,3 +394,62 @@ describe("2d's migrations activity and post_options: two enums created whole, no
     });
   });
 });
+
+/**
+ * 2d Task 4 (design, sections 6.5 and 6.8): the migration avatar_kinds adds reset_avatar and restore_avatar to action_kind,
+ * and nothing else. On an upgrade drizzle runs it in one transaction with avatar_moderation and every other pending file,
+ * so from it on, as 3e's rule says, the two appear as literals of the enum only inside PL/pgSQL bodies, and everywhere
+ * else (the view measures_in_force, the SQL functions item_current_outcome and case_evidence_due_at, every check) they are
+ * compared or cast as text.
+ */
+const VALUES_2D: readonly string[] = ["reset_avatar", "restore_avatar"];
+
+describe("the enum-literal rule of 2d's migrations from avatar_kinds on", () => {
+  const files = (() => {
+    const journal = JSON.parse(readFileSync(path.join(MIGRATIONS, "meta", "_journal.json"), "utf8")) as { entries: { idx: number; tag: string }[] };
+    const first = journal.entries.find((candidate) => candidate.tag.endsWith("_avatar_kinds"));
+    return first === undefined ? [] : journal.entries.filter((candidate) => candidate.idx >= first.idx);
+  })();
+
+  test("0052_avatar_kinds is there and holds the two ADD VALUEs alone; action_kind ends with them", () => {
+    // The next free number after Task 3's 0051_avatars; avatar_moderation follows it.
+    expect(files.slice(0, 2).map((entry) => [entry.idx, entry.tag])).toEqual([
+      [52, "0052_avatar_kinds"],
+      [53, "0053_avatar_moderation"],
+    ]);
+    // Split before the comments go: a breakpoint is a comment itself.
+    const statements = readFileSync(path.join(MIGRATIONS, `${files[0]!.tag}.sql`), "utf8")
+      .split(BREAKPOINT)
+      .map((statement) => flat(withoutComments(statement)))
+      .filter((statement) => statement !== "");
+    expect(statements).toEqual([`ALTER TYPE "public"."action_kind" ADD VALUE 'reset_avatar';`, `ALTER TYPE "public"."action_kind" ADD VALUE 'restore_avatar';`]);
+    expect(actionKind.enumValues.slice(-2)).toEqual(VALUES_2D);
+  });
+
+  test("no file from it on names either value as a literal outside a PL/pgSQL body", () => {
+    expect(files.length).toBeGreaterThanOrEqual(2);
+    for (const entry of files) {
+      const text = readFileSync(path.join(MIGRATIONS, `${entry.tag}.sql`), "utf8");
+      expect(enumLiteralViolations(text, VALUES_2D), entry.tag).toEqual([]);
+    }
+  });
+
+  test("avatar_moderation names both inside PL/pgSQL bodies and as text in its view and SQL functions, so the test reads what it should", () => {
+    const text = readFileSync(path.join(MIGRATIONS, `${files[1]!.tag}.sql`), "utf8");
+    // Read as if every body were parsed at once, the file holds many: the bodies are where the kinds are used.
+    expect(enumLiteralViolations(bodiesToo(text), VALUES_2D).length).toBeGreaterThan(5);
+    const flatText = flat(withoutComments(text));
+    // measures_in_force and item_current_outcome list the measure in their lists as text; case_evidence_due_at its reset.
+    expect(flatText).toMatch(/CREATE OR REPLACE VIEW "public"."measures_in_force"[^;]*a[.]kind::text IN [(][^)]*'reset_avatar'/);
+    expect(flatText).toMatch(/CREATE OR REPLACE FUNCTION "public"."item_current_outcome"[^;]*a[.]kind::text IN [(][^)]*'reset_avatar'/);
+    expect(flatText).toMatch(/CREATE OR REPLACE FUNCTION "public"."case_evidence_due_at"[^;]*a[.]kind::text IN [(][^)]*'reset_avatar'/);
+  });
+
+  test("a deliberate violation of 2d's values is caught, and the allowed forms are not", () => {
+    expect(enumLiteralViolations(`CREATE VIEW v AS SELECT 1 FROM decision_actions a WHERE a.kind IN ('reset_bio', 'reset_avatar');`, VALUES_2D)).toHaveLength(1);
+    expect(enumLiteralViolations(`CREATE FUNCTION f() RETURNS boolean LANGUAGE sql AS $$ SELECT EXISTS (SELECT 1 FROM decision_actions a WHERE a.kind = 'restore_avatar') $$;`, VALUES_2D)).toHaveLength(1);
+    expect(enumLiteralViolations(`CREATE VIEW v AS SELECT 1 FROM decision_actions a WHERE a.kind::text IN ('reset_bio', 'reset_avatar');`, VALUES_2D)).toEqual([]);
+    expect(enumLiteralViolations(`CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN PERFORM 1 FROM decision_actions a WHERE a.kind = 'reset_avatar'; END $$;`, VALUES_2D)).toEqual([]);
+    expect(enumLiteralViolations(`ALTER TYPE "public"."action_kind" ADD VALUE 'restore_avatar';`, VALUES_2D)).toEqual([]);
+  });
+});

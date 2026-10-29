@@ -365,6 +365,20 @@
       "when": 1793194434601,
       "tag": "0051_avatars",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1793211476573,
+      "tag": "0052_avatar_kinds",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1793211499917,
+      "tag": "0053_avatar_moderation",
+      "breakpoints": true
     }
   ]
 }

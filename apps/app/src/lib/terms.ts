@@ -121,6 +121,8 @@ const MEASURE_MEANINGS: Record<MeasureKind, string> = {
   remove_media: "one image of a post is removed for other people; it stays in your own view",
   reset_display_name: "the display name is replaced by the account's handle",
   reset_bio: "the bio is emptied",
+  // 2d Task 4 (design, section 7.7): the monogram in its place, as the app draws an account without a picture.
+  reset_avatar: "the profile picture is removed, and the first letter of the display name is shown in its place",
   strike: "a mark on the account that restricts nothing by itself and counts toward a suspension, as Strikes says",
   suspend: "for a number of days the account can no longer post, engage, follow, edit its profile or report under the rules, as Suspension and termination says",
   terminate: "the account is suspended until the decision is final, and then deleted, as Suspension and termination says",

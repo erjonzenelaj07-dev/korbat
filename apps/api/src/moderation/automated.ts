@@ -18,7 +18,7 @@ import { REDRESS_VERSION, RULES_VERSION } from "@korbat/rules";
 import { SYSTEM_ACTOR_ID } from "../auth";
 import { createJob, type JobLock } from "../lib/jobs";
 import { isDeadlock, isLockNotAvailable } from "../lib/lock-bounds";
-import { imagePost } from "../media";
+import { avatarOwner, imagePost } from "../media";
 import { appendAuditRow } from "../staff";
 import { alertUrgentLane, staffAlert } from "./alerts";
 import { authorDecisionView } from "./author";
@@ -140,11 +140,14 @@ export async function automatedStep(deps: ModerationDeps, signalId: string): Pro
   const signal = await signalOf(deps.apiDb, signalId);
   if (signal === null || signal.handledAt !== null) return { handled: "already", caseId: null, decisionId: null, limit: null };
   const postId = await imagePost(deps.apiDb, signal.mediaId);
-  const authorId = postId === null ? null : await deps.social.postAuthor(postId);
+  // 2d Task 4 (design, section 7.6): a signal on an avatar takes the account branch, with the avatar's owner, whom it never
+  // changes, read before the transaction as an image's post is.
+  const ownerId = postId === null ? await avatarOwner(deps.apiDb, signal.mediaId) : null;
+  const authorId = postId === null ? ownerId : await deps.social.postAuthor(postId);
   let outcome: StepOutcome | null = null;
   for (let attempt = 0; outcome === null; attempt++) {
     try {
-      outcome = await deps.apiDb.transaction((tx) => stepIn(deps, tx, signal, postId, authorId));
+      outcome = await deps.apiDb.transaction((tx) => (ownerId !== null ? avatarStepIn(deps, tx, signal, ownerId) : stepIn(deps, tx, signal, postId, authorId)));
     } catch (err) {
       if (err instanceof AlreadyHandled) return { handled: "already", caseId: null, decisionId: null, limit: null };
       const retried = isDeadlock(err) || isLockNotAvailable(err) || isSerializationFailure(err) || isStartOver(err);
@@ -254,6 +257,57 @@ async function stepIn(deps: ModerationDeps, tx: DbTx, signal: SignalRow, postId:
   }
 }
 
+/**
+ * 2d Task 4 (design, sections 7.6 and decision 15): the account branch of the step, for a signal on an avatar, in the
+ * step's transaction:
+ *   1. the owner's profile FOR NO KEY UPDATE, the first lock, then the signal again in a statement of its own (a handled one
+ *      ends the run with nothing written), and a match's record as for a post's image;
+ *   2. gone, handled `gone`, when the profile is deleted or the avatar is no longer its ready, unerased picture: the program
+ *      judges only a picture someone may be shown;
+ *   3. the finding, as for a post's image but about the account: its open case or a new one, one intake of the kind
+ *      automated, one item about the account, the case's hold on its picture and the account's snapshot, which lists the
+ *      picture by reference ("the avatar in its scope"); then the item on the signal;
+ *   4. never a measure, whatever AUTOMATION_R1_ACTS says: no program takes a measure on an account. The signal is handled
+ *      `finding`;
+ *   5. while AUTOMATION_R1_ACTS is on and the signal is a score, R1's hold for review: avatar_review withholds the picture
+ *      from everyone but its owner until a person answers the item.
+ */
+async function avatarStepIn(deps: ModerationDeps, tx: DbTx, signal: SignalRow, ownerId: string): Promise<StepOutcome> {
+  await tx.execute(sql`select set_config('lock_timeout', ${`${LOCK_TIMEOUT_MS}ms`}::text, true)`);
+  const locked = await deps.social.lockAccounts(tx, [ownerId], "no key update");
+  const current = await signalOf(tx, signal.id);
+  if (current === null || current.handledAt !== null) throw new AlreadyHandled();
+  const record = signal.kind === "known_match" && signal.matchId !== null ? await deps.media.matchRecord(tx, signal.matchId) : null;
+  if (signal.kind === "known_match" && (record === null || record.erased)) throw new AlreadyHandled();
+
+  // Read after the profile's lock, which setAvatar, removeAvatar and the purge take too.
+  const pictured = await deps.media.signals(tx, { avatarId: signal.mediaId, ownerId });
+  const handle = await accountHandle(tx, ownerId);
+  if (locked.length !== 1 || locked[0]!.deleted || pictured.length === 0 || handle === null) {
+    await signalHandled(tx, signal.id, "gone");
+    if (record !== null) await deps.media.matchJoined(tx, record.id, null);
+    return { handled: "gone", caseId: null, decisionId: null, limit: null };
+  }
+
+  const ground = record === null ? R1_GROUND : matchGround(record.listed);
+  const recorded = await recordIntakeIn(deps, tx, { ground, live: [{ type: "account", id: ownerId, position: 1, namedHandle: handle }] });
+  const item = recorded.items[0];
+  if (item === undefined || item.caseId === null) throw new Error("a program's finding about an account was stored without a case");
+  await joinSignal(tx, signal.id, item.id);
+  if (record !== null) await deps.media.matchJoined(tx, record.id, item.caseId);
+  await signalHandled(tx, signal.id, "finding");
+  if (record === null && deps.config.AUTOMATION_R1_ACTS === "on") {
+    await tx.execute(sql`select public.avatar_review(${signal.mediaId}::uuid, ${item.id}::uuid)`);
+  }
+  return { handled: "finding", caseId: item.caseId, decisionId: null, limit: null, urgent: record !== null && record.listed };
+}
+
+/** The account's handle now, as a finding names it, or null when there is no profile. */
+async function accountHandle(tx: DbTx, accountId: string): Promise<string | null> {
+  const [row] = await tx.execute<{ handle: string }>(sql`select handle from public.profiles where id = ${accountId}::uuid`);
+  return row?.handle ?? null;
+}
+
 /** What a program's measure is taken on: the finding's case, its post, the signal and the signal's image. */
 export interface MeasureInput {
   caseId: string;
@@ -356,6 +410,25 @@ export function imagesPublished(deps: ModerationDeps, postId: string): void {
     for (const image of await deps.media.signals(deps.apiDb, postId)) {
       if (scoring) await scoreSignal(deps, image);
       // 3d Task 7 (7.9, "What starts it"): an image accepted with a flag as an upload, now posted: its record's step.
+      if (matching && image.match !== null && !image.match.handled) await matchSignal(deps, { mediaId: image.mediaId, matchId: image.match.id });
+    }
+  });
+}
+
+/**
+ * 2d Task 4 (design, section 7.6): ModerationForSocial.avatarSet. setAvatar calls it after its commit. On the module's
+ * background, unwaited for, it reads the avatar's score and match record through the media module (signals' avatar
+ * form), and a score at or over the threshold, or a match the program is not done with, becomes its signal and its step,
+ * which takes the account branch. With the scorer and the matcher off it starts nothing. Setting the same picture again
+ * starts no second step: an image has one signal of a kind.
+ */
+export function avatarSet(deps: ModerationDeps, accountId: string, mediaId: string): void {
+  const scoring = r1Threshold(deps.config) !== null;
+  const matching = deps.config.MEDIA_MATCH !== "off";
+  if (!scoring && !matching) return;
+  deps.background.start(async () => {
+    for (const image of await deps.media.signals(deps.apiDb, { avatarId: mediaId, ownerId: accountId })) {
+      if (scoring) await scoreSignal(deps, image);
       if (matching && image.match !== null && !image.match.handled) await matchSignal(deps, { mediaId: image.mediaId, matchId: image.match.id });
     }
   });

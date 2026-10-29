@@ -22,6 +22,8 @@ const MESSAGES: Record<MediaErrorKind, string> = {
   // 2d Task 3 (design, section 9.4): PUT /api/me/avatar's two refusals of the upload it names.
   avatar_not_ready: "This picture is not ready to be your profile picture. Wait until it has uploaded, or choose another.",
   not_an_avatar: "This image was uploaded for a post. Choose the picture again as your profile picture.",
+  // 2d Task 4 (design, sections 7.7 and 10.10): the words of AVATAR_WORDS.resetRecently, which say why.
+  avatar_reset: "A moderator removed this picture from your profile less than 30 days ago, so it cannot be your profile picture again yet.",
   not_found: "Not found.",
   invalid_request: "Some details are missing or invalid.",
   // 3e (design, sections 7.2 and 9.8): an upload while the account's suspension runs, in the social module's words.

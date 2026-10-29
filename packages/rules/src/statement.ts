@@ -1,5 +1,6 @@
 import {
   AUTOMATION_RULES,
+  AVATAR_RESET_DAYS,
   EU_MEMBER_STATES,
   MEASURES,
   ORDER_DRAFTS,
@@ -36,13 +37,14 @@ function utcMinute(at: string | Date): string {
   return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
 }
 
-const FIELD_NAMES = { display_name: "display name", bio: "bio" } as const;
+// 2d Task 4 (design, section 7.7): the profile picture is the third field an account case resets.
+const FIELD_NAMES = { display_name: "display name", bio: "bio", avatar: "profile picture" } as const;
 type Field = keyof typeof FIELD_NAMES;
 
 /** The field a reset or its lifting is about, or null for any other kind. */
 function fieldOf(kind: MeasureKind | ReversalKind): Field | null {
   const target = MEASURES[kind].target;
-  return target === "display_name" || target === "bio" ? target : null;
+  return target === "display_name" || target === "bio" || target === "avatar" ? target : null;
 }
 
 /**
@@ -66,6 +68,13 @@ export const STATEMENT_WORDS = {
   },
   resetOnce: (field: Field) =>
     `korbat wrote this placeholder once. You may set your ${FIELD_NAMES[field]} again; what you set is judged on its own if someone reports it, and korbat does not put the old value back when this measure ends or is lifted.`,
+  /**
+   * 2d Task 4 (design, section 7.7, word for word): a reset of the profile picture that removed it, while deciding and for
+   * good alike. The days are the contracts' AVATAR_RESET_DAYS, for which setAvatar refuses the same file.
+   */
+  avatarResetOnce: `korbat removed this profile picture once and shows the letter of your display name in its place. You may set a new picture; what you set is judged on its own if someone reports it, and korbat does not put the old picture back when this measure ends or is lifted. The same picture cannot be set as your profile picture again for ${AVATAR_RESET_DAYS} days.`,
+  /** 2d Task 4: a reset of the profile picture of an account that had none. */
+  alreadyAvatar: "Your account had no profile picture, so this changes nothing now.",
   /** A measure that changed nothing when it was imposed. */
   already: (what: "post" | "image") => `Another decision already keeps this ${what} from being shown, so this changes nothing anyone sees now. It stays in force should that decision be reversed.`,
   alreadyField: "The field already held korbat's placeholder, so this changes nothing now.",
@@ -76,6 +85,9 @@ export const STATEMENT_WORDS = {
   sealPost: (post: string, images: number) => `korbat sealed the images of your post of ${post} (${images} in all): nobody can see them, you included.`,
   sealAccount: (images: number, posts: number) => `korbat sealed every image it held on your posts at that time (${images} on ${posts} ${posts === 1 ? "post" : "posts"}): nobody can see them, you included.`,
   sealDeleted: (images: number) => `${images} of them ${images === 1 ? "is on a post" : "are on posts"} you had deleted, which korbat had kept under its terms (Your data).`,
+  /** 2d Task 4 (design, section 7.7): an account seal's profile pictures, the current one and any earlier one korbat kept. */
+  sealAvatars: (avatars: number) =>
+    avatars === 1 ? "korbat sealed your profile picture: nobody can see it, you included." : `korbat sealed the ${avatars} profile pictures it held of yours: nobody can see them, you included.`,
   sealForGood: "They are kept only for the authorities korbat reports this to.",
   sealAppeal: "An appeal of a seal waits until the authorities have assessed the images.",
   /** Reversals. */
@@ -168,7 +180,16 @@ export const STATEMENT_WORDS = {
         unviewed:
           "Automated means were used to find this: a program rated an image of your post as likely within rule R1. They were not used to decide it: a moderator took this decision without opening the image.",
       },
+      /** 2d Task 4 (design, section 7.6): the same of a profile picture, on the account's case: "this profile picture" for the image. */
+      avatar: {
+        viewed:
+          "Automated means were used to find this: a program rated this profile picture as likely within rule R1. They were not used to decide it: a moderator looked at the picture and took this decision.",
+        unviewed:
+          "Automated means were used to find this: a program rated this profile picture as likely within rule R1. They were not used to decide it: a moderator took this decision without opening the picture.",
+      },
     },
+    /** 2d Task 4 (design, section 7.6): the comparison's subject on an account's case, whose image is its profile picture. */
+    avatarSubject: "this profile picture",
     /** A person's decision recorded as partly automated: an admin restricted on a program's finding under R2, unseen. */
     partly: (comparison: string) =>
       `Automated means were used to find this, and this decision rests on them in part: ${comparison}. An admin took the decision without opening the images, on that comparison and on what korbat can read.`,
@@ -401,16 +422,19 @@ function matchFacts(signal: NonNullable<StatementInput["signal"]>): { source: st
 function automatedFoundParagraph(input: StatementInput): string {
   // 3d Task 7: a match's paragraph: partly automated when an admin restricted on it unseen, else found by a program and
   // decided by a person, each with the comparison and what korbat has not assessed.
+  // 2d Task 4 (design, section 7.6): on an account's case (no post) the image a program found is the profile picture.
+  const avatar = input.post === null;
   if (input.signal?.kind === "known_match") {
     const match = matchFacts(input.signal);
-    const comparison = W.automated.comparison(match.listedAs, match.matchKind, match.source);
+    const comparison = W.automated.comparison(match.listedAs, match.matchKind, match.source, avatar ? W.automated.avatarSubject : undefined);
     const paragraph = input.automatedDecision === "partially" ? W.automated.partly(comparison) : W.automated.found.match(comparison);
     return `${paragraph} ${W.automated.notAssessed(match.listedAs, match.matchKind)}`;
   }
   if (input.automatedDecision === "partially" || input.signal?.kind !== "r1_score") {
     throw new Error("a statement's automated finding names no signal that this version of @korbat/rules words");
   }
-  const found = input.signal.viewed === true ? W.automated.found.r1.viewed : W.automated.found.r1.unviewed;
+  const words = avatar ? W.automated.found.avatar : W.automated.found.r1;
+  const found = input.signal.viewed === true ? words.viewed : words.unviewed;
   return input.measures.some((measure) => measure.kind === "strike") ? `${found} ${W.automated.strikeRule}` : found;
 }
 
@@ -671,18 +695,23 @@ function measureParagraph(input: StatementInput, measure: StatementInput["measur
   const field = fieldOf(measure.kind);
   if (measure.kind === "seal_media") {
     const sealed = measure.sealed ?? { posts: 0, images: 0, deletedImages: 0 };
-    const parts: string[] = [post === null ? W.sealAccount(sealed.images, sealed.posts) : W.sealPost(post, sealed.images)];
+    // 2d Task 4 (7.7): an account seal that listed profile pictures says so; one that listed nothing on posts says only that.
+    const avatars = post === null ? (sealed.avatars ?? 0) : 0;
+    const parts: string[] = post !== null ? [W.sealPost(post, sealed.images)] : sealed.images > 0 || avatars === 0 ? [W.sealAccount(sealed.images, sealed.posts)] : [];
+    if (avatars > 0) parts.push(W.sealAvatars(avatars));
     if (post === null && sealed.deletedImages > 0) parts.push(W.sealDeleted(sealed.deletedImages));
     if (input.kind === "final") parts.push(W.sealForGood);
     if (measure.noEffect === "already") parts.push(W.alreadySealed);
     if (measure.noEffect === "deleted") parts.push(post === null ? W.deletedAccount : W.deletedPost);
     return parts.join(" ");
   }
+  // 2d Task 4 (7.7): a reset of the picture that removed it is the design's one sentence, word for word.
+  if (field === "avatar" && measure.noEffect === null) return W.avatarResetOnce;
   if (field !== null) {
     const parts: string[] = [W.done.reset(field, deciding)];
     // A reset that changed something wrote the placeholder; one that changed nothing wrote nothing, and says so.
     if (measure.noEffect === null) parts.push(W.resetOnce(field));
-    if (measure.noEffect === "already") parts.push(W.alreadyField);
+    if (measure.noEffect === "already") parts.push(field === "avatar" ? W.alreadyAvatar : W.alreadyField);
     if (measure.noEffect === "deleted") parts.push(W.deletedAccount);
     return parts.join(" ");
   }

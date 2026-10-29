@@ -23,6 +23,9 @@ export interface StatementFound {
 /** Whether a field reset's old value was still kept when the decision that ends or lifts it was made, and where it can be read. */
 function resetFacts(kind: MeasureKind | ReversalKind, held: { decisionId: string; ruleId: string | null; noEffect: string | null; snapshotKept: boolean }) {
   const target = MEASURES[kind].target;
+  // 2d Task 4 (design, section 7.7): a reset profile picture is a field reset too, whose decision is named; but no screen
+  // shows the old picture (7.5 serves a reset picture to nobody, its owner included), so its old value is never "kept".
+  if (target === "avatar") return { resetDecisionId: held.decisionId, oldValueKept: false, resetRuleId: held.ruleId as RuleId | null };
   if (target !== "display_name" && target !== "bio") return { resetDecisionId: null, oldValueKept: false, resetRuleId: null };
   // The reset's own snapshot holds the old value, by its compare-and-set; a reset that changed nothing removed none.
   return { resetDecisionId: held.decisionId, oldValueKept: held.noEffect === null && held.snapshotKept, resetRuleId: held.ruleId as RuleId | null };
@@ -76,7 +79,11 @@ export async function decisionStatement(q: ModerationDeps["apiDb"], decisionId: 
         kind: action.kind as MeasureKind,
         mediaId: action.mediaId,
         noEffect: action.noEffect,
-        sealed: action.kind === "seal_media" ? { posts: action.sealedPosts, images: action.sealedImages, deletedImages: action.sealedDeletedImages } : null,
+        // 2d Task 4 (7.7): an account seal's profile pictures, named only when it listed any.
+        sealed:
+          action.kind === "seal_media"
+            ? { posts: action.sealedPosts, images: action.sealedImages, deletedImages: action.sealedDeletedImages, ...(action.sealedAvatars > 0 ? { avatars: action.sealedAvatars } : {}) }
+            : null,
         // 3e: what the ledger fixed for good about a strike, a standing measure and a retirement, so its statement reads as
         // it was sent (a retirement's sentence reads its end from whether the decision suspends or terminates at once).
         ...(action.kind === "strike" ? { endsAt: action.endsAt, activeThen: action.activeThen } : {}),

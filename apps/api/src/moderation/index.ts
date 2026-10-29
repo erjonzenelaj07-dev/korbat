@@ -49,7 +49,7 @@ import type { SocialForModeration } from "../social";
 import { createAlertMailJob, createAlertTick, staffAlert } from "./alerts";
 import { appealsList, review, reviewedCase } from "./appeals";
 import { authorActivity, authorFacts, type ModerationActivityEntry } from "./author";
-import { createAutomatedSweepJob, imagesPublished } from "./automated";
+import { avatarSet, createAutomatedSweepJob, imagesPublished } from "./automated";
 import { caseImage, openFinding, overview, queue, readCase, readDecidedCase, takeSnapshot } from "./cases";
 import { createBackground, type ModerationDeps } from "./context";
 import { decide, type DecideContext, type DecideOutcome } from "./decide";
@@ -209,6 +209,12 @@ export interface ModerationForSocial {
    * so a post never waits for a deciding transaction; with the scorer off it starts nothing.
    */
   imagesPublished(postId: string): void;
+  /**
+   * 2d Task 4 (design, section 7.6): setAvatar calls this after its commit with the account's new picture. It starts the
+   * program's step of the picture's score or match record on the module's background and returns at once; the step opens
+   * a finding on the account's case and never a measure, and while AUTOMATION_R1_ACTS is on puts an R1 score under review.
+   */
+  avatarSet(accountId: string, mediaId: string): void;
 }
 
 /**
@@ -351,6 +357,7 @@ export function createModeration(options: CreateModerationOptions) {
   const forSocial: ModerationForSocial = {
     authorFacts: (viewer, postIds) => authorFacts(deps, viewer, postIds),
     imagesPublished: (postId) => imagesPublished(deps, postId),
+    avatarSet: (accountId, mediaId) => avatarSet(deps, accountId, mediaId),
   };
   const forImports: ModerationForImports = {
     imagesPublished: (postId) => imagesPublished(deps, postId),

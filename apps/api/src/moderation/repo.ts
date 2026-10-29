@@ -264,7 +264,8 @@ export const markCounts = (m: string) =>
      and not exists (select 1 from intake_items x where x.reexamines_item_id = ${m}.item_id and x.outcome in ('restricted_rule', 'restricted_legal'))`,
   );
 
-const MEASURE_KINDS_SQL = sql`('withhold', 'remove', 'seal_media', 'withhold_media', 'remove_media', 'reset_display_name', 'reset_bio')`;
+// 2d Task 4 (design, section 6.5): and the reset of a profile picture, a field reset as the two before it.
+const MEASURE_KINDS_SQL = sql`('withhold', 'remove', 'seal_media', 'withhold_media', 'remove_media', 'reset_display_name', 'reset_bio', 'reset_avatar')`;
 /**
  * 3e's review (access4, people4): the measures of 3e that change something for the account when imposed. A decision
  * that holds one of them with no_effect null changed something, whatever its measures of 3c did, so its reporter is
@@ -548,12 +549,14 @@ export async function snapshotTime(tx: DbTx): Promise<string> {
  * transaction's start to the millisecond, so two snapshots of one case can carry the same time; their ids, which
  * insertSnapshot draws in time order, say which is the newer.
  */
-export async function latestSnapshot(tx: DbTx, caseId: string): Promise<{ displayName: string | null; bio: string | null; handle: string | null } | null> {
-  const [row] = await rows<{ display_name: string | null; bio: string | null; handle: string | null }>(
+export async function latestSnapshot(tx: DbTx, caseId: string): Promise<{ displayName: string | null; bio: string | null; handle: string | null; mediaIds: string[] } | null> {
+  // 2d Task 4: and the ids its media lists, which for an account is its picture (7.7): a changed picture is a new snapshot.
+  const [row] = await rows<{ display_name: string | null; bio: string | null; handle: string | null; media_ids: string[] | null }>(
     tx,
-    sql`select display_name, bio, handle from evidence_snapshots where case_id = ${caseId}::uuid order by taken_at desc, id desc limit 1`,
+    sql`select display_name, bio, handle, (select array_agg(e ->> 'id') from jsonb_array_elements(coalesce(media, '[]'::jsonb)) e) as media_ids
+          from evidence_snapshots where case_id = ${caseId}::uuid order by taken_at desc, id desc limit 1`,
   );
-  return row ? { displayName: row.display_name, bio: row.bio, handle: row.handle } : null;
+  return row ? { displayName: row.display_name, bio: row.bio, handle: row.handle, mediaIds: row.media_ids ?? [] } : null;
 }
 
 /** A snapshot as the intake stores it: what was copied, with the salt and the digest the server made over all of it. */
@@ -901,12 +904,14 @@ export async function importEndBasis(q: Runner, caseId: string, decisionId: stri
 }
 
 /** An account's fields as they stand, for the case that is about it. */
-export async function liveAccount(q: Runner, accountId: string): Promise<{ handle: string; displayName: string; bio: string; deleted: boolean } | null> {
-  const [row] = await rows<{ handle: string; display_name: string; bio: string; deleted: boolean }>(
+export async function liveAccount(q: Runner, accountId: string): Promise<{ handle: string; displayName: string; bio: string; deleted: boolean; imagesAllowed: boolean } | null> {
+  // 2d Task 4 (design, section 7.7): and gate V's answer for the account's profile picture, which its case page shows from
+  // the snapshot: false while the account's case is frozen by a report of child sexual abuse material (account_frozen).
+  const [row] = await rows<{ handle: string; display_name: string; bio: string; deleted: boolean; images_allowed: boolean }>(
     q,
-    sql`select handle, display_name, bio, deleted_at is not null as deleted from profiles where id = ${accountId}::uuid`,
+    sql`select handle, display_name, bio, deleted_at is not null as deleted, not public.account_frozen(id) as images_allowed from profiles where id = ${accountId}::uuid`,
   );
-  return row ? { handle: row.handle, displayName: row.display_name, bio: row.bio, deleted: row.deleted } : null;
+  return row ? { handle: row.handle, displayName: row.display_name, bio: row.bio, deleted: row.deleted, imagesAllowed: row.images_allowed } : null;
 }
 
 /** Whether the case is on the path for child sexual abuse material at all (it holds a suspect item or a seal), and whether a suspect item of it is unanswered. */
@@ -2253,9 +2258,12 @@ const CANDIDATE_CASES = sql`
   union select d.case_id from appeals a join decisions d on d.id = a.decision_id where a.statement is not null
   union select h.case_id from media_holds h where h.released_at is null`;
 
-/** A final decision citing R4 that is not redacted yet and one of whose R4 measures is in force, as `d`. */
+/**
+ * A final decision citing R4 that is not redacted yet and one of whose R4 measures is in force, as `d`. 2d Task 4: the
+ * reset of a profile picture is one, as redact_r4_body lists it since 0053_avatar_moderation.
+ */
 const REDACTABLE = sql`d.kind = 'final' and d.rule_id = 'R4' and d.redacted_at is null
-  and exists (select 1 from measures_in_force m where m.decision_id = d.id and m.kind in ('remove', 'remove_media', 'reset_bio', 'reset_display_name'))`;
+  and exists (select 1 from measures_in_force m where m.decision_id = d.id and m.kind in ('remove', 'remove_media', 'reset_bio', 'reset_display_name', 'reset_avatar'))`;
 
 /** A decision one of whose statement texts is unerased, as `d`, joined to the profile `p` of its case's subject. */
 const STATEMENT_HELD = sql`from decisions d

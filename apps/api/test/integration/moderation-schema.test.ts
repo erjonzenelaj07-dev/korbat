@@ -70,7 +70,9 @@ const COLUMN_UPDATES: Record<string, string[]> = {
   // 2d Task 3 (0051_avatars): profile_id, the profile an avatar is the picture of, under post_media_avatar_guard.
   post_media: ["status", "error", "post_id", "position", "width", "height", "blurhash", "alt_text", "nsfw_score", "profile_id"],
 };
-const READ_ONLY = ["moderation_limits", "seal_posts"];
+// 2d Task 4 (0053_avatar_moderation): an account seal's list of avatars, R1's holds for review and the reset pictures' hashes,
+// each written only by the definer functions.
+const READ_ONLY = ["moderation_limits", "seal_posts", "seal_avatars", "avatar_reviews", "avatar_resets"];
 
 /**
  * Migrations 0014 to 0017 (3c design, sections 6.1 to 6.3 and 6.5) against the real database: what the API role holds and
@@ -479,6 +481,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
         "public.append_confirmed_audit",
         // 3d Task 6 (0038_automated_decisions): the program's numbers, which the step and automation-status read.
         "public.automation_rules",
+        // 2d Task 4 (0053_avatar_moderation): R1's hold for review of an avatar, which the program's step calls, and the
+        // seal's arm of the keep trigger for an avatar, which the media repository's disposal reads as it reads account_frozen.
+        "public.avatar_review",
+        "public.avatar_sealed",
         // 3d Task 4 (0036_transparency): the one place a count becomes public text, the public figures' constants, and the
         // daily call that stores a due edition; the figures themselves are computed by the migrator's functions alone.
         "public.band",
@@ -602,7 +608,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       const postColumns = /(update\s+(only\s+)?|merge\s+into\s+(only\s+)?|insert\s+into\s+)("?public"?\s*\.\s*)?"?posts"?(?![\w"])[^;]*\bset\b[^;]*"?(moderation_level|state|erased_at)"?\s*=/i;
       const calls = /\bmoderation_apply\s*\(/i;
       expect(matching(sealList)).toEqual(["public.decision_actions_apply"]);
-      expect(matching(imageState)).toEqual(["public.moderation_apply"]);
+      // 2d Task 4 (0053_avatar_moderation): an account seal's list of avatars is written by the same one function, and an
+      // avatar's state by avatar_apply, as moderation_apply writes a post's images' (an avatar has no post).
+      const avatarList = new RegExp(sealList.source.replace("seal_posts", "seal_avatars"), "i");
+      expect(matching(avatarList)).toEqual(["public.decision_actions_apply"]);
+      expect(matching(imageState)).toEqual(["public.avatar_apply", "public.moderation_apply"]);
       // Of the three columns of posts, the level and the state are moderation_apply's alone; the erasure mark is the R4
       // redaction's and (3f, 0029) the end of an order's preservation's.
       expect(matching(postColumns)).toEqual(["public.moderation_apply", "public.order_preservation_end", "public.redact_r4_body"]);
@@ -1055,11 +1065,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the moderation tables, t
       expect(await checkBound("intakes", "intakes_cited_law_len")).toBe(NOTICE_LIMITS.citedLawMax);
     });
 
-    test("the ledger's kinds are the contracts' action kinds, in their order, the two of an order's measure last", async () => {
+    test("the ledger's kinds are the contracts' action kinds, in their order, the two of an order's measure before 2d's two", async () => {
       const rows = await apiDb.execute<{ label: string }>(sql`select e.enumlabel::text as label from pg_enum e where e.enumtypid = 'public.action_kind'::regtype order by e.enumsortorder`);
       // 3f: the migration orders adds them; they joined ACTION_KINDS with the task that gives effect to an order (Task 3).
+      // 2d Task 4 (0052_avatar_kinds) appends the reset of a profile picture and its reversal after them.
       expect(rows.map((row) => row.label)).toEqual([...ACTION_KINDS]);
-      expect(ACTION_KINDS.slice(-2)).toEqual([...ORDER_ACTION_KINDS]);
+      expect(ACTION_KINDS.slice(-4, -2)).toEqual([...ORDER_ACTION_KINDS]);
+      expect(ACTION_KINDS.slice(-2)).toEqual(["reset_avatar", "restore_avatar"]);
     });
 
     test("post_state has its four values and 3f's disabled: a seal is a state of images, a disabling one of posts", async () => {

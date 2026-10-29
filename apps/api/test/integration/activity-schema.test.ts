@@ -3,10 +3,11 @@ import { sql, type SQL } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { ACTIVITY_DEFAULTS, ACTIVITY_KINDS, ACTIVITY_REACH, MEDIA_KINDS, MENTION_STORE_MAX } from "@korbat/contracts";
 import { closeDb, createDb, type Db, type DbTx } from "@korbat/db";
+import { createAuthRepo } from "../../src/auth/repo";
 import { loadConfig } from "../../src/config";
 import { storedImageName } from "../../src/media/files";
 import { matchForTest } from "./automation-fixtures";
-import { newImageRow, newPostRow, openCase, removeFixtures, rowCounts, suspectItemOn } from "./moderation-fixtures";
+import { act, anAccount, decideIn, newImageRow, newPostRow, newTestStaff, openCase, removeFixtures, report, rowCounts, staffProfile, suspectItemOn, type TestStaff } from "./moderation-fixtures";
 import { newProfile } from "./social-fixtures";
 import { rolledBack } from "./staff-fixtures";
 
@@ -74,6 +75,9 @@ async function attempt(tx: DbTx, statement: SQL): Promise<PgError | null> {
 describe.skipIf(!process.env.INTEGRATION)("integration: Activity's tables, mentions, their guards and grants", () => {
   let apiDb: Db;
   let migrateDb: Db;
+  let authDb: Db;
+  /** Task 4: an admin whose placeholder key the moderation half's seals are made with, in transactions that are rolled back. */
+  let admin: TestStaff;
   let before: Record<string, number>;
 
   beforeAll(async () => {
@@ -81,10 +85,12 @@ describe.skipIf(!process.env.INTEGRATION)("integration: Activity's tables, menti
     apiDb = createDb(config.DATABASE_URL_API, { max: 4 });
     // The migrate role is not part of the API configuration; the test environment carries it.
     migrateDb = createDb(process.env.DATABASE_URL_MIGRATE!, { max: 2 });
+    authDb = createDb(config.DATABASE_URL_AUTH, { max: 2 });
+    admin = await newTestStaff(authDb, migrateDb, createAuthRepo(authDb), "admin");
     before = await rowCounts(apiDb, COUNTED);
   }, 120_000);
   afterAll(async () => {
-    await Promise.all([closeDb(apiDb), closeDb(migrateDb)]);
+    await Promise.all([closeDb(apiDb), closeDb(migrateDb), closeDb(authDb)]);
   });
 
   /** A transaction of the API role that is rolled back, with its lock timeout. */
@@ -751,6 +757,104 @@ describe.skipIf(!process.env.INTEGRATION)("integration: Activity's tables, menti
         post_media_purge: "AFTER DELETE OR UPDATE OF moderation_state, erased_at, profile_id ON public.post_media FOR EACH ROW",
         post_media_refused: "BEFORE UPDATE OF post_id, profile_id ON public.post_media FOR EACH ROW",
       });
+    });
+  });
+
+  /**
+   * Task 4 (design, sections 6.5, 6.6 and 6.8; section 12.3): migration 0053_avatar_moderation's half of post_media's
+   * triggers and its grants. post_media_keep's seal arm (avatar_sealed), apart from the freeze: a seal for good answers the
+   * suspect report, so the account's case is frozen no longer while the seal stays in force. post_media_purge's state for a
+   * seal of a current avatar and released for an erasure a release lists. The REVOKEs of the three new tables, and the
+   * three new functions' owners, flags and EXECUTE. Every test is rolled back.
+   */
+  describe("Task 4: the moderation of avatars (0053_avatar_moderation)", () => {
+    const SHA = "ef".repeat(32);
+    async function newAvatarRow(tx: DbTx, ownerId: string): Promise<string> {
+      const [row] = await tx.execute<{ id: string }>(sql`
+        insert into post_media (owner_id, status, width, height, blurhash, kind, avatar_sha256)
+        values (${ownerId}::uuid, 'ready', 400, 400, 'L2Eo_P_3jb_3~qoL', 'avatar', ${SHA}) returning id`);
+      return row!.id;
+    }
+    const setTo = (id: string, profileId: string | null): SQL => sql`update post_media set profile_id = ${profileId}::uuid where id = ${id}::uuid`;
+    const purgesOf = async (tx: DbTx, id: string) => (await tx.execute<{ cause: string }>(sql`select cause from edge_purges where media_id = ${id}::uuid order by id`)).map((row) => row.cause);
+    const sealed = async (tx: DbTx, id: string) => (await tx.execute<{ sealed: boolean; frozen: boolean }>(sql`select public.avatar_sealed(${id}::uuid) as sealed, public.account_frozen(m.owner_id) as frozen from post_media m where m.id = ${id}::uuid`))[0]!;
+
+    test("post_media_keep keeps a sealed avatar that no hold keeps and no freeze, through avatar_sealed; the seal of a current avatar writes state; a seal lists the current and a former avatar", async () => {
+      await asApi(async (tx) => {
+        await staffProfile(tx, admin);
+        const ada = await profile(tx);
+        const [former, current] = [await newAvatarRow(tx, ada.id), await newAvatarRow(tx, ada.id)];
+        expect(await step(tx, setTo(current, ada.id))).toBeNull();
+        const { caseId } = await report(tx, anAccount(ada.id, ada.handle), "csam");
+        expect(await sealed(tx, current)).toEqual({ sealed: false, frozen: true });
+        // A seal for good answers the suspect report: the freeze ends, the seal stays in force.
+        const decision = await decideIn(tx, admin, caseId, { kind: "final", ruleId: "R2", actions: [act("seal_media")] });
+        const listed = await tx.execute<{ media_id: string }>(sql`
+          select s.media_id from seal_avatars s join decision_actions a on a.id = s.action_id where a.decision_id = ${decision}::uuid order by s.media_id`);
+        expect(listed.map((row) => row.media_id)).toEqual([former, current].sort());
+        for (const id of [former, current]) expect(await sealed(tx, id), id).toEqual({ sealed: true, frozen: false });
+        const states = await tx.execute<{ id: string; state: string }>(sql`select id, moderation_state::text as state from post_media where id in (${former}::uuid, ${current}::uuid)`);
+        expect(states.map((row) => row.state)).toEqual(["sealed", "sealed"]);
+        expect(await purgesOf(tx, current)).toEqual(["state"]);
+        expect(await purgesOf(tx, former)).toEqual([]);
+        // Detached and then deleted by the API role: the keep trigger keeps both rows.
+        expect(await step(tx, setTo(current, null))).toBeNull();
+        const gone = await tx.execute<{ id: string }>(sql`delete from post_media where id in (${former}::uuid, ${current}::uuid) returning id`);
+        expect(gone).toEqual([]);
+      });
+    });
+
+    test("post_media_purge writes released for an avatar a release lists in avatar_ids, deleted for another erased avatar, and nothing for one never set", async () => {
+      // As the migrator, which alone writes a release's row and an erasure outside the release's function.
+      await asMigrator(async (tx) => {
+        const ada = await profile(tx);
+        const [released, erased, unset] = [await newAvatarRow(tx, ada.id), await newAvatarRow(tx, ada.id), await newAvatarRow(tx, ada.id)];
+        await tx.execute(setTo(released, ada.id));
+        await tx.execute(sql`
+          insert into releases (post_ids, avatar_ids, basis, released_at, replay_of, backups_clear_at, author_notice)
+          values ('{}', ${`{${released}}`}::uuid[], 'period', now(), ${randomUUID()}::uuid, now(), 'none')`);
+        await tx.execute(sql`update post_media set erased_at = now() where id = ${released}::uuid`);
+        expect(await purgesOf(tx, released)).toEqual(["released"]);
+        await tx.execute(setTo(released, null));
+        await tx.execute(setTo(erased, ada.id));
+        await tx.execute(sql`update post_media set erased_at = now() where id = ${erased}::uuid`);
+        expect(await purgesOf(tx, erased)).toEqual(["deleted"]);
+        await tx.execute(sql`update post_media set erased_at = now() where id = ${unset}::uuid`);
+        expect(await purgesOf(tx, unset)).toEqual([]);
+      });
+    });
+
+    test("the REVOKEs of 6.6: the API role reads seal_avatars, avatar_reviews and avatar_resets and writes none of them", async () => {
+      const rows = await apiDb.execute<{ t: string; sel: boolean; ins: boolean; upd: boolean; del: boolean; trunc: boolean }>(sql`
+        select t, has_table_privilege('korbat_api', t, 'SELECT') as sel, has_table_privilege('korbat_api', t, 'INSERT') as ins,
+               has_table_privilege('korbat_api', t, 'UPDATE') as upd, has_table_privilege('korbat_api', t, 'DELETE') as del,
+               has_table_privilege('korbat_api', t, 'TRUNCATE') as trunc
+          from unnest(array['public.seal_avatars', 'public.avatar_reviews', 'public.avatar_resets']) as t`);
+      expect(rows.map((row) => ({ ...row }))).toEqual(
+        ["public.seal_avatars", "public.avatar_reviews", "public.avatar_resets"].map((t) => ({ t, sel: true, ins: false, upd: false, del: false, trunc: false })),
+      );
+      await asApi(async (tx) => {
+        const ada = await profile(tx);
+        const avatar = await newAvatarRow(tx, ada.id);
+        expect(await attempt(tx, sql`insert into seal_avatars (action_id, media_id) values (${randomUUID()}::uuid, ${avatar}::uuid)`)).toEqual(DENIED);
+        expect(await attempt(tx, sql`insert into avatar_resets (action_id, account_id, sha256, until) values (${randomUUID()}::uuid, ${ada.id}::uuid, ${SHA}, now())`)).toEqual(DENIED);
+        expect(await attempt(tx, sql`delete from avatar_reviews`)).toEqual(DENIED);
+        // avatar_review refuses what is not an unanswered program's finding under R1 about the avatar's owner.
+        expect(await attempt(tx, sql`select public.avatar_review(${avatar}::uuid, ${randomUUID()}::uuid)`)).toEqual({ code: "P0001", message: "invalid_review" });
+        // avatar_apply is the definer functions' alone.
+        expect(await attempt(tx, sql`select public.avatar_apply(array[${avatar}::uuid])`)).toEqual(DENIED);
+      });
+    });
+
+    test("the three new functions are the migrator's, their search path pinned: avatar_sealed plain and the API's to call, avatar_apply a definer nobody calls, avatar_review a definer the API calls", async () => {
+      const definers: Record<string, boolean> = { avatar_apply: true, avatar_review: true, avatar_sealed: false };
+      const callable: Record<string, boolean> = { avatar_apply: false, avatar_review: true, avatar_sealed: true };
+      const names = Object.keys(definers);
+      const rows = await apiDb.execute<Record<string, unknown>>(sql`
+        select p.proname::text as name, p.proowner::regrole::text as owner, p.prosecdef as definer, p.proconfig as config,
+               has_function_privilege('korbat_api', p.oid, 'execute') as api, has_function_privilege('public', p.oid, 'execute') as pub
+          from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = any(${`{${names.join(",")}}`}::text[]) order by 1`);
+      expect(rows.map((row) => ({ ...row }))).toEqual(names.map((name) => ({ name, owner: "korbat_migrate", definer: definers[name], config: ["search_path=public, pg_temp"], api: callable[name], pub: false })));
     });
   });
 

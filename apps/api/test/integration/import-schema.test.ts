@@ -946,13 +946,38 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the import tables, the i
     const COUNT = "FROM public.posts p WHERE p.author_id = subject AND p.created_at > now() - make_interval(mins => rules.flood_minutes))";
     const COUNTED = "FROM public.posts p WHERE p.author_id = subject AND p.created_at > now() - make_interval(mins => rules.flood_minutes) AND p.import_job_id IS NULL)";
 
-    test("its text is 0032's, byte for byte, with the one clause added to the flood count, and the database runs that text", async () => {
+    /**
+     * 2d Task 4 (0053_avatar_moderation, design section 6.5): the function was replaced again from 0044's text, with the
+     * avatar's kinds added where the field kinds are and nothing else, so that text keeps 0044's clause. Each pair is one
+     * of its changes, as 0053's comment names them.
+     */
+    const AVATAR_CHANGES: [string, string][] = [
+      ["'restrict_reporting', 'disable_by_order');", "'restrict_reporting', 'disable_by_order', 'reset_avatar');"],
+      ["'restore_display_name', 'restore_bio') AND", "'restore_display_name', 'restore_bio', 'reset_avatar', 'restore_avatar') AND"],
+      ["THEN NEW.kind IN ('withhold', 'withhold_media', 'reset_display_name', 'reset_bio', 'seal_media'", "THEN NEW.kind IN ('withhold', 'withhold_media', 'reset_display_name', 'reset_bio', 'reset_avatar', 'seal_media'"],
+      ["THEN NEW.kind IN ('remove', 'remove_media', 'reset_display_name', 'reset_bio', 'seal_media'", "THEN NEW.kind IN ('remove', 'remove_media', 'reset_display_name', 'reset_bio', 'reset_avatar', 'seal_media'"],
+      ["WHEN 'reinstate_by_order' THEN ARRAY['disable_by_order']", "WHEN 'reinstate_by_order' THEN ARRAY['disable_by_order']" + String.fromCharCode(10) + "                WHEN 'restore_avatar' THEN ARRAY['reset_avatar']"],
+      [
+        "(NEW.kind = 'reset_bio' AND profile.bio = '') THEN",
+        "(NEW.kind = 'reset_bio' AND profile.bio = '')" + String.fromCharCode(10) + "            OR (NEW.kind = 'reset_avatar' AND NOT EXISTS (SELECT 1 FROM public.post_media m WHERE m.profile_id = subject)) THEN",
+      ],
+    ];
+
+    test("its text is 0032's, byte for byte, with the one clause added to the flood count, and the database runs that text with 2d's avatar kinds added", async () => {
       const before = functionIn("0032_orders_review");
       const after = functionIn("0044_imported_posts");
       expect(before.split(COUNT)).toHaveLength(2);
       expect(after).toBe(before.replace(COUNT, COUNTED));
+      // 2d Task 4: the newest text, 0053's, is 0044's with the avatar's changes alone; the database runs it.
+      const newest = functionIn("0053_avatar_moderation");
+      let expected = after;
+      for (const [from, to] of AVATAR_CHANGES) {
+        expect(expected.split(from), from).toHaveLength(2);
+        expected = expected.replace(from, to);
+      }
+      expect(newest).toBe(expected);
       const [row] = await apiDb.execute<{ body: string }>(sql`select prosrc as body from pg_proc where oid = 'public.decision_actions_check()'::regprocedure`);
-      expect(row!.body).toBe(after.slice(after.indexOf("$$") + 2, after.lastIndexOf("$$")));
+      expect(row!.body).toBe(newest.slice(newest.indexOf("$$") + 2, newest.lastIndexOf("$$")));
     });
 
     test("STANDING_RULES.floodPosts imported posts in the hour are no floor under a suspension at once, while as many native ones are", async () => {

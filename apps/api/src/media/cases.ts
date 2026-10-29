@@ -19,9 +19,13 @@ import { WEBP_HEADER_BYTES, webpSize } from "./webp";
  */
 export const DISPOSAL_BATCH = RECONCILE_MAX_ORPHANS / 2;
 
-/** An image file opened for staff, with the post it is on. The caller reads the handle from its start and closes it. */
+/**
+ * An image file opened for staff, with the post it is on. The caller reads the handle from its start and closes it. 2d
+ * Task 4 (design, section 7.7): or an account's avatar, with no post and its owner, which an account case's snapshot lists.
+ */
 export interface StaffImage {
-  postId: string;
+  postId: string | null;
+  ownerId: string;
   file: StoredFile;
 }
 
@@ -35,7 +39,9 @@ export interface MediaForCases {
    * An intake's holds, inside its transaction: each pair `{ caseId, postId }` locks the post's image rows and places
    * the case's evidence hold on them; a pair `{ ownerId }` only locks every image row on that account's posts, for a
    * report of child sexual abuse material about the account. All rows are locked by one statement, in one id order.
-   * It answers each post pair's images in position order, for the post's snapshot; an empty list means they are gone.
+   * It answers each post pair's images in position order, for the post's snapshot; an empty list means they are gone. 2d
+   * Task 4 (design, section 7.7): a pair `{ caseId, accountId }` holds the account's current avatar for its case and answers
+   * it under the account's id, for the account's snapshot; an empty list means the account has no picture.
    */
   hold(tx: DbTx, pairs: readonly HoldPair[]): Promise<Map<string, HeldImage[]>>;
   /**
@@ -43,7 +49,8 @@ export interface MediaForCases {
    * 7.3). Never an image of a frozen post, a sealed image or an erased one, on whatever case the request came; and only a
    * file whose header says that it is a WebP of the size its variant and its row allow. 3d Task 7 (sections 5 and 7.11,
    * review ruling 2): never an image that an unerased match record names, an acting match or a flag, whatever its state and
-   * whatever was answered, which it answers "matched", so the route can say why.
+   * whatever was answered, which it answers "matched", so the route can say why. 2d Task 4 (7.7): an account's avatar under
+   * the same rules, never while its owner's account case is frozen; the route holds it to the case's own account.
    */
   staffImage(mediaId: string, size: MediaSize): Promise<StaffImage | "matched" | null>;
   /** What a case about this post or account reaches: counts, a day and a time, never an id, an alt text or a file. */
@@ -91,9 +98,10 @@ export interface MediaForCases {
   /**
    * 3d Task 6 (design, section 5): for each ready, unerased image of the post, in position order, its id and its score
    * (null when none was stored), through the caller's connection or transaction. It locks nothing. Task 7 adds each
-   * image's unerased match record.
+   * image's unerased match record. 2d Task 4 (design, section 7.6): in its avatar form, `{ avatarId, ownerId }`, the account's
+   * picture alone, while it is its live profile's ready and unerased picture, else none.
    */
-  signals(q: Pick<Db, "execute"> | Pick<DbTx, "execute">, postId: string): Promise<ImageSignals[]>;
+  signals(q: Pick<Db, "execute"> | Pick<DbTx, "execute">, of: string | { avatarId: string; ownerId: string }): Promise<ImageSignals[]>;
   /**
    * 3d Task 7 (design, sections 5 and 7.9): the match record by its id, as staff are shown it, with its image, its case,
    * whether the program is done with it and whether it is erased; null when there is none. Through the caller's
@@ -233,7 +241,7 @@ export function mediaForCases(input: Pick<MediaDeps, "repo" | "files" | "log"> &
         deps.log.error({ id: mediaId, size, reason }, "media store: refused to open for staff a file that is not the image its row describes");
         return null;
       }
-      return { postId: access.postId, file };
+      return { postId: access.postId, ownerId: access.ownerId, file };
     },
 
     reach: (target) => deps.repo.reach(target),
@@ -252,8 +260,8 @@ export function mediaForCases(input: Pick<MediaDeps, "repo" | "files" | "log"> &
     lostTold: (mediaId, outcome) => deps.repo.lostTold(mediaId, outcome),
     purges: (mediaIds) => deps.repo.purges(mediaIds),
     postPurges: (postIds) => deps.repo.postPurges(postIds),
-    async signals(q, postId) {
-      const images = await deps.repo.signals(q, postId);
+    async signals(q, of) {
+      const images = typeof of === "string" ? await deps.repo.signals(q, of) : await deps.repo.avatarSignals(q, of.avatarId, of.ownerId);
       const records = await deps.matches.recordsOfImages(q, images.map((image) => image.mediaId));
       return images.map((image) => ({ ...image, match: records.get(image.mediaId) ?? null }));
     },

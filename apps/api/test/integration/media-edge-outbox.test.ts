@@ -61,6 +61,10 @@ const WRITES: Record<ActionKind, "state" | "none"> = {
   unretire_handle: "none",
   lift_reporting: "none",
   reinstate_by_order: "none",
+  // 2d Task 4: the reset of a profile picture and its reversal name no post; the reset writes its picture's own row
+  // (avatar-moderation.test.ts), never one of a post's images.
+  reset_avatar: "none",
+  restore_avatar: "none",
 };
 
 type OutboxRow = {

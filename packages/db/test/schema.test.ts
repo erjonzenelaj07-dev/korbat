@@ -58,8 +58,9 @@ describe("trust and safety schema", () => {
     // decision's two (Task 6), automated_signals and automated_objections; then known material's three (Task 7),
     // media_hashes, media_matches and upload_refusals; then 3b's three (Task 2, migration 0043_imports): import_jobs,
     // import_picks and import_keys; then 2d's three (Task 1, migration 0049_activity): activity_items, activity_state and
-    // post_mentions.
-    expect(tables.length).toBe(75);
+    // post_mentions; then 2d's moderation of avatars (Task 4, migration 0053_avatar_moderation): seal_avatars,
+    // avatar_reviews and avatar_resets.
+    expect(tables.length).toBe(78);
   });
 
   test("3d Task 7's known material (section 6.7): the hashes of an image, a match's record and a held upload's refusal, each under its closed lists, with its keys and indexes", () => {
@@ -284,6 +285,8 @@ describe("trust and safety schema", () => {
         "author_notice",
         "author_notice_at",
         "imported_at",
+        // 2d Task 4 (6.5): the released seal's avatars.
+        "avatar_ids",
       ].sort(),
     );
     expect(releases.checks.map((c) => c.name).sort()).toEqual(["releases_basis", "releases_leave", "releases_notice", "releases_reference", "releases_replay"]);
@@ -1142,6 +1145,9 @@ describe("moderation cases 3c", () => {
       // 3f: the measure of an order decision and its reversal.
       "disable_by_order",
       "reinstate_by_order",
+      // 2d (Task 4, migration 0052_avatar_kinds): the reset of a profile picture and its reversal.
+      "reset_avatar",
+      "restore_avatar",
     ]);
   });
 
@@ -1539,7 +1545,8 @@ describe("order records 3f", () => {
   });
 
   test("the eight enum values, each last in its type, in the types' order", () => {
-    expect(schema.actionKind.enumValues.slice(-2)).toEqual(["disable_by_order", "reinstate_by_order"]);
+    // 2d (Task 4) appends its two kinds after 3f's, so 3f's are the two before them.
+    expect(schema.actionKind.enumValues.slice(-4, -2)).toEqual(["disable_by_order", "reinstate_by_order"]);
     expect(schema.decisionKind.enumValues).toEqual(["interim", "final", "review", "correction", "order"]);
     expect(schema.decisionSource.enumValues).toEqual(["notice", "report", "own_initiative", "order"]);
     // 3d (6.6) adds one value after 3f's to each of these two: a program's finding and its channel.
@@ -2099,6 +2106,60 @@ describe("engagement 2d", () => {
       ["post_media_owner_avatar_idx", ["owner_id"], false, "kind = 'avatar'", "btree"],
     ]);
     expect(byName.get("profiles")!.columns.map((c) => c.name)).not.toContain("avatar_path");
+  });
+
+  test("Task 4 (6.5, 0053_avatar_moderation): seal_avatars, avatar_reviews and avatar_resets are public, with row level security and one allow-all policy for the API role", () => {
+    // The grants restrict the API role to SELECT on each (6.6's REVOKEs, in the migration), as seal_posts' do.
+    for (const name of ["seal_avatars", "avatar_reviews", "avatar_resets"]) {
+      const cfg = byName.get(name);
+      expect(cfg, name).toBeDefined();
+      expect(cfg!.schema, name).toBeUndefined();
+      expect(cfg!.enableRLS, name).toBe(true);
+      expect(policies(name), name).toEqual([[`${name}_api_all`, "all", apiRole]]);
+    }
+  });
+
+  test("seal_avatars (6.5): the avatars a seal listed, as seal_posts lists its posts, keyed by both, with no key to the image, which may go", () => {
+    expect(shape("seal_avatars")).toEqual([
+      ["action_id", "uuid", true],
+      ["media_id", "uuid", true],
+    ]);
+    expect(byName.get("seal_avatars")!.primaryKeys.map((k) => k.columns.map((c) => c.name))).toEqual([["action_id", "media_id"]]);
+    expect(foreignKeys("seal_avatars")).toEqual([["action_id", "decision_actions", "restrict"]]);
+    expect(checks("seal_avatars")).toEqual([]);
+    // The keep trigger's and the disposal's probe: is this avatar listed by a seal.
+    expect(indexes("seal_avatars")).toEqual([["seal_avatars_media_idx", ["media_id"], false, null, "btree"]]);
+  });
+
+  test("avatar_reviews (6.5, 7.6): R1's hold for review of one avatar, under the finding's item, which the deciding transaction looks up", () => {
+    expect(shape("avatar_reviews")).toEqual([
+      ["media_id", "uuid", true],
+      ["item_id", "uuid", true],
+    ]);
+    expect(column("avatar_reviews", "media_id")?.primary).toBe(true);
+    expect(foreignKeys("avatar_reviews")).toEqual([["item_id", "intake_items", "restrict"]]);
+    expect(checks("avatar_reviews")).toEqual([]);
+    expect(indexes("avatar_reviews")).toEqual([["avatar_reviews_item_idx", ["item_id"], false, null, "btree"]]);
+  });
+
+  test("avatar_resets (6.5, 7.7): the reset picture's SHA-256 and the end of its 30 days, one a reset, read by the account", () => {
+    expect(shape("avatar_resets")).toEqual([
+      ["action_id", "uuid", true],
+      ["account_id", "uuid", true],
+      ["sha256", "text", true],
+      ["until", "timestamp with time zone", true],
+    ]);
+    expect(column("avatar_resets", "action_id")?.primary).toBe(true);
+    expect(foreignKeys("avatar_resets")).toEqual([["action_id", "decision_actions", "restrict"]]);
+    expect(checks("avatar_resets")).toEqual(["avatar_resets_sha256"]);
+    expect(checkSql("avatar_resets", "avatar_resets_sha256")).toBe(`"avatar_resets"."sha256" ~ '^[0-9a-f]{64}$'`);
+    // setAvatar's read: this account's resets whose 30 days are ahead.
+    expect(indexes("avatar_resets")).toEqual([["avatar_resets_account_idx", ["account_id", "until"], false, null, "btree"]]);
+  });
+
+  test("releases gain avatar_ids (6.5): the released seal's avatars beside its posts, empty by default, last", () => {
+    expect(shape("releases").at(-1)).toEqual(["avatar_ids", "uuid[]", true]);
+    expect(column("releases", "avatar_ids")?.hasDefault).toBe(true);
   });
 
   test("posts gain hide_counts and profiles share_previews (6.4), each off by default and the last column of its table", () => {

@@ -55,6 +55,10 @@ export const ROUTE_KINDS: ReadonlySet<ActionKind> = new Set<ActionKind>([
   // 3f Task 3 (design, section 7.9): an admin's reinstatement after an order, in a correction of the order decision. Never
   // disable_by_order, which only the effect of an order writes (and the params' schema refuses here).
   "reinstate_by_order",
+  // 2d Task 4 (design, sections 6.5 and 7.7): the reset of a profile picture and its reversal, named here: they are last in
+  // MEASURE_KINDS and REVERSAL_KINDS, beyond the two slices' edges, which do not move.
+  "reset_avatar",
+  "restore_avatar",
 ]);
 
 /**

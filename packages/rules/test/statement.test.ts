@@ -1616,3 +1616,54 @@ describe("3d Task 7: UPLOAD_NOTICE, the refused upload's notice (design, section
     expect(uploadNoticeParagraphs(view({ mayObject: false }), R2.title, {})).toEqual([...HEAD, UPLOAD_NOTICE.held]);
   });
 });
+
+describe("2d Task 4: the reset of a profile picture and its reversal (design, sections 7.6 and 7.7)", () => {
+  const RESET =
+    "korbat removed this profile picture once and shows the letter of your display name in its place. You may set a new picture; what you set is judged on its own if someone reports it, and korbat does not put the old picture back when this measure ends or is lifted. The same picture cannot be set as your profile picture again for 30 days.";
+
+  test("the measure's sentence, word for word, while deciding and for good; and when it changed nothing", () => {
+    const first = (input: StatementInput) => statementParagraphs(input)[0];
+    expect(first(statement({ post: null, measures: [measure("reset_avatar")] }))).toBe(RESET);
+    expect(first(statement({ kind: "interim", post: null, measures: [measure("reset_avatar")] }))).toBe(RESET);
+    expect(first(statement({ post: null, measures: [measure("reset_avatar", { noEffect: "already" })] }))).toBe("korbat reset your profile picture. Your account had no profile picture, so this changes nothing now.");
+    expect(first(statement({ post: null, measures: [measure("reset_avatar", { noEffect: "deleted" })] }))).toBe("korbat reset your profile picture. Your account is deleted, so this changes nothing.");
+    // A reset that changed nothing removed no picture, so it does not say that it removed one.
+    expect(first(statement({ post: null, measures: [measure("reset_avatar", { noEffect: "already" })] }))).not.toContain("removed this profile picture once");
+  });
+
+  test("restore_avatar's sentence is restore_display_name's with picture, and says nothing comes back; an ended reset says the same", () => {
+    const reviewed = { kind: "final" as const, ground: "incompatible" as const, ruleId: "R1" as const, rulesVersion: 2, legalReference: null, decidedAt: "2026-10-01T09:00:00.000Z" };
+    const lifted = statementParagraphs(statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, facts: null, post: null, measures: [], reversals: [reversal("restore_avatar", { resetDecisionId: RESET_DECISION })], reviewed }));
+    expect(lifted[1]).toBe("korbat lifted the reset of your profile picture. korbat does not put back your profile picture as it was before the reset: set it again in Settings, Profile if you wish.");
+    const name = statementParagraphs(statement({ kind: "correction", outcome: "reversed", ground: null, ruleId: null, facts: null, post: null, measures: [], reversals: [reversal("restore_display_name")], reviewed }));
+    expect(lifted[1]).toBe(name[1]!.replaceAll("display name", "profile picture"));
+    const closing = statementParagraphs(statement({ post: null, measures: [], outcome: "no_violation", ground: null, ruleId: null, endedMeasures: [{ kind: "reset_avatar", mediaId: null, resetDecisionId: RESET_DECISION, oldValueKept: false, resetRuleId: null }] }));
+    expect(closing).toContain(`What korbat did while deciding has ended: ${MEASURES.reset_avatar.label}. korbat does not put back your profile picture as it was before the reset: set it again in Settings, Profile if you wish.`);
+  });
+
+  test("an account seal that listed profile pictures says so, after the posts' images or alone", () => {
+    const seal = (sealed: { posts: number; images: number; deletedImages: number; avatars?: number }) =>
+      statementParagraphs(statement({ kind: "interim", ruleId: "R2", post: null, measures: [measure("seal_media", { sealed })] }))[0];
+    expect(seal({ posts: 0, images: 0, deletedImages: 0, avatars: 1 })).toBe("korbat sealed your profile picture: nobody can see it, you included.");
+    expect(seal({ posts: 1, images: 2, deletedImages: 0, avatars: 2 })).toBe(
+      `${STATEMENT_WORDS.sealAccount(2, 1)} korbat sealed the 2 profile pictures it held of yours: nobody can see them, you included.`,
+    );
+    // Without any, the sentence is 3c's alone.
+    expect(seal({ posts: 1, images: 2, deletedImages: 0 })).toBe(STATEMENT_WORDS.sealAccount(2, 1));
+  });
+
+  test("3d's finding words for a profile picture: a score and a match, in a person's decision on the account's case", () => {
+    const SCORE = { kind: "r1_score", source: null, matchKind: null, listedAs: null, viewed: true } as const;
+    const words = text(statement({ rulesVersion: 3, redressVersion: 4, source: "own_initiative", post: null, measures: [measure("reset_avatar")], automatedDetection: true, automatedDecision: "not_automated", signal: SCORE }));
+    expect(STATEMENT_WORDS.automated.found.avatar.viewed).toBe(
+      "Automated means were used to find this: a program rated this profile picture as likely within rule R1. They were not used to decide it: a moderator looked at the picture and took this decision.",
+    );
+    expect(words).toContain(STATEMENT_WORDS.automated.found.avatar.viewed);
+    expect(words).not.toContain("an image of your post");
+    const unseen = text(statement({ rulesVersion: 3, redressVersion: 4, source: "own_initiative", post: null, measures: [measure("reset_avatar")], automatedDetection: true, automatedDecision: "not_automated", signal: { ...SCORE, viewed: false } }));
+    expect(unseen).toContain("a moderator took this decision without opening the picture.");
+    const MATCH = { kind: "known_match", source: "a test list", matchKind: "near", listedAs: "other", viewed: null } as const;
+    const flagged = text(statement({ rulesVersion: 3, redressVersion: 4, source: "own_initiative", post: null, outcome: "no_violation", ground: null, ruleId: null, measures: [], automatedDetection: true, automatedDecision: "not_automated", signal: MATCH }));
+    expect(flagged).toContain("an automated comparison of fingerprints with a list kept by a test list flagged this profile picture for korbat's staff");
+  });
+});

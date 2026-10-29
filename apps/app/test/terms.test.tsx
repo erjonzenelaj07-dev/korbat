@@ -665,7 +665,9 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
     expect(text["How moderators decide"]).toContain("under R2 or R5 or on a report made on the anonymous path");
     expect(labelsIn(measuresSentence(terms, LEADS.interim))).toEqual(["Withhold the post", "Withhold one image"]);
     expect(labelsIn(measuresSentence(terms, LEADS.final))).toEqual(["Remove", "Remove one image", "Strike", "Suspend the account", "Terminate the account", "Retire the handle", "Warn about reporting", "Restrict reporting"]);
-    expect(labelsIn(measuresSentence(terms, LEADS.either))).toEqual(["Seal the images this case reaches", "Reset display name", "Reset bio"]);
+    // 2d Task 4 (7.7): the reset of a profile picture, taken while deciding or when the case is decided, as a field reset.
+    expect(labelsIn(measuresSentence(terms, LEADS.either))).toEqual(["Seal the images this case reaches", "Reset display name", "Reset bio", "Reset profile picture"]);
+    expect(measuresSentence(terms, LEADS.either)).toContain('"Reset profile picture" (the profile picture is removed, and the first letter of the display name is shown in its place)');
     expect(text["Reports and notices"]).toContain('"access restricted: it breaks korbat rule [number] ([title])": ');
     // 3e's numbers as a reader meets them.
     expect(text["Strikes"]).toContain("It counts for 90 days from its decision.");
@@ -796,7 +798,7 @@ describe("the table tests: the terms' numbers, rules, measures and outcomes are 
       const text = moderationText(changed.terms);
       expect(text["How moderators decide"]).toContain("under R2, R3 or R5 or on a report made on the anonymous path");
       expect(labelsIn(measuresSentence(changed.terms, LEADS.final))).toEqual(["remove_media", "strike", "suspend", "terminate", "retire_handle", "warn_reporting", "restrict_reporting"].map((kind) => `the label of ${kind}`));
-      expect(labelsIn(measuresSentence(changed.terms, LEADS.either))).toEqual(["the label of remove", "the label of seal_media", "the label of reset_display_name", "the label of reset_bio"]);
+      expect(labelsIn(measuresSentence(changed.terms, LEADS.either))).toEqual(["the label of remove", "the label of seal_media", "the label of reset_display_name", "the label of reset_bio", "the label of reset_avatar"]);
       expect(text["What you can post"]).toContain("(title of R1, title of R2, title of R3, title of R4, title of R5, title of R6)");
     });
 

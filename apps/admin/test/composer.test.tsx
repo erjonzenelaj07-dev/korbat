@@ -94,9 +94,13 @@ describe("what the composer offers", () => {
     expect(composer(view, MODERATOR, { kind: "final" })).toContain(">The law<");
     expect(measuresOffered(view, "interim")).toEqual(["withhold", "withhold_media"]);
     expect(measuresOffered(view, "final")).toEqual(["remove", "remove_media"]);
-    expect(measuresOffered(accountCase(), "interim")).toEqual(["reset_display_name", "reset_bio"]);
+    // 2d Task 4 (7.7): an account case may reset the profile picture, while deciding and for good, as its fields; the
+    // ledger's order puts it last.
+    expect(measuresOffered(accountCase(), "interim")).toEqual(["reset_display_name", "reset_bio", "reset_avatar"]);
     // 3e: a final decision on an account case may also retire its handle (8.3).
-    expect(measuresOffered(accountCase(), "final")).toEqual(["reset_display_name", "reset_bio", "retire_handle"]);
+    expect(measuresOffered(accountCase(), "final")).toEqual(["reset_display_name", "reset_bio", "retire_handle", "reset_avatar"]);
+    expect(composer(accountCase(), MODERATOR)).toContain(MEASURES.reset_avatar.label);
+    expect(MEASURES.reset_avatar.label).toBe("Reset profile picture");
     const out = composer(view, MODERATOR);
     for (const label of [MEASURES.withhold.label, MEASURES.withhold_media.label]) expect(out).toContain(label);
     expect(out).not.toContain(`>${MEASURES.remove.label}<`);
@@ -162,6 +166,13 @@ describe("what the composer offers", () => {
     expect(noEffectOf(reset, { kind: "reset_bio", mediaId: null })).toBe("already");
     expect(noEffectOf(accountCase(), { kind: "reset_bio", mediaId: null })).toBeNull();
     expect(noEffectOf(accountCase({ target: { ...accountCase().target, deleted: true } as CaseView["target"] }), { kind: "reset_bio", mediaId: null })).toBe("deleted");
+    // 2d Task 4: the picture's reset changes nothing when the newest snapshot the page shows copied no picture.
+    const snapshot = accountCase().snapshots[0]!;
+    const pictured = accountCase({ snapshots: [{ ...snapshot, media: [{ id: IMAGE_ONE, alt: null, width: 400, height: 400 }] } as CaseView["snapshots"][number]] });
+    const unpictured = accountCase({ snapshots: [{ ...snapshot, media: null } as CaseView["snapshots"][number]] });
+    expect(noEffectOf(pictured, { kind: "reset_avatar", mediaId: null })).toBeNull();
+    expect(noEffectOf(unpictured, { kind: "reset_avatar", mediaId: null })).toBe("already");
+    expect(noEffectOf(accountCase({ target: { ...accountCase().target, deleted: true } as CaseView["target"] }), { kind: "reset_avatar", mediaId: null })).toBe("deleted");
     // A lane-0 account case without a suspect item: the account's advice.
     const account = accountCase({ suspicion: null, items: [item({ ruleId: "R5", lane: 0, link: "http://localhost:8081/u/named_once" })] });
     expect(composer(account, MODERATOR)).toContain(
@@ -516,6 +527,18 @@ describe("lifting and correcting", () => {
     // A moderator's correction of a decision that holds a seal beside a withhold offers the withhold alone.
     const both = decision({ actions: [decision().actions[0]!, sealAction] });
     expect(correctable(rangeCase({ decisions: [both] }), both, MODERATOR)?.measures.map((measure) => measure.kind)).toEqual(["withhold"]);
+  });
+
+  test("2d Task 4: the reset of a profile picture is lifted one by one with restore_avatar, and its statement names its decision and keeps no old value", () => {
+    const reset = decision({ kind: "final", ruleId: "R6", actions: [{ ...decision().actions[0]!, kind: "reset_avatar", mediaId: null }] });
+    const view = accountCase({ decisions: [reset] });
+    expect(correctable(view, reset, MODERATOR)?.measures.map((measure) => measure.kind)).toEqual(["reset_avatar"]);
+    const draft = correctionDraft(caseId(view.id), view, reset, MODERATOR);
+    const params = decisionParamsOf(view, { ...draft, actions: [{ kind: "restore_avatar", mediaId: null }] }, { snapshot: HEX, facts: null, reason: "bb".repeat(32), legalReference: null });
+    expect(params).toMatchObject({ kind: "correction", outcome: "reversed", actions: [{ kind: "restore_avatar", mediaId: null }] });
+    expect(CaseDecidedParams.safeParse(params).success).toBe(true);
+    const preview = statementParagraphs(previewOf(view, { ...draft, actions: [{ kind: "restore_avatar", mediaId: null }], written: { ...draft.written, review_reason: "The picture was the author's own." } }, NOW));
+    expect(preview).toContain("korbat lifted the reset of your profile picture. korbat does not put back your profile picture as it was before the reset: set it again in Settings, Profile if you wish.");
   });
 
   test("a correction's params: reversals only, the corrected decision's category and rules version, its own reason, and reversed only when nothing of the decision stays in force", () => {

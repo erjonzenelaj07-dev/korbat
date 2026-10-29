@@ -4,8 +4,15 @@ import { FORBIDDEN_FORMAT } from "./text";
 /** Every code the media endpoints add to ErrorEnvelope.error.code (plus the shared ones: invalid_request, not_found, rate_limited). */
 // 3d Task 7 (design, sections 7.8 step 5 and 10.7): upload_refused, a post that attaches an upload korbat did not accept.
 // 2d Task 3 (design, section 9.4), both 409 of PUT /api/me/avatar: avatar_not_ready, an upload that is processing, failed or
-// refused; not_an_avatar, a post's image.
-export const MediaErrorCode = z.enum(["unsupported_media_type", "file_too_large", "too_many_pending_uploads", "uploads_unavailable", "media_unavailable", "upload_refused", "avatar_not_ready", "not_an_avatar"]);
+// refused; not_an_avatar, a post's image. 2d Task 4 (sections 7.7 and 9.4), 409 of PUT /api/me/avatar too: avatar_reset, the
+// picture (the same file by its SHA-256) a moderator reset on this account less than 30 days ago.
+/**
+ * 2d Task 4 (design, section 7.7): how long the very picture a moderator reset on an account (the same file by its SHA-256)
+ * is refused as that account's picture. The migration avatar_moderation writes a reset's end this many days on.
+ */
+export const AVATAR_RESET_DAYS = 30;
+
+export const MediaErrorCode = z.enum(["unsupported_media_type", "file_too_large", "too_many_pending_uploads", "uploads_unavailable", "media_unavailable", "upload_refused", "avatar_not_ready", "not_an_avatar", "avatar_reset"]);
 export type MediaErrorCode = z.infer<typeof MediaErrorCode>;
 
 /** Why processing an upload failed. Reported on the status response, not as an HTTP error. */

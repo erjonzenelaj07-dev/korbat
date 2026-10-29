@@ -233,6 +233,12 @@ export const DECISION_WORDS = {
   noText: "The post had no text.",
   displayName: "Display name",
   bio: "Bio",
+  /**
+   * 2d Task 4 (design, section 7.7): the reset picture, beside the display name and the bio. korbat serves a reset picture
+   * to nobody, its owner included (7.5), so the screen names it and says why it is not drawn.
+   */
+  avatar: "Profile picture",
+  avatarNotShown: "Removed by this decision. korbat keeps it with the case and shows it to nobody, you included.",
   handle: "Handle",
   empty: "(empty)",
   r4Redacted: "Content erased when the R4 decision became final",

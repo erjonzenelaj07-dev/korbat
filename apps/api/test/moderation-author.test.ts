@@ -215,6 +215,10 @@ describe("a post's chip in its view", () => {
       imagesPublished: () => {
         throw new Error("a view started the automated step");
       },
+      // 2d Task 4: nor the checks of an avatar, which only setAvatar starts.
+      avatarSet: () => {
+        throw new Error("a view started the checks of an avatar");
+      },
     };
     const repo = {
       findPosts: async (ids: string[]) => new Map(rows.filter((r) => ids.includes(r.id)).map((r) => [r.id, r])),

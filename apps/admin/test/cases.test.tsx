@@ -11,7 +11,7 @@ import { correctionDraft, newDraft } from "../src/compose";
 import { parseImageId, StaffImage, staffImageSrc } from "../src/media";
 import { CASE_WORDS, CONSOLE_MODERATION_CODES, DECISION_KINDS, DECISION_OUTCOMES, describeError, FINDING_WORDS, messageFor, MODERATION_MESSAGES, NOTE_WORDS, OUTCOME_WORDS, REVEAL_WORDS } from "../src/messages";
 import { parseCaseId } from "../src/router";
-import { afterFailedRead, ART_18_BANNER, CaseScreenView, IMAGES_NOT_SHOWN, RevealDialog, revealSource, SUSPECT_BANNER, targetDiffers, type CaseScreenViewProps } from "../src/screens/Case";
+import { afterFailedRead, ART_18_BANNER, CaseScreenView, IMAGES_NOT_SHOWN, PICTURE_NOT_SHOWN, RevealDialog, revealSource, SUSPECT_BANNER, targetDiffers, type CaseScreenViewProps } from "../src/screens/Case";
 import { ERASURE_OVERDUE_RUNBOOK, ERASURE_OVERDUE_WORDS, OverviewView, RELEASE_OVERDUE_RUNBOOK, erasureOverdue, releaseOverdue } from "../src/screens/Home";
 import { findingOf, marksOf, QUEUE_REFRESH_MS, QueueView, readQueue, startQueueReads, type QueueViewProps } from "../src/screens/Queue";
 import { revealAction, revealWithKey, StepUpMismatch } from "../src/step-up";
@@ -552,6 +552,29 @@ describe("the case page", () => {
     expect(out).not.toContain("Art. 18");
     expect(out).not.toContain("Nobody opens the images");
     expect(out).not.toContain("Take a fresh snapshot");
+  });
+
+  test("2d Task 4 (7.7): an account's case shows its snapshot's profile picture through the staff reader, beside the display name and the bio; frozen, the placeholder and no image", () => {
+    const snapshot = accountCase().snapshots[0]!;
+    const pictured = (imagesAllowed: boolean) =>
+      accountCase({ imagesAllowed, snapshots: [{ ...snapshot, media: [{ id: IMAGE_ONE, alt: null, width: 400, height: 400 }] } as CaseView["snapshots"][number]] });
+    const one = parseImageId(IMAGE_ONE)!;
+    const out = page(pictured(true));
+    expect(out).toContain("Profile picture, not shown");
+    expect(out).toContain("400 by 400 pixels");
+    expect(out.split(">Show image</button>").length - 1).toBe(1);
+    expect(out).not.toContain("alt text");
+    expect(images(out)).toEqual([]);
+    expect(images(page(pictured(true), { shownImage: { id: one, clear: false, failed: false } }))).toEqual([`/api/staff/cases/${caseId(accountCase().id)}/media/${IMAGE_ONE}/small`]);
+    // Frozen by a report of child sexual abuse material: the placeholder's sentence, no reveal and no image.
+    const frozen = page(pictured(false), { shownImage: { id: one, clear: true, failed: false } });
+    expect(images(frozen)).toEqual([]);
+    expect(frozen).not.toContain(">Show image</button>");
+    expect(frozen).toContain(PICTURE_NOT_SHOWN.replaceAll("'", "&#x27;"));
+    // A snapshot without a picture says so, and, having nothing to keep from staff, no sentence of a freeze.
+    const none = page(accountCase({ imagesAllowed: false, snapshots: [{ ...snapshot, media: null } as CaseView["snapshots"][number]] }));
+    expect(none).toContain("The snapshot lists no profile picture.");
+    expect(none).not.toContain("The profile picture is not shown");
   });
 
   test("an image is in the page only once its person asked for it: first small and blurred, then large and clear, one at a time", () => {

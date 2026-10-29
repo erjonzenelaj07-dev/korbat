@@ -110,6 +110,10 @@ const METHODS: Record<keyof MediaRepo, Role> = {
   // 3f Task 5: the image rows of one seal's posts, by id, for handover-list, which prints their stored names; it opens no
   // file, and the hand-over's program, which copies the files, has no database.
   sealImageRows: { is: "neither", why: "answers the ids of the image rows of a seal's posts for handover-list, never a file or its content" },
+  // 2d Task 4 (design, sections 7.6 and 7.7): the program's reads of an avatar, and a seal's avatars for handover-list.
+  avatarSignals: { is: "neither", why: "answers an avatar's id and score to the program's step, never a file, a path or anything shown of it" },
+  avatarOwner: { is: "neither", why: "answers which account an avatar's row belongs to, for the program's step, and nothing of the image" },
+  sealAvatarRows: { is: "neither", why: "answers the ids of the avatar rows a seal lists for handover-list, never a file or its content" },
   // 3d Task 1: the quarantine's custody of an image, the lost images' notices, and the plan and the seals' counts that
   // quarantine-list prints from; none opens a file, and the mover, which moves the files, has no database.
   custody: { is: "neither", why: "answers two booleans of the quarantine's record (being restored, lost), asked only for a visible image whose file is missing" },
@@ -858,7 +862,34 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
   });
 
   describe("2d Task 3: an avatar (design, sections 7.5 and 7.8)", () => {
-    test("the current, visible avatar is given by every reader of avatars; sealed, erased, replaced or of a deleted account, by none, its owner included", async () => {
+    /** What each reader of 7.5 gives of the account's avatar: serve to its owner and to nobody signed in, avatarsOf, the export's member and its files. */
+    const avatarReaders = async (w: World, id: string, owner: string) => ({
+      serve: [(await ask(w, id, owner)).kind, (await ask(w, id, null)).kind],
+      views: (await w.repo.avatarsOf([owner], owner)).get(owner)?.large === mediaPath(id, "large"),
+      export: (await w.repo.exportAvatar(owner))?.id === id,
+      files: (await w.repo.readyImages(owner)).includes(id),
+    });
+
+    test("2d Task 4: a sealed avatar, by a real seal of the account's case, is given by no reader of 7.5, its owner included, and staff open it neither; unsealed, every reader gives it again", async () => {
+      await inWorld(async (w) => {
+        const ada = await w.s.established();
+        const current = await w.h.readyAvatar(ada.id);
+        await w.repo.attachAvatar(w.tx, ada.id, current);
+        writeFileSync(w.h.files.store.image(current, "large"), webpBytes("VP8X", 400, 400));
+        expect(await avatarReaders(w, current, ada.id)).toEqual({ serve: ["file", "file"], views: true, export: true, files: true });
+        const { caseId } = await report(w.tx, anAccount(ada.id, ada.handle), "csam");
+        const seal = await decideIn(w.tx, admin, caseId, SEAL_FOR_GOOD);
+        expect(await avatarReaders(w, current, ada.id)).toEqual({ serve: ["not_found", "not_found"], views: false, export: false, files: false });
+        // A browser that holds the file's tag gets no "not modified" either; staff are refused it on every case.
+        expect((await ask(w, current, ada.id, `"${current}-large"`)).kind).toBe("not_found");
+        expect(await staffOpens(w, current)).toBe(false);
+        expect(await w.repo.existing([current])).toEqual(new Set([current]));
+        await decideIn(w.tx, admin, caseId, { kind: "correction", reviewsDecisionId: seal, actions: [act("unseal_media")] });
+        expect(await avatarReaders(w, current, ada.id)).toEqual({ serve: ["file", "file"], views: true, export: true, files: true });
+      });
+    });
+
+    test("the current, visible avatar is given by every reader of avatars; erased, replaced or of a deleted account, by none, its owner included", async () => {
       // As the migrator, which alone writes an image's state and erasure; the guard on profile_id skips it.
       await inWorld(async (w) => {
         const [ada, bob] = [await w.s.established(), await w.s.established()];
@@ -873,14 +904,10 @@ describe.skipIf(!process.env.INTEGRATION)("integration: every deleter and every 
         const current = await w.h.readyAvatar(ada.id);
         await w.repo.attachAvatar(w.tx, ada.id, current);
         expect(await readers(current, ada.id)).toEqual(shown);
-        for (const [label, change] of [
-          ["sealed", sql`moderation_state = 'sealed'`],
-          ["erased", sql`erased_at = now()`],
-        ] as const) {
-          await w.tx.execute(sql`update post_media set ${change} where id = ${current}::uuid`);
-          expect(await readers(current, ada.id), label).toEqual(hidden);
-          await w.tx.execute(sql`update post_media set moderation_state = 'visible', erased_at = null where id = ${current}::uuid`);
-        }
+        // Erased, as the migrator writes it (2d Task 4: a sealed one is the test above, by a real seal).
+        await w.tx.execute(sql`update post_media set erased_at = now() where id = ${current}::uuid`);
+        expect(await readers(current, ada.id), "erased").toEqual(hidden);
+        await w.tx.execute(sql`update post_media set erased_at = null where id = ${current}::uuid`);
         expect(await readers(current, ada.id)).toEqual(shown);
         // Replaced: the former one is detached, and no reader gives it, though a hold may keep its row.
         const next = await w.h.readyAvatar(ada.id);

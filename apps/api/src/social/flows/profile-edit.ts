@@ -53,13 +53,17 @@ export async function editProfile(deps: SocialDeps, viewer: string, input: Profi
  * account's row through 3e's predicate (account_suspended, or not_found for a deleted profile), the media module's
  * attachAvatar checks and sets the upload in the same transaction (not_found, not_an_avatar, avatar_not_ready) and detaches
  * the picture it replaces, and the closing judgment ends it; after the commit the replaced picture's row and files go,
- * unless a hold or a frozen case keeps the row. Task 4 adds the reset picture's refusal and moderation.avatarSet.
+ * unless a hold, a seal or a frozen case keeps the row. 2d Task 4 (7.3 step 2, 7.6, 7.7): attachAvatar also refuses the
+ * very picture a moderator reset on this account in the last 30 days (avatar_reset, read in the media module, which
+ * holds the upload's hash), and after the commit moderation.avatarSet starts the program's checks of the picture,
+ * unwaited for.
  */
 export async function setAvatar(deps: SocialDeps, viewer: string, mediaId: string): Promise<AvatarResponse> {
   const row = await own(deps, viewer);
   await enforceWriteLimit(deps.limits, viewer, "avatar", row.createdAt, deps.now());
   const set = await deps.repo.setAvatar(viewer, (tx) => deps.media.attachAvatar(tx, viewer, mediaId));
   await deps.media.dropFormerAvatar(set.former);
+  deps.moderation?.avatarSet(viewer, mediaId);
   return { avatar: set.avatar };
 }
 

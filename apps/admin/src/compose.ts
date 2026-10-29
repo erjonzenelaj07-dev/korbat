@@ -217,7 +217,8 @@ export function outcomesListed(view: CaseView, role: StaffRole): CaseDraft["outc
  */
 export function measuresOffered(view: CaseView, kind: "interim" | "final"): MeasureKind[] {
   // 3e: an account case's final decision may also retire the handle (8.3); its other standing measures come with their tasks.
-  const targets = view.target.type === "post" ? ["post", "image"] : ["display_name", "bio", "handle"];
+  // 2d Task 4 (design, section 7.7): and reset the profile picture, interim or final, where it offers "Reset display name".
+  const targets = view.target.type === "post" ? ["post", "image"] : ["display_name", "bio", "avatar", "handle"];
   return MEASURE_KINDS.filter((measure) => measure !== "seal_media" && MEASURES[measure][kind] && targets.includes(MEASURES[measure].target) && !(kind === "interim" && measure === "withhold" && hiddenWhileDeciding(view)));
 }
 
@@ -226,6 +227,15 @@ export function measuresOffered(view: CaseView, kind: "interim" | "final"): Meas
  * placeholder: there is no handle to retire, and the database would retire the placeholder of a fresh snapshot.
  */
 export const retireOpen = (view: CaseView): boolean => view.target.type === "account" && !(view.target.handle !== null && isRetiredPlaceholder(view.target.handle.toLowerCase()));
+
+/**
+ * 2d Task 4: whether the newest shown snapshot of an account copied a profile picture (its media lists one), or null when no
+ * snapshot is shown.
+ */
+const snapshotPicture = (view: CaseView): boolean | null => {
+  const newest = view.snapshots[0];
+  return newest && !newest.withheld ? (newest.media ?? []).length > 0 : null;
+};
 
 /** The handle the newest shown snapshot copied, in lower case as the database retires it; null when no snapshot shows one. */
 const snapshotHandle = (view: CaseView): string | null => {
@@ -299,6 +309,9 @@ export function noEffectOf(view: CaseView, action: DecisionActionParams, standin
     // 3e: a retirement changes nothing when the newest snapshot's handle is retired already, which the case answer says.
     if (action.kind === "retire_handle") return view.standing?.snapshotHandleRetired ? "already" : null;
     if (action.kind === "reset_display_name") return target.displayName !== null && target.displayName === target.handle ? "already" : null;
+    // 2d Task 4: a reset of the picture changes nothing when the account has none. The case answer names the account's fields
+    // and not its picture, so the newest snapshot the page shows says it, as the reset compares with that snapshot.
+    if (action.kind === "reset_avatar") return snapshotPicture(view) === false ? "already" : null;
     return action.kind === "reset_bio" && target.bio === "" ? "already" : null;
   }
   if (target.state === "deleted_by_author") return "deleted";
@@ -321,7 +334,8 @@ export function noEffectOf(view: CaseView, action: DecisionActionParams, standin
  * lift_suspension, and (Task 5) a warning about reporting or a restriction of it with lift_reporting: the first two share
  * the target `account` with the strike, so they are named by kind, and the reporting measures with them.
  */
-const ONE_BY_ONE: readonly MeasureTarget[] = ["post", "image", "images", "display_name", "bio", "handle"];
+// 2d Task 4: the profile picture's reset is lifted with its own reversal, as a field's.
+const ONE_BY_ONE: readonly MeasureTarget[] = ["post", "image", "images", "display_name", "bio", "avatar", "handle"];
 const ONE_BY_ONE_KINDS: readonly ActionKind[] = ["suspend", "terminate", "warn_reporting", "restrict_reporting"];
 
 /** Whether a decision's action is a measure that a correction or a review lifts one by one. */
@@ -379,6 +393,7 @@ function reversalOf(action: { kind: ActionKind; mediaId: string | null }): Decis
   if (target === "handle") return { kind: "unretire_handle", mediaId: null };
   if (action.kind === "suspend" || action.kind === "terminate") return { kind: "lift_suspension", mediaId: null };
   if (target === "reporting") return { kind: "lift_reporting", mediaId: null };
+  if (target === "avatar") return { kind: "restore_avatar", mediaId: null };
   return { kind: target === "display_name" ? "restore_display_name" : "restore_bio", mediaId: null };
 }
 
@@ -1221,6 +1236,8 @@ const NO_RESET = { resetDecisionId: null, oldValueKept: false, resetRuleId: null
 /** What a statement says of a field reset that ends or is lifted: the decision that holds it, and whether its old value is still kept. */
 function resetFacts(view: CaseView, decision: CaseDecision, action: CaseDecisionAction) {
   const target = MEASURES[action.kind].target;
+  // 2d Task 4 (7.7): a reset picture's decision is named, and its old value is never "kept": no screen shows the picture.
+  if (target === "avatar") return { resetDecisionId: decision.id, oldValueKept: false, resetRuleId: decision.ruleId };
   if (target !== "display_name" && target !== "bio") return NO_RESET;
   return { resetDecisionId: decision.id, oldValueKept: action.noEffect === null && snapshotShown(view, decision.snapshotId), resetRuleId: decision.ruleId };
 }

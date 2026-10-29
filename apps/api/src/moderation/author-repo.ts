@@ -23,7 +23,8 @@ const day = (expression: string) => sql.raw(`to_char(${expression} at time zone 
  */
 export const toldToAuthor = (alias: string) => sql.raw(`(${alias}.author_mail <> 'none' and ${alias}.informed_at is not null)`);
 
-const MEASURES = sql`('withhold', 'remove', 'seal_media', 'withhold_media', 'remove_media', 'reset_display_name', 'reset_bio')`;
+// 2d Task 4 (design, section 6.5): and the reset of a profile picture, which Activity tells with the target profile (Task 2).
+const MEASURES = sql`('withhold', 'remove', 'seal_media', 'withhold_media', 'remove_media', 'reset_display_name', 'reset_bio', 'reset_avatar')`;
 
 /**
  * The end of the appeal's window of decision `d`, while an appeal can still be filed: a final decision that restricts,

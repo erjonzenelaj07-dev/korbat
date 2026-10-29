@@ -40,7 +40,7 @@ const ground: IntakeGround = {
  * The module's dependencies over a recording transaction. `openCases` says what each read of a target's open case
  * answers, in order: a case's id, or null for none; when a target's answers run out, its last one is repeated.
  */
-function recording(openCases: Record<string, (string | null)[]>) {
+function recording(openCases: Record<string, (string | null)[]>, pictured: readonly string[] = []) {
   const dialect = new PgDialect();
   const events: string[] = [];
   const reads: Record<string, number> = {};
@@ -67,7 +67,8 @@ function recording(openCases: Record<string, (string | null)[]>) {
         return events.push(`item ${String(params[2])} ${String(params[3])} in ${String(params[1])}`), [{ id: randomUUID(), seq: 1, position: Number(params[4]), lane: Number(params[5]) }];
       }
       if (statement.startsWith("select to_char(")) return events.push("time"), [{ at: TAKEN }];
-      if (statement.startsWith("select display_name, bio, handle from evidence_snapshots")) return [];
+      // 2d Task 4: the newest snapshot's fields and, since the account's picture is evidence too, its media's ids.
+      if (statement.startsWith("select display_name, bio, handle")) return [];
       if (statement.startsWith("insert into evidence_snapshots")) {
         snapshots.push({ target: String(params[2]), media: params[9] === null ? null : JSON.parse(String(params[9])) });
         return events.push(`snapshot ${String(params[1])} ${String(params[2])}`), [{ id: randomUUID(), taken_at: TAKEN }];
@@ -77,12 +78,24 @@ function recording(openCases: Record<string, (string | null)[]>) {
       throw new Error(`the intake issued a statement this test does not know: ${statement}`);
     },
   };
-  /** The media module's hold: every pair it was given, in order, and one image for each post it was asked to hold. */
+  /**
+   * The media module's hold: every pair it was given, in order, and one image for each post it was asked to hold. 2d Task
+   * 4: an account's pair answers its picture when the account is among `pictured`, else an empty list.
+   */
   const media = {
-    hold: async (within: unknown, pairs: readonly ({ caseId: string; postId: string } | { ownerId: string })[]) => {
+    hold: async (within: unknown, pairs: readonly ({ caseId: string; postId: string } | { ownerId: string } | { caseId: string; accountId: string })[]) => {
       if (within !== tx) throw new Error("the hold ran outside the intake's transaction");
-      events.push(`hold ${pairs.map((pair) => ("postId" in pair ? `post ${pair.postId} for ${pair.caseId}` : `owner ${pair.ownerId}`)).join(", ") || "nothing"}`);
-      return new Map(pairs.flatMap((pair) => ("postId" in pair ? [[pair.postId, [{ id: `image-of-${pair.postId}`, alt: "an image", width: 1200, height: 800 }]] as const] : [])));
+      const named = (pair: (typeof pairs)[number]) => ("postId" in pair ? `post ${pair.postId} for ${pair.caseId}` : "accountId" in pair ? `account ${pair.accountId} for ${pair.caseId}` : `owner ${pair.ownerId}`);
+      events.push(`hold ${pairs.map(named).join(", ") || "nothing"}`);
+      type Held = { id: string; alt: string | null; width: number; height: number };
+      const answered: [string, Held[]][] = pairs.flatMap((pair): [string, Held[]][] =>
+        "postId" in pair
+          ? [[pair.postId, [{ id: `image-of-${pair.postId}`, alt: "an image", width: 1200, height: 800 }]]]
+          : "accountId" in pair
+            ? [[pair.accountId, pictured.includes(pair.accountId) ? [{ id: `picture-of-${pair.accountId}`, alt: null, width: 400, height: 400 }] : []]]
+            : [],
+      );
+      return new Map(answered);
     },
   };
   const social = {
@@ -135,15 +148,15 @@ describe("the intake's transaction keeps one order", () => {
       `copy post ${POST_TWO}`,
       `copy account ${ACCOUNT}`,
       // No image row is locked before the last post is: one hold, a pair for each post with its case, in the cases' order.
-      // An account that is reported under a rule reaches no image, so it brings no pair.
-      `hold post ${POST_ONE} for case-of-${POST_ONE}, post ${POST_TWO} for case-of-${POST_TWO}`,
+      // 2d Task 4 (7.7): and the account's case's pair for its picture, which its snapshot lists by reference.
+      `hold post ${POST_ONE} for case-of-${POST_ONE}, post ${POST_TWO} for case-of-${POST_TWO}, account ${ACCOUNT} for case-of-${ACCOUNT}`,
       `snapshot post ${POST_ONE}`,
       `snapshot post ${POST_TWO}`,
       `snapshot account ${ACCOUNT}`,
       // Last, after every lock: the sender is judged again by the clock, so a suspension that started while it waited counts.
       "judge sender",
     ]);
-    // A post's snapshot lists the images the hold answered for it; an account's lists none.
+    // A post's snapshot lists the images the hold answered for it; an account without a picture lists none (null).
     expect(world.snapshots).toEqual([
       { target: POST_ONE, media: [{ id: `image-of-${POST_ONE}`, alt: "an image", width: 1200, height: 800 }] },
       { target: POST_TWO, media: [{ id: `image-of-${POST_TWO}`, alt: "an image", width: 1200, height: 800 }] },
@@ -161,11 +174,19 @@ describe("the intake's transaction keeps one order", () => {
     const csam: IntakeGround = { ...ground, channel: "signed_out", reporterId: null, ruleId: null, allegesIllegal: true, csam: true, category: "STATEMENT_CATEGORY_PROTECTION_OF_MINORS" };
     const world = recording({});
     await recordIntake({ ...world.deps, social: { ...world.deps.social, postRef: async () => ({ authorId: ACCOUNT, state: "visible", quoteOfId: null }) } } as ModerationDeps, { ground: csam, live });
-    expect(world.events.filter((event) => event.startsWith("hold"))).toEqual([`hold post ${POST_ONE} for case-of-${POST_ONE}, post ${POST_TWO} for case-of-${POST_TWO}, owner ${ACCOUNT}`]);
-    // An account alone, reported under a rule: the hold is still asked once, for nothing.
+    expect(world.events.filter((event) => event.startsWith("hold"))).toEqual([
+      `hold post ${POST_ONE} for case-of-${POST_ONE}, post ${POST_TWO} for case-of-${POST_TWO}, account ${ACCOUNT} for case-of-${ACCOUNT}, owner ${ACCOUNT}`,
+    ]);
+    // An account alone, reported under a rule: the hold is asked once, for its picture alone (2d Task 4).
     const plain = recording({});
     await recordIntake(plain.deps, { ground, live: [{ type: "account", id: ACCOUNT, position: 1, namedHandle: "Named" }] });
-    expect(plain.events.filter((event) => event.startsWith("hold"))).toEqual(["hold nothing"]);
+    expect(plain.events.filter((event) => event.startsWith("hold"))).toEqual([`hold account ${ACCOUNT} for case-of-${ACCOUNT}`]);
+  });
+
+  test("2d Task 4 (7.7): an account with a picture: its snapshot lists the picture the hold answered, by reference", async () => {
+    const world = recording({}, [ACCOUNT]);
+    await recordIntake(world.deps, { ground, live: [{ type: "account", id: ACCOUNT, position: 1, namedHandle: "Named" }] });
+    expect(world.snapshots).toEqual([{ target: ACCOUNT, media: [{ id: `picture-of-${ACCOUNT}`, alt: null, width: 400, height: 400 }] }]);
   });
 
   test("a target whose open case is read as none twice and found the third time stays in one run: the insert and the read are repeated in the same transaction", async () => {

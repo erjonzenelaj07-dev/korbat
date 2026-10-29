@@ -863,6 +863,11 @@ async function removeCasesIn(tx: DbTx, caseIds: SQL, intakeIds: SQL): Promise<vo
                          or decision_id in (select d.id from decisions d where d.case_id = any(${caseIds})) or withdrawn_by in (select d.id from decisions d where d.case_id = any(${caseIds}))`);
   await tx.execute(sql`delete from suspension_replies where action_id in (select a.id from decision_actions a join decisions d on d.id = a.decision_id where d.case_id = any(${caseIds}))
                          or answered_by in (select d.id from decisions d where d.case_id = any(${caseIds}))`);
+  // 2d Task 4: R1's holds for review name an item, an avatar's reset and a seal's avatars a ledger row: each goes before
+  // the row it names (foreign keys, on delete restrict).
+  await tx.execute(sql`delete from avatar_reviews where item_id in (select i.id from intake_items i where i.case_id = any(${caseIds}) or i.intake_id = any(${intakeIds}))`);
+  await tx.execute(sql`delete from avatar_resets where action_id in (select a.id from decision_actions a join decisions d on d.id = a.decision_id where d.case_id = any(${caseIds}))`);
+  await tx.execute(sql`delete from seal_avatars where action_id in (select a.id from decision_actions a join decisions d on d.id = a.decision_id where d.case_id = any(${caseIds}))`);
   await tx.execute(sql`delete from intake_items where case_id = any(${caseIds}) or intake_id = any(${intakeIds})`);
   await tx.execute(sql`update media_holds set released_at = now() where case_id = any(${caseIds}) and released_at is null`);
   await tx.execute(sql`delete from media_holds where case_id = any(${caseIds})`);
@@ -1034,7 +1039,8 @@ export const CHANNEL_TABLES = ["contact_messages", "alert_outbox", "notify_state
  * 3f: a suite that writes the tables of the contact point or the alert channel names them as `extra`.
  */
 export async function rowCounts(db: Runner, extra: readonly string[] = []): Promise<Record<string, number>> {
-  const tables = ["cases", "intakes", "intake_items", "media_holds", "evidence_snapshots", "staff_texts", "case_access_log", "decisions", "decision_actions", "seal_posts", "appeals", "suspension_replies", "unfounded_marks", "report_tallies", "post_media", "posts", "profiles", ...extra];
+  // 2d Task 4: and the three tables of the moderation of avatars.
+  const tables = ["cases", "intakes", "intake_items", "media_holds", "evidence_snapshots", "staff_texts", "case_access_log", "decisions", "decision_actions", "seal_posts", "seal_avatars", "avatar_reviews", "avatar_resets", "appeals", "suspension_replies", "unfounded_marks", "report_tallies", "post_media", "posts", "profiles", ...extra];
   const columns = tables.map((table) => `(select count(*)::int from public.${table}) as ${table}`).join(", ");
   const [row] = await db.execute<Record<string, number>>(sql.raw(`select ${columns}`));
   return { ...row! };

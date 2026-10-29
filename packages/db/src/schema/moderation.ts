@@ -55,6 +55,10 @@ export const actionKind = pgEnum("action_kind", [
   // inside a PL/pgSQL body of the migration that adds it (enum-literals.test.ts).
   "disable_by_order",
   "reinstate_by_order",
+  // 2d (design, sections 6.5 and 7.7): the reset of a profile picture and its reversal, added alone by the migration
+  // avatar_kinds. As 3e's and 3f's, each is an enum literal only inside a PL/pgSQL body of the migrations from that one on.
+  "reset_avatar",
+  "restore_avatar",
 ]);
 
 /**
@@ -509,6 +513,71 @@ export const sealPosts = pgTable(
     /** The freeze's probe: is this post listed by a seal. */
     index("seal_posts_post_idx").on(t.postId),
     fullAccess("seal_posts_api_all", apiRole),
+  ],
+).enableRLS();
+
+/**
+ * 2d (design, section 6.5): the avatars an account case's seal_media listed, as seal_posts lists its posts: the account's
+ * current avatar and any former one a hold keeps, locked in id order by decision_actions_apply. Only that definer function
+ * writes it (migration avatar_moderation REVOKEs the rest), and nothing deletes it, as seal_posts.
+ */
+export const sealAvatars = pgTable(
+  "seal_avatars",
+  {
+    actionId: uuid("action_id").notNull().references(() => decisionActions.id, { onDelete: "restrict" }),
+    /** No foreign key: the image row may go once nothing keeps it, and the seal's list stays as the ledger's. */
+    mediaId: uuid("media_id").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.actionId, t.mediaId] }),
+    /** The keep trigger's and the disposal's probe: is this avatar listed by a seal. */
+    index("seal_avatars_media_idx").on(t.mediaId),
+    fullAccess("seal_avatars_api_all", apiRole),
+  ],
+).enableRLS();
+
+/**
+ * 2d (design, sections 6.5 and 7.6): R1's hold for review of an avatar, while AUTOMATION_R1_ACTS is on: the avatar is
+ * withheld from everyone but its owner until the finding's item is answered. Written only by the definer function
+ * avatar_review; the deciding transaction that answers the item derives the avatar's state again (avatar_apply).
+ */
+export const avatarReviews = pgTable(
+  "avatar_reviews",
+  {
+    /** No foreign key to the image, as seal_avatars: the row is the case's record and outlives an image deleted later. */
+    mediaId: uuid("media_id").primaryKey(),
+    itemId: uuid("item_id")
+      .notNull()
+      .references(() => intakeItems.id, { onDelete: "restrict" }),
+  },
+  (t) => [
+    /** The answering transaction's lookup: the avatars reviewed under the items it answers. */
+    index("avatar_reviews_item_idx").on(t.itemId),
+    fullAccess("avatar_reviews_api_all", apiRole),
+  ],
+).enableRLS();
+
+/**
+ * 2d (design, sections 6.5 and 7.7): one row a reset_avatar that applied, written by decision_actions_apply: the reset
+ * picture's SHA-256 (the image row's avatar_sha256, kept here so that it outlives the row) and the end of the 30 days in
+ * which setAvatar refuses the same file. Never read after `until`; erased with its case's evidence.
+ */
+export const avatarResets = pgTable(
+  "avatar_resets",
+  {
+    actionId: uuid("action_id")
+      .primaryKey()
+      .references(() => decisionActions.id, { onDelete: "restrict" }),
+    /** The account the picture was reset on; no foreign key, as a case's target has none. */
+    accountId: uuid("account_id").notNull(),
+    sha256: text("sha256").notNull(),
+    until: ts("until").notNull(),
+  },
+  (t) => [
+    check("avatar_resets_sha256", sql`${t.sha256} ~ '^[0-9a-f]{64}$'`),
+    /** setAvatar's read: this account's resets whose 30 days are ahead. */
+    index("avatar_resets_account_idx").on(t.accountId, t.until),
+    fullAccess("avatar_resets_api_all", apiRole),
   ],
 ).enableRLS();
 
@@ -1150,6 +1219,12 @@ export const releases = pgTable(
     authorNotice: text("author_notice").notNull(),
     authorNoticeAt: ts("author_notice_at"),
     importedAt: ts("imported_at"),
+    /**
+     * 2d (design, section 6.5): the released seal's avatars (seal_avatars), in id order, beside its posts; their rows are
+     * erased as a post's images are, and post_media_purge writes the cause released for them. Empty for a replay of a
+     * release made before 2d and for a held upload's release.
+     */
+    avatarIds: uuid("avatar_ids").array().notNull().default(sql`'{}'`),
   },
   (t) => [
     check("releases_basis", sql`${t.basis} in (${releaseList(["leave", "period"])})`),

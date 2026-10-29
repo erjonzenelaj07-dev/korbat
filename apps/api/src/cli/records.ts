@@ -39,7 +39,7 @@ import {
 } from "@korbat/contracts";
 import type { Db, DbTx } from "@korbat/db";
 import { SYSTEM_ACTOR_ID } from "../auth";
-import { sealFiles } from "../media";
+import { sealAvatarFiles, sealFiles } from "../media";
 import { appendAuditRow } from "../staff";
 import { Refusal, UUID, authorityText, flag, freeText, instant, isoOf, orderNamed, refuse, rows } from "./orders";
 
@@ -640,7 +640,9 @@ async function addressCheck(tx: DbTx, cmd: RecordCommand, stdin: Buffer): Promis
  * production and then the store's name of every stored size of every image row of that seal's posts, read through the
  * media module's sealFiles. Refused (handover_mismatch) when a post's image rows are not as many as the seal recorded:
  * a row lost or added since, which text-verify reports, and nothing is then handed over. Its note on standard error says
- * how many files of how many posts.
+ * how many files of how many posts. 2d Task 4 (design, section 7.7): an account seal's avatars (seal_avatars) are handed
+ * over too, their two files each after the posts' files, named by the store's rule, so by the image's id, as a held
+ * upload's are; the note counts them.
  */
 async function handoverList(tx: DbTx, cmd: RecordCommand, notes: string[]): Promise<string[]> {
   const c = cmd.command;
@@ -660,7 +662,8 @@ async function handoverList(tx: DbTx, cmd: RecordCommand, notes: string[]): Prom
   if (listed.length !== files.length || listed.some((post) => rowsOf.get(post.post_id)?.rows !== post.images)) {
     refuse(c, "handover_mismatch: the image rows of this seal's posts are not what the seal recorded: run staff.js text-verify, and hand nothing over");
   }
-  const names = files.flatMap((post) => post.names);
+  const avatars = await sealAvatarFiles(tx, actionId);
+  const names = [...files.flatMap((post) => post.names), ...avatars];
   const [record] = await rows<{ id: string }>(
     tx,
     sql`select id from public.authority_notifications where seal_action_id = ${actionId}::uuid order by opened_at desc, id limit 1`,
@@ -673,7 +676,7 @@ async function handoverList(tx: DbTx, cmd: RecordCommand, notes: string[]): Prom
         returning id`,
   );
   await productionRecorded(tx, made!.id, "listed");
-  notes.push(`${c}: production ${made!.id}: ${names.length} files of ${files.length} posts.`);
+  notes.push(`${c}: production ${made!.id}: ${names.length} files of ${files.length} posts${avatars.length > 0 ? ` and ${avatars.length / 2} profile pictures` : ""}.`);
   return [`production ${made!.id}`, ...names];
 }
 

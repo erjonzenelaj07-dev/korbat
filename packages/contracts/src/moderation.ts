@@ -308,7 +308,8 @@ export const STANDING_DRAFTS = {
  * The ledger's kinds, in the order of the database's action_kind: 3c's seven measures and five reversals, then 3e's six
  * measures (a strike, a suspension, a termination, a retired handle, a warning about reporting and a restriction of it)
  * and four reversals (3e design, section 10.1); then 3f's measure of an authority's order and its reversal (3f design,
- * section 10.1), which only an order decision and its correction hold.
+ * section 10.1), which only an order decision and its correction hold; then 2d's reset of a profile picture and its
+ * reversal (2d design, sections 6.5 and 7.7), appended by the migration avatar_kinds as ADD VALUE appends them.
  */
 export const ACTION_KINDS = [
   "withhold",
@@ -335,14 +336,17 @@ export const ACTION_KINDS = [
   "lift_reporting",
   "disable_by_order",
   "reinstate_by_order",
+  "reset_avatar",
+  "restore_avatar",
 ] as const;
 export type ActionKind = (typeof ACTION_KINDS)[number];
 
 /**
  * What a measure acts on: a post, one image of it, every image its case reaches, one of an account's two fields, the
- * account itself (a strike, a suspension or a termination), its handle, or its reports under the rules.
+ * account itself (a strike, a suspension or a termination), its handle, or its reports under the rules; 2d: its profile
+ * picture, the third field an account case resets.
  */
-export type MeasureTarget = "post" | "image" | "images" | "display_name" | "bio" | "account" | "handle" | "reporting";
+export type MeasureTarget = "post" | "image" | "images" | "display_name" | "bio" | "account" | "handle" | "reporting" | "avatar";
 
 export interface MeasureSpec {
   /** A decision taken while deciding (interim) may hold it. */
@@ -389,9 +393,12 @@ export const MEASURES = {
   // the first, and only the correction of one the second.
   disable_by_order: { interim: false, final: false, lifts: null, target: "post", label: "Disabled for an order" },
   reinstate_by_order: { interim: false, final: false, lifts: ["disable_by_order"], target: "post", label: "Reinstate after an order" },
+  // 2d (design, section 7.7): reset_display_name's spec and its reversal's, with the target avatar.
+  reset_avatar: { interim: true, final: true, lifts: null, target: "avatar", label: "Reset profile picture" },
+  restore_avatar: { interim: false, final: false, lifts: ["reset_avatar"], target: "avatar", label: "Lift the reset of the profile picture" },
 } as const satisfies Record<ActionKind, MeasureSpec>;
 
-/** The fourteen measures and the ten reversals, each list in the ledger's order: what a statement's data keeps apart. */
+/** The fifteen measures and the eleven reversals, each list in the ledger's order: what a statement's data keeps apart. */
 export const MEASURE_KINDS = [
   "withhold",
   "remove",
@@ -407,9 +414,10 @@ export const MEASURE_KINDS = [
   "warn_reporting",
   "restrict_reporting",
   "disable_by_order",
+  "reset_avatar",
 ] as const satisfies readonly ActionKind[];
 export type MeasureKind = (typeof MEASURE_KINDS)[number];
-export const REVERSAL_KINDS = ["restore", "unseal_media", "restore_media", "restore_display_name", "restore_bio", "overrule", "lift_suspension", "unretire_handle", "lift_reporting", "reinstate_by_order"] as const satisfies readonly ActionKind[];
+export const REVERSAL_KINDS = ["restore", "unseal_media", "restore_media", "restore_display_name", "restore_bio", "overrule", "lift_suspension", "unretire_handle", "lift_reporting", "reinstate_by_order", "restore_avatar"] as const satisfies readonly ActionKind[];
 export type ReversalKind = (typeof REVERSAL_KINDS)[number];
 
 /** The three kinds whose action entry also signs `days` and `announced` (3e design, section 10.4). */
@@ -2002,8 +2010,12 @@ export const StatementMeasure = z.object({
   mediaId: z.uuid().nullable(),
   /** Null when the measure changed what someone sees; `already` or `deleted` when it did not. */
   noEffect: z.enum(["already", "deleted"]).nullable(),
-  /** For a seal: the posts and images its list held when it was recorded, and how many of those images were on posts their author had deleted by then. */
-  sealed: z.object({ posts: Count, images: Count, deletedImages: Count }).nullable(),
+  /**
+   * For a seal: the posts and images its list held when it was recorded, and how many of those images were on posts their
+   * author had deleted by then. 2d Task 4 (design, section 7.7): and, present only when there are any, the profile
+   * pictures an account seal listed (seal_avatars).
+   */
+  sealed: z.object({ posts: Count, images: Count, deletedImages: Count, avatars: Count.optional() }).nullable(),
   // 3e (design, section 10.2): what the ledger fixes for good about a measure of 3e, so a statement reads as it was sent.
   // Absent on 3c's measures.
   /** A strike's last moment of counting. */

@@ -330,8 +330,10 @@ async function attachTargets(deps: ModerationDeps, tx: DbTx, request: AttachRequ
   // post's case holds the post's images as evidence, on every ground alike. A suspect item about an account reaches every
   // image on the account's posts: the freeze keeps those from the item's commit on, without a hold, and the pair only locks
   // them, so that a delete racing this intake waits and then reads the committed item.
+  // 2d Task 4 (design, section 7.7): an account's case holds the account's current picture, which its snapshot lists by
+  // reference, on every ground alike; its answer comes under the account's id.
   const pairs: HoldPair[] = [];
-  for (const [target, caseId] of cases) if (target.type === "post") pairs.push({ caseId, postId: target.id });
+  for (const [target, caseId] of cases) pairs.push(target.type === "post" ? { caseId, postId: target.id } : { caseId, accountId: target.id });
   for (const target of cases.keys()) if (target.type === "account" && suspect) pairs.push({ ownerId: target.id });
   const held = await deps.media.hold(tx, pairs);
 
@@ -360,7 +362,10 @@ async function attachTargets(deps: ModerationDeps, tx: DbTx, request: AttachRequ
       });
     } else {
       const profile = profiles.get(target.id)!;
-      if (before !== null && before.displayName === profile.displayName && before.bio === profile.bio && before.handle === profile.handle) continue;
+      // 2d Task 4: the picture as the hold answered it, or none; a picture set, changed or removed is a new snapshot too.
+      const avatar = held.get(target.id) ?? [];
+      const sameAvatar = before !== null && before.mediaIds.join(",") === avatar.map((image) => image.id).join(",");
+      if (before !== null && before.displayName === profile.displayName && before.bio === profile.bio && before.handle === profile.handle && sameAvatar) continue;
       await storeSnapshot(tx, takenAt, {
         caseId,
         targetType: "account",
@@ -371,7 +376,8 @@ async function attachTargets(deps: ModerationDeps, tx: DbTx, request: AttachRequ
         replyToId: null,
         quoteOfId: null,
         body: null,
-        media: null,
+        // 2d Task 4 (7.7): [{ id, alt: null, width, height }] for the picture, which snapshotDigest covers; null without one.
+        media: avatar.length > 0 ? avatar : null,
         displayName: profile.displayName,
         bio: profile.bio,
         handle: profile.handle,

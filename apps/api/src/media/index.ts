@@ -72,6 +72,14 @@ export function imagePost(q: Db | DbTx, mediaId: string): Promise<string | null>
 }
 
 /**
+ * 2d Task 4 (design, section 7.6): the owner of an avatar's row, or null when no avatar has the id, read as imagePost
+ * reads an image's post: the program's step takes the account branch for a signal on an avatar.
+ */
+export function avatarOwner(q: Db | DbTx, mediaId: string): Promise<string | null> {
+  return createMediaRepo(q as Db).avatarOwner(q, mediaId);
+}
+
+/**
  * 3f (design, section 7.5): how many image rows each of these posts holds, for an order's screen, which counts a post's
  * images and never shows one. Read through the caller's own connection or transaction.
  */
@@ -113,6 +121,15 @@ export interface SealFilesPost {
 export async function sealFiles(q: Db | DbTx, sealActionId: string): Promise<SealFilesPost[]> {
   const posts = await createMediaRepo(q as Db).sealImageRows(q, sealActionId);
   return posts.map(({ postId, mediaIds }) => ({ postId, rows: mediaIds.length, names: mediaIds.flatMap((id) => MEDIA_SIZES.map((size) => storedImageName(id, size))) }));
+}
+
+/**
+ * 2d Task 4 (design, section 7.7): the store's names of both files of every avatar one seal lists (seal_avatars) whose row
+ * is there and not erased, for `staff.js handover-list`, which hands them over with the posts' files, as sealFiles reads.
+ */
+export async function sealAvatarFiles(q: Db | DbTx, sealActionId: string): Promise<string[]> {
+  const ids = await createMediaRepo(q as Db).sealAvatarRows(q, sealActionId);
+  return ids.flatMap((id) => MEDIA_SIZES.map((size) => storedImageName(id, size)));
 }
 
 export { storedImageName } from "./files";

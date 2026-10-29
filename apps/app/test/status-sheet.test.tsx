@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test, vi } from "vitest";
 import { DecisionView, type HiddenMedia, type MediaView, type MeResponse, type PostView } from "@korbat/contracts";
 import { REDRESS_TEXTS, STATEMENT_WORDS, getRule } from "@korbat/rules";
-import { StatusSheetBody, appealState, appliesTo, decidedBy, statusBlocks, type StatusLoad } from "../src/components/moderation/StatusSheet";
+import { StatusSheetBody, appealState, appliesTo, decidedBy, measureLines, statusBlocks, type StatusLoad } from "../src/components/moderation/StatusSheet";
 import { MediaGrid } from "../src/components/social/MediaGrid";
 import { PostCard } from "../src/components/social/PostCard";
 import { HIDDEN_IMAGE } from "../src/components/social/HiddenImage";
@@ -281,6 +281,14 @@ describe("the blocks", () => {
     expect(textOf(sheet(legal))).toContain(`${STATUS_SHEET_WORDS["status.rule"]} ${STATUS_SHEET_WORDS["status.illegal"]} Section 130 StGB`);
     expect(appliesTo(decision({ post: null }))).toBe(STATUS_SHEET_WORDS["status.appliesAccount"]);
     expect(appliesTo(decision())).toBe(STATUS_SHEET_WORDS["status.appliesPost"]);
+  });
+
+  test("2d Task 4: the reset of a profile picture says what it did in the statement's words, while deciding and for good", () => {
+    const account = { post: null, content: { kind: "account" as const, handle: "ada", displayName: "Ada", bio: "" }, appealUntil: null };
+    const reset = (kind: "interim" | "final") => decision({ ...account, kind, measures: [{ kind: "reset_avatar", mediaId: null, noEffect: null, sealed: null }] });
+    expect(measureLines(reset("final"))).toEqual(["korbat reset your profile picture."]);
+    expect(measureLines(reset("interim"))).toEqual(["korbat reset your profile picture while it decides."]);
+    expect(measureLines(reset("final"))).toEqual([STATEMENT_WORDS.done.reset("avatar", false)]);
   });
 });
 

@@ -207,7 +207,7 @@ describe("the measures", () => {
   const measures = kinds.filter((kind) => MEASURES[kind].lifts === null);
   const reversals = kinds.filter((kind) => MEASURES[kind].lifts !== null);
 
-  test("every action kind has an entry: 3c's seven measures and five reversals, then 3e's six measures and four reversals, then 3f's measure and its reversal", () => {
+  test("every action kind has an entry: 3c's seven measures and five reversals, then 3e's six measures and four reversals, then 3f's measure and its reversal, then 2d's reset of a profile picture and its reversal", () => {
     expect(kinds).toEqual([
       "withhold",
       "remove",
@@ -233,15 +233,18 @@ describe("the measures", () => {
       "lift_reporting",
       "disable_by_order",
       "reinstate_by_order",
+      // 2d (design, sections 6.5 and 7.7): ALTER TYPE ... ADD VALUE appends, so both come last in the ledger's order.
+      "reset_avatar",
+      "restore_avatar",
     ]);
     expect(ACTION_KINDS).toEqual(kinds);
-    expect(ACTION_KINDS).toHaveLength(24);
-    expect(measures).toEqual([...kinds.slice(0, 7), ...kinds.slice(12, 18), "disable_by_order"]);
-    expect(reversals).toEqual([...kinds.slice(7, 12), ...kinds.slice(18, 22), "reinstate_by_order"]);
+    expect(ACTION_KINDS).toHaveLength(26);
+    expect(measures).toEqual([...kinds.slice(0, 7), ...kinds.slice(12, 18), "disable_by_order", "reset_avatar"]);
+    expect(reversals).toEqual([...kinds.slice(7, 12), ...kinds.slice(18, 22), "reinstate_by_order", "restore_avatar"]);
     expect(MEASURE_KINDS).toEqual(measures);
-    expect(MEASURE_KINDS).toHaveLength(14);
+    expect(MEASURE_KINDS).toHaveLength(15);
     expect(REVERSAL_KINDS).toEqual(reversals);
-    expect(REVERSAL_KINDS).toHaveLength(10);
+    expect(REVERSAL_KINDS).toHaveLength(11);
   });
 
   test("a post or one image is withheld only while deciding and removed only when the case is decided; a seal and a reset are either; 3e's measures only when it is decided", () => {
@@ -250,7 +253,7 @@ describe("the measures", () => {
     expect(when("withhold_media")).toEqual([true, false]);
     expect(when("remove")).toEqual([false, true]);
     expect(when("remove_media")).toEqual([false, true]);
-    for (const kind of ["seal_media", "reset_display_name", "reset_bio"] as const) expect(when(kind), kind).toEqual([true, true]);
+    for (const kind of ["seal_media", "reset_display_name", "reset_bio", "reset_avatar"] as const) expect(when(kind), kind).toEqual([true, true]);
     for (const kind of ["strike", "suspend", "terminate", "retire_handle", "warn_reporting", "restrict_reporting"] as const) expect(when(kind), kind).toEqual([false, true]);
     // A reversal is neither: which decision may hold one is the reversed measure's matter.
     for (const kind of reversals) expect(when(kind), kind).toEqual([false, false]);
@@ -282,6 +285,8 @@ describe("the measures", () => {
       lift_reporting: "reporting",
       disable_by_order: "post",
       reinstate_by_order: "post",
+      reset_avatar: "avatar",
+      restore_avatar: "avatar",
     });
     expect(Object.fromEntries(reversals.map((kind) => [kind, MEASURES[kind].lifts]))).toEqual({
       restore: ["withhold", "remove"],
@@ -294,6 +299,7 @@ describe("the measures", () => {
       unretire_handle: ["retire_handle"],
       lift_reporting: ["warn_reporting", "restrict_reporting"],
       reinstate_by_order: ["disable_by_order"],
+      restore_avatar: ["reset_avatar"],
     });
     // Every measure can be lifted, by exactly one kind of reversal, of the measure's own target.
     for (const measure of measures) expect(reversals.filter((kind) => (MEASURES[kind].lifts as readonly ActionKind[]).includes(measure)), measure).toHaveLength(1);
@@ -331,6 +337,9 @@ describe("the measures", () => {
       // 3f (W.1).
       disable_by_order: "Disabled for an order",
       reinstate_by_order: "Reinstate after an order",
+      // 2d (design, section 7.7): reset_display_name's spec with the target avatar, and its reversal's.
+      reset_avatar: "Reset profile picture",
+      restore_avatar: "Lift the reset of the profile picture",
     });
     const labels = kinds.map((kind) => MEASURES[kind].label);
     expect(new Set(labels).size).toBe(labels.length);
