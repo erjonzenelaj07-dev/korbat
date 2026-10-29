@@ -71,3 +71,25 @@ python docs/superpowers/prompts/engagement-2d/verify_prompts.py
 ```
 
 Expected: `prompts reproduce the repository exactly`.
+
+## Execution findings (2026-10-29)
+
+The seven prompts were replayed into this repository by the fast path: each task's files were written from its prompt by `write_blocks.py`, the install step run where a task changes the lockfile, and the task committed with the dry run's message and the stray-file check; then the gates ran once, each from the latest task that has it (`final_gates.sh`): the unit tests, the console's build and browser check, the web export and the app's browser check, the whole integration suite on a database upgraded from 0048, the timing tests, the API bundle, the stack rebuilt and the smoke test through Caddy. All passed.
+
+| Task | Commit |
+|---|---|
+| 1 | `f060241` |
+| 2 | `ed59125` |
+| 3 | `9237252` |
+| 4 | `61ce424` |
+| 5 | `853985c` |
+| 6 | `02040d2` |
+| 7 | `d5cf7ae` |
+
+- **Identical to the dry run.** Each commit changes the same paths as its dry-run commit, and after every task the tree outside the migrations folder is byte-identical to the dry run's, the lockfile included. In that folder the five snapshots, the journal and `0052_avatar_kinds.sql` end with a final newline, the prompts' block form, where drizzle writes none; their content is the same. `verify_prompts.py` reproduces all 229 files.
+- **What the machine needed.** The gates ran with `NODE_OPTIONS=--dns-result-order=ipv4first`, as earlier replays did, for a machine where another program may listen on port 8080 on every interface. The ports Windows had reserved during 3b's run (58017 to 58116) were free again after a reboot, so the development Mailpit kept 58025; when Windows reserves a range holding it (`netsh int ipv4 show excludedportrange protocol=tcp`), publish it elsewhere with `DEV_MAILPIT_PORT` and name that port in `MAILPIT_URL` for the run.
+- **The smoke test creates one import per run,** and an address may start five a day (`IMPORT_RULES`): a sixth run within 24 hours fails at its import step with `rate_limited`. Wait out the window; never clear a live stack's limit to pass a test.
+- **The card lab** (`node infra/caddy/lab/card-lab.mjs --prefix <p> [--image <img>]`) names its containers by the prefix given and removes them when it ends; the dry run used `korbat2b-cardlab` on the image `korbat2b-caddy`. The names are local to the machine and any other name works. It sends every crawler request to its own Caddy; no real site is asked.
+- **Load.** The sixteen gates took about an hour in all, the machine quieter than during 3b's run; the whole integration suite's gate allows an hour on a machine shared with other development servers, and halves with `--shard=1/2` and `--shard=2/2` are the fallback.
+- **Found and left open.** Three points of an account's sealed pictures that no task built are named in the README's A release: `seal_custody` does not count avatars, the console cannot release a seal that holds only avatars, and `notification-facts` does not name sealed avatars. And Moderation's R2 runbook still says that the reports on other grounds on an account's case concern the display name and bio; since 2d they can concern the picture too, which a freeze shows to staff only as a placeholder, and the runbook does not yet say how such a report is answered.
+- **The review that shaped the design.** Before Task 1, two reviewers (build fit; people and values) raised 53 findings, 6 of them high, applied before the design was committed; the dry run's amendments are in the design's section 15.
