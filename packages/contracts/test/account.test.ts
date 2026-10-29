@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { ACCOUNT_DELETION_WORDS, ExportFormat, MEASURE_KINDS } from "../src/index";
+import { ACCOUNT_DELETION_WORDS, ACTIVITY_DEFAULTS, ExportFormat, MEASURE_KINDS } from "../src/index";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const at = "2026-09-24T10:00:00.000Z";
@@ -23,12 +23,12 @@ const full = {
       { name: "Security key", createdAt: at, lastUsedAt: null, synced: false, createdOn: null },
     ],
   },
-  profile: { handle: "ada", displayName: "Ada", bio: "hello", createdAt: at, handleHistory: ["ada_l", "ada"], showInExplore: false, retiredHandles: [{ handle: "ada_l", retiredAt: at }] },
+  profile: { handle: "ada", displayName: "Ada", bio: "hello", createdAt: at, handleHistory: ["ada_l", "ada"], showInExplore: false, retiredHandles: [{ handle: "ada_l", retiredAt: at }], sharePreviews: false },
   posts: [
-    { id: id(2), body: "first", createdAt: at, replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [{ id: id(3), file: `media/${id(3)}.webp`, altText: "a cat", width: 2048, height: 1536 }], imported: null },
-    { id: id(4), body: "", createdAt: at, replyToId: id(2), quoteOfId: null, state: "deleted_by_author", deletedAt: at, media: [], imported: null },
+    { id: id(2), body: "first", createdAt: at, replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [{ id: id(3), file: `media/${id(3)}.webp`, altText: "a cat", width: 2048, height: 1536 }], imported: null, mentions: ["grace", "old_name"], countsHidden: true },
+    { id: id(4), body: "", createdAt: at, replyToId: id(2), quoteOfId: null, state: "deleted_by_author", deletedAt: at, media: [], imported: null, mentions: [], countsHidden: false },
     // 3b (11.2): an imported post, with its source, the date its archive gave it and whether it was shortened.
-    { id: id(50), body: "from the archive", createdAt: at, replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [], imported: { source: "mastodon", originalCreatedAt: "2019-03-03T12:00:00.000Z", shortened: false } },
+    { id: id(50), body: "from the archive", createdAt: at, replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [], imported: { source: "mastodon", originalCreatedAt: "2019-03-03T12:00:00.000Z", shortened: false }, mentions: [], countsHidden: false },
   ],
   likes: [{ postId: id(5), at }],
   reposts: [{ postId: id(5), at }],
@@ -138,6 +138,19 @@ const full = {
     },
     { id: id(52), source: "x", status: "cancelled", createdAt: at, endedAt: at, statedAt: null, choice: null, counts: { postsPublished: 0, postsRemoved: 0, imagesKept: 0, imagesLeftOut: 0 } },
   ],
+  // 2d (11.2): the account's Activity, last: the seen marker, the settings and every entry it received that korbat holds,
+  // newest first and ungrouped, each with whether it is shown and, if not, why.
+  activity: {
+    seenAt: "2026-09-24T09:00:00.123456Z",
+    settings: { replies: "older", mentions: "everyone", quotes: "off", follows: true },
+    received: [
+      { kind: "reply", at: "2026-09-24T10:00:00.000001Z", postId: id(60), actorHandle: "grace", shown: true },
+      { kind: "mention", at: "2026-09-24T09:30:00.000000Z", postId: id(61), actorHandle: "loud", shown: "muted" },
+      { kind: "quote", at: "2026-09-24T09:00:00.000000Z", postId: null, actorHandle: "grace", shown: "post_not_visible" },
+      { kind: "follow", at: "2026-09-23T09:00:00.000000Z", postId: null, actorHandle: "wanderer", shown: "unfollowed" },
+      { kind: "follow", at: "2026-09-22T09:00:00.000000Z", postId: null, actorHandle: "deleted_one", shown: "actor_deleted" },
+    ],
+  },
 };
 
 /**
@@ -174,14 +187,16 @@ describe("export format", () => {
       missingMedia: [],
       moderation: { decisions: [], reports: [], strikes: [], ...NO_STANDING },
       imports: [],
+      activity: { seenAt: null, settings: { ...ACTIVITY_DEFAULTS }, received: [] },
     };
     expect(ExportFormat.parse(empty)).toEqual(empty);
   });
 
   test("3b (11.2): a post carries its import last, or null, and the document ends with the account's imports, each with its counts and never a file or a handle", () => {
-    expect(Object.keys(ExportFormat.shape).at(-1)).toBe("imports");
+    // 2d (11.2) moved the pins: `activity` now follows `imports`, and a post's mentions and countsHidden follow `imported`.
+    expect(Object.keys(ExportFormat.shape).slice(-2)).toEqual(["imports", "activity"]);
     const [native, , imported] = full.posts;
-    expect(Object.keys(ExportFormat.shape.posts.element.shape).at(-1)).toBe("imported");
+    expect(Object.keys(ExportFormat.shape.posts.element.shape).slice(-3)).toEqual(["imported", "mentions", "countsHidden"]);
     const withPost = (post: unknown) => ExportFormat.safeParse({ ...full, posts: [post] }).success;
     expect(withPost(imported)).toBe(true);
     expect(withPost({ ...native, imported: undefined })).toBe(false);
@@ -196,6 +211,33 @@ describe("export format", () => {
     expect(ExportFormat.safeParse({ ...full, imports: undefined }).success).toBe(false);
     // Nothing of the archive: a member beyond the format is dropped, never passed on.
     expect(ExportFormat.parse({ ...full, imports: [{ ...done, file: "archive.zip", handle: "@ada" }] }).imports[0]).toEqual(done);
+  });
+
+  test("2d (11.2): the profile's link-preview switch, each post's mentions and hidden counts, and the account's Activity last, with every entry it received and why one is not shown", () => {
+    expect(Object.keys(ExportFormat.shape.profile.shape).at(-1)).toBe("sharePreviews");
+    expect(ExportFormat.safeParse({ ...full, profile: { ...full.profile, sharePreviews: undefined } }).success).toBe(false);
+    const [post] = full.posts;
+    const withPost = (over: Record<string, unknown>) => ExportFormat.safeParse({ ...full, posts: [{ ...post, ...over }] }).success;
+    expect(withPost({ mentions: undefined })).toBe(false);
+    expect(withPost({ countsHidden: undefined })).toBe(false);
+    expect(withPost({ mentions: [1] })).toBe(false);
+    expect(Object.keys(ExportFormat.shape.activity.shape)).toEqual(["seenAt", "settings", "received"]);
+    const withActivity = (over: Record<string, unknown>) => ExportFormat.safeParse({ ...full, activity: { ...full.activity, ...over } }).success;
+    expect(withActivity({ seenAt: null })).toBe(true);
+    expect(withActivity({ settings: { ...full.activity.settings, replies: "friends" } })).toBe(false);
+    expect(withActivity({ received: undefined })).toBe(false);
+    const [reply, muted, , unfollowed] = full.activity.received;
+    const withEntry = (entry: unknown) => withActivity({ received: [entry] });
+    // Each reason, and true; never false, and never a reason the export does not name.
+    for (const shown of [true, "muted", "unfollowed", "actor_deleted"]) expect(withEntry({ ...muted, shown }), String(shown)).toBe(true);
+    expect(withEntry({ ...reply, shown: false })).toBe(false);
+    expect(withEntry({ ...reply, shown: "blocked" })).toBe(false);
+    // A post the account may not see is named by no id, and a follow names none.
+    expect(withEntry({ ...reply, shown: "post_not_visible" })).toBe(false);
+    expect(withEntry({ ...reply, shown: "post_not_visible", postId: null })).toBe(true);
+    expect(withEntry({ ...unfollowed, postId: reply!.postId })).toBe(false);
+    expect(withEntry({ ...reply, kind: "like" })).toBe(false);
+    expect(ExportFormat.safeParse({ ...full, activity: undefined }).success).toBe(false);
   });
 
   test("the format name is fixed, so a reader can tell what it opened", () => {
@@ -281,8 +323,8 @@ describe("the export's moderation member", () => {
   test("is part of korbat-export-1 since 3c, the last member of the document until 3b's imports: always present, with its two lists, either of which may be empty", () => {
     // Added without a new format name, as the passkeys and the Explore switch were: a reader that skips it loses nothing.
     expect(ExportFormat.parse(full).format).toBe("korbat-export-1");
-    // 3b (11.2): the account's imports come after it, the document's last member since.
-    expect(Object.keys(ExportFormat.shape).at(-2)).toBe("moderation");
+    // 3b (11.2): the account's imports come after it, and 2d's Activity after them (the pin moved with 2d).
+    expect(Object.keys(ExportFormat.shape).at(-3)).toBe("moderation");
     expect(withModeration(undefined)).toBe(false);
     expect(withModeration({ decisions: [] })).toBe(false);
     expect(withModeration({ reports: [] })).toBe(false);

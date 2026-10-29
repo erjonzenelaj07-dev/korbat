@@ -1,4 +1,5 @@
 import type { Logger } from "pino";
+import type { ActivityForAccount } from "../activity";
 import type { AuthForAccount } from "../auth";
 import type { ImportsForAccount } from "../imports";
 import type { MediaForAccount } from "../media";
@@ -56,6 +57,12 @@ export interface AccountDeps {
    * test of the other steps may leave it out: the purge then deletes no import row, and the export's member is empty.
    */
   imports?: ImportsForAccount;
+  /**
+   * 2d (design, section 11.2): the export's member `activity`, the account's seen marker, rules and received entries. The
+   * server always hands it over; a test of the other members may leave it out, and the member is then the defaults with no
+   * entry. The purge needs nothing of it: the social module's purge deletes the account's entries, marker and mentions.
+   */
+  activity?: ActivityForAccount;
   limits: RateLimitStore;
   log: Logger;
   now: () => Date;

@@ -1,4 +1,4 @@
-import { CreatePostRequest, HandleChangeRequest, HandleParam, Pagination, PostId, ProfileEditRequest } from "@korbat/contracts";
+import { CountsRequest, CreatePostRequest, HandleChangeRequest, HandleParam, Pagination, PostId, ProfileEditRequest } from "@korbat/contracts";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { z } from "zod";
 import type { AppEnv } from "../env";
@@ -9,8 +9,8 @@ import { SocialError, type SocialDeps, type ViewerId } from "./context";
 import { setEngagement, type EngagementKind } from "./flows/engagement";
 import { explorePage, exploreStatus, setShowInExplore } from "./flows/explore";
 import { blockedList, mutedList, setBlock, setFollow, setMute } from "./flows/graph";
-import { createPost, deletePost, getPost, thread } from "./flows/posts";
-import { changeHandle, editProfile } from "./flows/profile-edit";
+import { createPost, deletePost, getPost, setCountsHidden, thread } from "./flows/posts";
+import { changeHandle, editProfile, setSharePreviews } from "./flows/profile-edit";
 import { followers, following, profile } from "./flows/profiles";
 import { bookmarkedPosts, followingTimeline, latestTimeline, likedPosts, profileImported, profilePosts, profileReplies } from "./flows/timelines";
 
@@ -45,6 +45,10 @@ export function socialRoutes(deps: SocialDeps, guard: MiddlewareHandler<AppEnv>,
   // ---------------------------------------------------------------- posts
 
   r.post("/posts", guard, validate("json", CreatePostRequest), async (c) => c.json(await createPost(deps, me(c), c.req.valid("json")), 201));
+  // 2d (decision 26, 9.2): the author's hidden-counts switch of a post, before the post's deletion in the route table.
+  r.patch("/posts/:id/counts", guard, validate("param", PostParam), validate("json", CountsRequest), async (c) =>
+    c.json(await setCountsHidden(deps, me(c), c.req.valid("param").id, c.req.valid("json").hidden)),
+  );
   r.get("/posts/:id", validate("param", PostParam), async (c) => c.json(await getPost(deps, viewer(c), c.req.valid("param").id)));
   r.delete("/posts/:id", guard, validate("param", PostParam), async (c) => {
     await deletePost(deps, me(c), c.req.valid("param").id);
@@ -113,6 +117,9 @@ export function socialRoutes(deps: SocialDeps, guard: MiddlewareHandler<AppEnv>,
   // "Show my posts in Explore": on and off, with no body, as the app's other switches.
   r.post("/me/explore", guard, async (c) => c.json(await setShowInExplore(deps, me(c), true)));
   r.delete("/me/explore", guard, async (c) => c.json(await setShowInExplore(deps, me(c), false)));
+  // 2d (decision 21, 9.2): link previews of the account's posts and profile, on and off, written as the Explore switch.
+  r.post("/me/share-previews", guard, async (c) => c.json(await setSharePreviews(deps, me(c), true)));
+  r.delete("/me/share-previews", guard, async (c) => c.json(await setSharePreviews(deps, me(c), false)));
 
   return r;
 }

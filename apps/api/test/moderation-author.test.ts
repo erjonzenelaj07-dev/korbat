@@ -198,6 +198,8 @@ describe("a post's chip in its view", () => {
     replyToState: null,
     // 3b Task 6: a native post carries no import's label.
     imported: null,
+    // 2d: its counts shown.
+    hideCounts: false,
     ...extra,
   });
 
@@ -219,6 +221,8 @@ describe("a post's chip in its view", () => {
       blockedEitherWay: async () => new Set<string>(),
       viewerPostStates: async (_viewer: string, ids: string[]) => new Map(ids.map((postId) => [postId, { liked: false, reposted: false, bookmarked: false }])),
       listedInExplore: async () => new Set<string>(),
+      // 2d (4.3): no post of these names anyone.
+      mentionsFor: async () => new Map<string, string[]>(),
     } as unknown as SocialDeps["repo"];
     const media = { forPosts: async () => new Map() } as unknown as SocialDeps["media"];
     return { asked, view: { repo, media, moderation } };

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ACTIVITY_KINDS, ActivitySettings } from "./activity";
 import { Platform, Role } from "./auth";
 import { ImportChoice, ImportSource, ImportStatus } from "./imports";
 import { AUTOMATED_DECISIONS, ITEM_OUTCOMES, MEASURE_KINDS, NoticeRef, REPLY_TEXT_MAX, REVERSAL_KINDS, RULE_IDS, STANDING_BASES, STANDING_DAYS, StatementSignal, TDB_CATEGORIES, UploadRefusalView } from "./moderation";
@@ -33,7 +34,38 @@ const ExportedPost = z.object({
    * without a new format name.
    */
   imported: z.object({ source: ImportSource, originalCreatedAt: at, shortened: z.boolean() }).nullable(),
+  /**
+   * 2d (design, section 11.2): the handles the post's stored mentions name, as written (lowercased), in text order, whether
+   * or not they still link; and whether its author hid its like and repost counts. Last, after the import.
+   */
+  mentions: z.array(z.string()),
+  countsHidden: z.boolean(),
 });
+
+/**
+ * 2d (design, section 11.2; decision 28): why the Activity list does not show an entry the account received and korbat
+ * still holds. `muted`: the account mutes the actor; `post_not_visible`: the entry's post is withheld, removed, disabled
+ * or erased, or a block stands between the two accounts; `unfollowed`: the follow is gone; `actor_deleted`: the actor's
+ * account is deleted.
+ */
+export const ACTIVITY_NOT_SHOWN = ["muted", "post_not_visible", "unfollowed", "actor_deleted"] as const;
+export type ActivityNotShown = (typeof ACTIVITY_NOT_SHOWN)[number];
+
+/**
+ * One Activity entry the account received, as the export lists it, ungrouped: its kind, when it was written (to the
+ * microsecond), the post's id (null for a follow, and for a post the account may not see, so the export never discloses
+ * another person's moderation), the actor's handle at the time of export, and `shown`: true, or why the list hides it.
+ */
+const ExportedActivityEntry = z
+  .object({
+    kind: z.enum(ACTIVITY_KINDS),
+    at,
+    postId: z.uuid().nullable(),
+    actorHandle: z.string(),
+    shown: z.union([z.literal(true), z.enum(ACTIVITY_NOT_SHOWN)]),
+  })
+  .refine((entry) => entry.kind !== "follow" || entry.postId === null, { message: "a follow names no post", path: ["postId"] })
+  .refine((entry) => entry.shown !== "post_not_visible" || entry.postId === null, { message: "a post the account may not see is named by no id", path: ["postId"] });
 
 /**
  * 3b (design, section 11.2): one of the account's imports, newest first: its source, state and times, when the person made
@@ -278,6 +310,11 @@ export const ExportFormat = z.object({
      * without a new format name, last in the profile; empty when none is retired.
      */
     retiredHandles: z.array(z.object({ handle: z.string(), retiredAt: at })),
+    /**
+     * 2d (design, section 11.2; decision 21): the link-preview switch as it stands. Added to korbat-export-1 without a new
+     * format name, last in the profile for now (Task 3 puts the avatar before it).
+     */
+    sharePreviews: z.boolean(),
   }),
   posts: z.array(ExportedPost),
   likes: z.array(PostRef),
@@ -321,5 +358,12 @@ export const ExportFormat = z.object({
    * without a new format name, last in the document: a reader that does not know the member loses nothing by skipping it.
    */
   imports: z.array(ExportedImport),
+  /**
+   * 2d (design, section 11.2; decision 28): the account's Activity as korbat holds it: the seen marker (null before the
+   * first visit), the settings (the defaults for an account that never changed them), and every entry it received that
+   * korbat still holds, newest first and ungrouped, shown or not. Moderation entries are not repeated here: the
+   * `moderation` member holds them. Added to korbat-export-1 without a new format name, last in the document.
+   */
+  activity: z.object({ seenAt: at.nullable(), settings: ActivitySettings, received: z.array(ExportedActivityEntry) }),
 });
 export type ExportFormat = z.infer<typeof ExportFormat>;

@@ -1,4 +1,4 @@
-import type { Author, HiddenMedia, MediaView, PostView, TimelineItem, Tombstone } from "@korbat/contracts";
+import type { Author, HiddenMedia, MediaView, PostCounts, PostView, TimelineItem, Tombstone } from "@korbat/contracts";
 import type { PostImage } from "../media";
 import type { SocialDeps, ViewerId } from "./context";
 import { encodeCursor } from "./cursor";
@@ -34,6 +34,17 @@ export function mediaFor(viewer: ViewerId, authorId: string, image: PostImage): 
 }
 
 /**
+ * 2d (decision 26, 9.3): a post's counts as this reader gets them, the one rule for every answer that carries counts (a
+ * view, a quoted embed, and the engagement answer of flows/engagement.ts): likes and reposts are null exactly when the
+ * author hid them and the reader is not the author; replies and quotes are always numbers. So nobody but the author
+ * learns a hidden count, by reading it or by liking and unliking.
+ */
+export function countsFor(viewer: ViewerId, row: PostRow): PostCounts {
+  const hidden = row.hideCounts && viewer !== row.authorId;
+  return { likes: hidden ? null : row.likeCount, reposts: hidden ? null : row.repostCount, replies: row.replyCount, quotes: row.quoteCount };
+}
+
+/**
  * Turns post ids into views for one viewer: loads the rows and, one level deep, the posts they
  * quote; decides access for every row with the visibility rule and the viewer's blocks; attaches
  * the viewer's like, repost and bookmark state, and every post's images, each as this viewer gets it
@@ -43,6 +54,8 @@ export function mediaFor(viewer: ViewerId, authorId: string, image: PostImage): 
  * asked in one query, and only when the viewer wrote some of the posts; a quoted embed never carries it.
  * The viewer's own withheld and removed posts carry the decision behind their state (3c design, section 7.6), which the
  * moderation module names: asked the same way, once for the page and only when the viewer wrote such a post.
+ * 2d (4.3): each post it shows carries the mentions that link for this viewer, read for the page's shown posts in one
+ * statement (mentionsFor); a quoted embed carries none. Counts go through countsFor.
  */
 export async function loadPostViews({ repo, media, moderation }: ViewSource, viewer: ViewerId, ids: string[]): Promise<Map<string, LoadedPost>> {
   const unique = [...new Set(ids)];
@@ -63,6 +76,8 @@ export async function loadPostViews({ repo, media, moderation }: ViewSource, vie
   const decisions = viewer && moderation && restricted.length > 0 ? await moderation.authorFacts(viewer, restricted) : null;
 
   const access = (row: PostRow) => postAccess(viewer, row, blocked.has(row.authorId));
+  // Only the posts this viewer is shown: a hidden or deleted post's mentions are never read.
+  const mentioned = await repo.mentionsFor(viewer, [...primary.values()].filter((row) => access(row) === "shown").map((row) => row.id));
   /** The parent's handle only when the viewer could open the parent; a block either way, or a hidden or deleted parent, gives null. */
   const parentHandle = (row: PostRow): string | null =>
     row.replyToAuthorId && row.replyToState && postAccess(viewer, { authorId: row.replyToAuthorId, state: row.replyToState }, blocked.has(row.replyToAuthorId)) === "shown"
@@ -75,7 +90,7 @@ export async function loadPostViews({ repo, media, moderation }: ViewSource, vie
     createdAt: row.createdAt.toISOString(),
     state: row.state as PostView["state"],
     replyTo: row.replyToId ? { id: row.replyToId, authorHandle: parentHandle(row) } : null,
-    counts: { likes: row.likeCount, reposts: row.repostCount, replies: row.replyCount, quotes: row.quoteCount },
+    counts: countsFor(viewer, row),
     media: (images.get(row.id) ?? []).map((image) => mediaFor(viewer, row.authorId, image)),
     ...(states ? { viewer: states.get(row.id)! } : {}),
   });
@@ -97,10 +112,21 @@ export async function loadPostViews({ repo, media, moderation }: ViewSource, vie
     }
     const a = access(row);
     const decision = decisions?.get(id);
-    // 3b (9.3): the provenance label last, from the post's own columns: the archive's day, never its second.
+    // 3b (9.3): the provenance label, from the post's own columns: the archive's day, never its second. 2d (9.3): then the
+    // mentions that link for this viewer and the author's hidden-counts switch, last.
     out.set(
       id,
-      a === "shown" ? { ...base(row), ...(inExplore.has(id) ? { inExplore: true as const } : {}), ...(decision ? { moderation: decision } : {}), quoteOf: quoteOf(row.quoteOfId), imported: row.imported } : tombstone(id, a),
+      a === "shown"
+        ? {
+            ...base(row),
+            ...(inExplore.has(id) ? { inExplore: true as const } : {}),
+            ...(decision ? { moderation: decision } : {}),
+            quoteOf: quoteOf(row.quoteOfId),
+            imported: row.imported,
+            mentions: mentioned.get(id) ?? [],
+            countsHidden: row.hideCounts,
+          }
+        : tombstone(id, a),
     );
   }
   return out;

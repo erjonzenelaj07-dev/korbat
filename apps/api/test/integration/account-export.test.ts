@@ -6,10 +6,11 @@ import { sql } from "drizzle-orm";
 import { strFromU8, unzipSync } from "fflate";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { ExportFormat } from "@korbat/contracts";
+import { ACTIVITY_DEFAULTS, ExportFormat } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import type { AccountDeps } from "../../src/account/context";
 import { buildExport, exportJson, writeExport } from "../../src/account/flows/export";
+import { createActivity } from "../../src/activity";
 import { createZipWriter } from "../../src/account/zip";
 import { AuthError } from "../../src/auth/context";
 import { randomToken, sha256Hex } from "../../src/auth/crypto";
@@ -310,8 +311,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
     const read = async () => ExportFormat.parse(JSON.parse(await collect(exportJson(await buildExport(deps(), userId, owner.session.handle, new Date())))));
     const json = await read();
     expect(json.profile).toMatchObject({ handle: placeholder, handleHistory: [owner.handle, placeholder], retiredHandles: [{ handle: owner.handle, retiredAt: at }] });
-    // The member comes last in the profile, after the Explore switch, as the format adds members.
-    expect(Object.keys(json.profile)).toEqual(["handle", "displayName", "bio", "createdAt", "handleHistory", "showInExplore", "retiredHandles"]);
+    // The member comes after the Explore switch, as the format adds members; 2d's link-preview switch after it.
+    expect(Object.keys(json.profile)).toEqual(["handle", "displayName", "bio", "createdAt", "handleHistory", "showInExplore", "retiredHandles", "sharePreviews"]);
     // Lifted, as unretire_handle clears it: the handle is the account's again and the list is empty.
     await migrateDb.execute(sql`update handle_history set retired_at = null where handle_lower = ${handle}`);
     expect((await read()).profile.retiredHandles).toEqual([]);
@@ -353,7 +354,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
       await deletePost(s.deps, userId, deleted);
       const text = await collect(exportJson(await buildExport({ ...deps(), imports: imports.forAccount }, userId, owner.session.handle, new Date())));
       const document = ExportFormat.parse(JSON.parse(text));
-      expect(Object.keys(JSON.parse(text) as object).at(-1)).toBe("imports");
+      // 2d (11.2) moved the pin: the account's Activity follows the imports.
+      expect(Object.keys(JSON.parse(text) as object).slice(-2)).toEqual(["imports", "activity"]);
       const byId = new Map(document.posts.map((post) => [post.id, post]));
       expect(byId.get(kept)!.imported).toEqual({ source: "mastodon", originalCreatedAt: "2019-03-03T12:00:00.000Z", shortened: true });
       expect(byId.get(deleted)!).toMatchObject({ state: "deleted_by_author", body: "", imported: null });
@@ -371,6 +373,66 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the data export of an ac
       await migrateDb.execute(sql`delete from posts where id in (${kept}::uuid, ${deleted}::uuid)`);
       await migrateDb.execute(sql`delete from import_jobs where id in (${done}::uuid, ${cancelled}::uuid)`);
     }
+  });
+
+  test("2d (11.2): the preview switch, each post's mentions as written and its hidden counts, and the account's Activity last: its marker, its rules and every entry it received, newest first and ungrouped, with why the list does not show one", async () => {
+    const owner = await account();
+    const userId = owner.user.id;
+    const [bob, cat, dan, eve, fay, gus] = await Promise.all([s.established(), s.established(), s.established(), s.established(), s.established(), s.established()]);
+    const activity = createActivity({ apiDb, social: {} as never, rateLimitStore: new MemoryStore(), requireSession: async (_c, next) => next(), logger: pino({ level: "silent" }) });
+    const read = async () => ExportFormat.parse(JSON.parse(await collect(exportJson(await buildExport({ ...deps(), activity: activity.forAccount }, userId, owner.session.handle, new Date(), 2)))));
+
+    // Before anything: previews off, the rules' defaults, no marker and no entry.
+    const bare = await read();
+    expect(bare.profile.sharePreviews).toBe(false);
+    expect(bare.activity).toEqual({ seenAt: null, settings: { ...ACTIVITY_DEFAULTS }, received: [] });
+
+    expect(await s.repo.setSharePreviews(userId, true)).toBe(true);
+    // A post that names Bob and Cat, its counts hidden; Cat renames afterwards: the export keeps the handle as written.
+    const named = await createPost(s.deps, userId, { body: `thanks @${bob.handle} and @${cat.handle}`, media: [], hideCounts: true });
+    const catHandle = cat.handle;
+    expect((await s.repo.changeHandle(cat.id, newHandle(), s.clock.next())).ok).toBe(true);
+    // What the owner receives: a reply shown; a mention from an account it mutes; a reply withheld since; a follow undone;
+    // a mention written while a block was made (5.6's race), hidden only by the block; a reply of an account deleted since.
+    const shown = await createPost(s.deps, bob.id, { body: "a reply", replyToId: named.id, media: [] });
+    const muted = await createPost(s.deps, cat.id, { body: `hello @${owner.handle}`, media: [] });
+    expect(await s.repo.mute(userId, cat.id, s.clock.next())).toBe(true);
+    const withheld = await createPost(s.deps, dan.id, { body: "a reply withheld since", replyToId: named.id, media: [] });
+    await migrateDb.execute(sql`update posts set state = 'withheld', moderation_level = 'withheld' where id = ${withheld.id}::uuid`);
+    expect(await s.repo.follow(eve.id, userId, s.clock.next())).toBe(true);
+    expect(await s.repo.unfollow(eve.id, userId)).toBe(true);
+    const raced = await createPost(s.deps, fay.id, { body: `hello @${owner.handle}`, media: [] });
+    await migrateDb.execute(sql`insert into blocks (blocker_id, blocked_id, created_at) values (${userId}::uuid, ${fay.id}::uuid, now())`);
+    const gone = await createPost(s.deps, gus.id, { body: "a reply of an account deleted since", replyToId: named.id, media: [] });
+    await migrateDb.execute(sql`update profiles set deleted_at = now() where id = ${gus.id}::uuid`);
+    // The marker and the rules, as the activity module writes them.
+    const [entry] = await apiDb.execute<{ at: string }>(sql`select to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at from activity_items where post_id = ${shown.id}::uuid`);
+    await activity.deps.repo.markSeen(userId, entry!.at);
+    await activity.deps.repo.saveSettings(userId, { replies: "everyone", mentions: "older", quotes: "off", follows: true });
+
+    const json = await read();
+    expect(json.profile.sharePreviews).toBe(true);
+    expect(json.posts.find((post) => post.id === named.id)).toMatchObject({ mentions: [bob.handle, catHandle], countsHidden: true });
+    expect(json.posts.find((post) => post.id !== named.id)).toBeUndefined();
+    expect(json.activity.seenAt).toBe(entry!.at);
+    expect(json.activity.settings).toEqual({ replies: "everyone", mentions: "older", quotes: "off", follows: true });
+    expect(json.activity.received.map(({ kind, postId, actorHandle, shown: reason }) => ({ kind, postId, actorHandle, shown: reason }))).toEqual([
+      { kind: "reply", postId: gone.id, actorHandle: gus.handle, shown: "actor_deleted" },
+      { kind: "mention", postId: null, actorHandle: fay.handle, shown: "post_not_visible" },
+      { kind: "follow", postId: null, actorHandle: eve.handle, shown: "unfollowed" },
+      { kind: "reply", postId: null, actorHandle: dan.handle, shown: "post_not_visible" },
+      { kind: "mention", postId: muted.id, actorHandle: (await s.repo.findProfiles([cat.id])).get(cat.id)!.handle, shown: "muted" },
+      { kind: "reply", postId: shown.id, actorHandle: bob.handle, shown: true },
+    ]);
+    // Newest first, to the microsecond; read in pages of two, which the whole document matches byte for byte.
+    const times = json.activity.received.map((row) => row.at);
+    expect([...times].sort().reverse()).toEqual(times);
+    expect(times.every((at) => /[.][0-9]{6}Z$/.test(at))).toBe(true);
+    const whole = await collect(exportJson(await buildExport({ ...deps(), activity: activity.forAccount }, userId, owner.session.handle, new Date())));
+    expect(JSON.parse(whole).activity).toEqual(JSON.parse(JSON.stringify(json.activity)));
+    // Moderation entries are the moderation member's: none is repeated here.
+    expect(json.activity.received.every((row) => ["reply", "mention", "quote", "follow"].includes(row.kind))).toBe(true);
+    await migrateDb.execute(sql`delete from blocks where blocker_id = ${userId}::uuid and blocked_id = ${fay.id}::uuid`);
   });
 
   test("3b Task 6: this file left no import row behind", async () => {

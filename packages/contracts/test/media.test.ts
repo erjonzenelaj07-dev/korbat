@@ -110,6 +110,8 @@ describe("images on posts", () => {
     counts: { likes: 0, reposts: 0, replies: 0, quotes: 0 },
     quoteOf: null,
     imported: null,
+    mentions: [],
+    countsHidden: false,
   };
 
   test("a media view has dimensions, a placeholder, a description and both paths", () => {

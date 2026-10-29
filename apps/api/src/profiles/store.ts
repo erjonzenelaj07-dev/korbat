@@ -38,15 +38,16 @@ export function createProfileStore(apiDb: Db): ProfileStore {
     },
     async find(id) {
       const [profile] = await apiDb
-        .select({ ...columns, handleChangedAt: profiles.handleChangedAt, verifiedAt: profiles.verifiedAt, showInExplore: profiles.showInExplore })
+        .select({ ...columns, handleChangedAt: profiles.handleChangedAt, verifiedAt: profiles.verifiedAt, showInExplore: profiles.showInExplore, sharePreviews: profiles.sharePreviews })
         .from(profiles)
         .where(eq(profiles.id, id))
         .limit(1);
       if (!profile) return null;
-      const { handleChangedAt, verifiedAt, showInExplore, ...pub } = profile;
+      const { handleChangedAt, verifiedAt, showInExplore, sharePreviews, ...pub } = profile;
       // The badge is a fact of the profile row (verified_at), read here so the account screen sees it on /me; so is the
-      // author's Explore switch, which the privacy screen shows and the public profile never carries.
-      return { ...pub, handleChangedAt: handleChangedAt?.toISOString() ?? null, verified: verifiedAt !== null, showInExplore };
+      // author's Explore switch, which the privacy screen shows and the public profile never carries, and (2d, decision
+      // 21) the link-preview switch beside it.
+      return { ...pub, handleChangedAt: handleChangedAt?.toISOString() ?? null, verified: verifiedAt !== null, showInExplore, sharePreviews };
     },
     /**
      * The badge, profiles.verified_at, which the auth module decides and cannot write. 3e (design, section 7.2): setting it

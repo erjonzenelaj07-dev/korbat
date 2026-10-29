@@ -9,6 +9,7 @@
  * it), and never sees the auth schema: a notifier's name and address, and every mail, are the auth module's.
  */
 import type {
+  ActivityPlace,
   AppealsPage,
   CaseView,
   ContactCloseRequest,
@@ -47,7 +48,7 @@ import type { RateLimitStore } from "../middleware/rate-limit";
 import type { SocialForModeration } from "../social";
 import { createAlertMailJob, createAlertTick, staffAlert } from "./alerts";
 import { appealsList, review, reviewedCase } from "./appeals";
-import { authorFacts } from "./author";
+import { authorActivity, authorFacts, type ModerationActivityEntry } from "./author";
 import { createAutomatedSweepJob, imagesPublished } from "./automated";
 import { caseImage, openFinding, overview, queue, readCase, readDecidedCase, takeSnapshot } from "./cases";
 import { createBackground, type ModerationDeps } from "./context";
@@ -71,6 +72,7 @@ export { ModerationError } from "./context";
 export type { ModerationDeps, ModerationErrorKind } from "./context";
 export type { DecideContext, DecideOutcome } from "./decide";
 export type { ModerationExport } from "./export";
+export type { ModerationActivityEntry } from "./author";
 export type { RevealOutcome } from "./reveal";
 export type { ReleaseOutcome } from "./release";
 // 3f (design, sections 5 and 8.11): plain functions for the command line, each taking the caller's connection or
@@ -228,6 +230,16 @@ export interface ModerationForImports {
   imagesFlagged(input: { importId: string; count: number; at: Date }): Promise<"sent" | "throttled" | "unsent">;
 }
 
+/**
+ * What the activity module needs from this one (2d design, section 5.5.2): the moderation entries of an account's
+ * Activity, read only from the author's own reads (the decisions its Cases screen lists, the releases and refused uploads
+ * of its Notices, and the lost images 3d's dispatch told it of), newest first by (at, key), before the place given, at
+ * most `limit`, none told more than ACTIVITY_KEEP_DAYS ago. The activity module never reads a moderation table itself.
+ */
+export interface ModerationForActivity {
+  authorActivity(viewer: string, before: ActivityPlace | null, limit: number): Promise<ModerationActivityEntry[]>;
+}
+
 /** The throttle of import_image_flagged: one alert an hour an import. */
 export const IMPORT_FLAGGED_WINDOW_MS = 60 * 60_000;
 
@@ -351,6 +363,9 @@ export function createModeration(options: CreateModerationOptions) {
       }
     },
   };
+  const forActivity: ModerationForActivity = {
+    authorActivity: (viewer, before, limit) => authorActivity(deps, viewer, before, limit),
+  };
   const forAccount: ModerationForAccount = {
     forgetAccount: async (userId) => {
       await forgetReporter(deps.apiDb, userId);
@@ -373,6 +388,8 @@ export function createModeration(options: CreateModerationOptions) {
     forAccount,
     /** 3b Task 5: the interface the imports module uses. */
     forImports,
+    /** 2d: the interface the activity module uses. */
+    forActivity,
     /**
      * 3d Task 7 (design, section 5): the handler the wiring hands the media module (media.onMatch), which it calls after
      * the commit of a refusal, of a match on a posted image, and of an upload over the limit on refusals.

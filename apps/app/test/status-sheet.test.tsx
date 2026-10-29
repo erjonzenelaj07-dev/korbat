@@ -159,6 +159,8 @@ function post(extra: Partial<PostView> = {}): PostView {
     media: [],
     quoteOf: null,
     imported: null,
+    mentions: [],
+    countsHidden: false,
     moderation: { decisionId: id(3), ruleId: "R3", legal: false, interim: false, strikeUntil: null },
     ...extra,
   };

@@ -201,7 +201,8 @@ describe.skipIf(!process.env.INTEGRATION)("integration: re-authentication, accou
     await h.deps.profiles.create({ id: account.user.id, handle: "me_test", displayName: "Me Test" });
     expect(await me(h.deps, account.session)).toEqual({
       user: { id: account.user.id, email: account.email, role: "user", onboarded: true, mfaEnabled: false, hasPassword: true, passkeys: 0 },
-      profile: { id: account.user.id, handle: "me_test", displayName: "Me Test", handleChangedAt: null, verified: false, showInExplore: true },
+      // 2d: and the link-preview switch, off by default.
+      profile: { id: account.user.id, handle: "me_test", displayName: "Me Test", handleChangedAt: null, verified: false, showInExplore: true, sharePreviews: false },
     });
   });
 

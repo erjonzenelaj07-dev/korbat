@@ -5,9 +5,10 @@ import path from "node:path";
 import { sql } from "drizzle-orm";
 import pino from "pino";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
-import { ErrorEnvelope, FlowResponse, MeResponse, PostView, UploadResponse } from "@korbat/contracts";
+import { ACTIVITY_DEFAULTS, ErrorEnvelope, FlowResponse, MeResponse, PostView, UploadResponse } from "@korbat/contracts";
 import { closeDb, createDb, type Db } from "@korbat/db";
 import { createAccount } from "../../src/account";
+import { createActivity } from "../../src/activity";
 import { createApp } from "../../src/app";
 import { createAuth } from "../../src/auth";
 import { createImports, importSettingsFrom } from "../../src/imports";
@@ -124,6 +125,14 @@ export const SUSPENDED_WRITES: Record<string, "refused" | "allowed"> = {
   "POST /api/imports/:id/stop": "allowed",
   // 3b Task 6 (design, section 8.5): the undo only deletes what the account posted, as the author's deletion does.
   "POST /api/imports/:id/undo": "allowed",
+  // 2d (design, sections 9.2 and 9.4; decision 17): the seen marker and the rules change only what the account reads;
+  // hiding a post's counts (the walk sends { hidden: true }) and turning previews off only reduce what others see. Turning
+  // previews on adds to it, and is refused.
+  "POST /api/activity/seen": "allowed",
+  "PUT /api/activity/settings": "allowed",
+  "PATCH /api/posts/:id/counts": "allowed",
+  "POST /api/me/share-previews": "refused",
+  "DELETE /api/me/share-previews": "allowed",
 };
 
 /** The routes that end the session: called last, so that every other route is called with it. */
@@ -220,7 +229,9 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
     await imports.prepare();
     mkdirSync(path.join(root, "import-work"), { recursive: true });
     writeFileSync(path.join(root, "import-work", "heartbeat"), JSON.stringify({ v: 1, at: Date.now() }));
-    app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social, media, account, moderation, imports });
+    // 2d: Activity, as the server builds it, after the social and moderation modules.
+    const activity = createActivity({ apiDb, social: social.forActivity, moderation: moderation.forActivity, rateLimitStore, requireSession: auth.requireSession, logger });
+    app = createApp({ config, logger, rateLimitStore, healthChecks: {}, auth, social, media, account, moderation, imports, activity });
     before = await rowCounts(apiDb, IMPORT_TABLES);
   });
   afterAll(async () => {
@@ -349,6 +360,13 @@ describe.skipIf(!process.env.INTEGRATION)("integration: the route walk of a susp
       "POST /api/imports/:id/stop": [{ method: "POST", path: `/api/imports/${readyImport}/stop` }],
       // 3b Task 6: the undo of Ada's done import, taken whatever her standing.
       "POST /api/imports/:id/undo": [{ method: "POST", path: `/api/imports/${doneImport}/undo` }],
+      // 2d: a real marker and real rules, and the counts of Ada's own post hidden (it comes before her post's deletion in the
+      // route table); turning previews on, then off.
+      "POST /api/activity/seen": [{ method: "POST", path: "/api/activity/seen", json: { at: new Date().toISOString().replace("Z", "000Z") } }],
+      "PUT /api/activity/settings": [{ method: "PUT", path: "/api/activity/settings", json: { ...ACTIVITY_DEFAULTS, quotes: "off" } }],
+      "PATCH /api/posts/:id/counts": [{ method: "PATCH", path: `/api/posts/${adasPost.id}/counts`, json: { hidden: true } }],
+      "POST /api/me/share-previews": [{ method: "POST", path: "/api/me/share-previews" }],
+      "DELETE /api/me/share-previews": [{ method: "DELETE", path: "/api/me/share-previews" }],
     };
     const callsOf = (route: string): Call[] => {
       const given = calls[route];

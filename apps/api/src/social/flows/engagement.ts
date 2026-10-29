@@ -1,6 +1,7 @@
 import type { EngagementResponse } from "@korbat/contracts";
 import { SocialError, type SocialDeps } from "../context";
 import { enforceWriteLimit } from "../limits";
+import { countsFor } from "../views";
 import { ownProfile, targetPost } from "./posts";
 
 export type EngagementKind = "like" | "repost" | "bookmark";
@@ -27,5 +28,6 @@ export async function setEngagement(deps: SocialDeps, viewer: string, postId: st
   const row = (await deps.repo.findPosts([postId])).get(postId);
   if (!row) throw new SocialError("not_found", 404);
   const state = (await deps.repo.viewerPostStates(viewer, [postId])).get(postId)!;
-  return { counts: { likes: row.likeCount, reposts: row.repostCount, replies: row.replyCount, quotes: row.quoteCount }, viewer: state };
+  // 2d (9.3): the answer's counts follow the views' one rule, so liking a post whose counts are hidden tells nothing.
+  return { counts: countsFor(viewer, row), viewer: state };
 }

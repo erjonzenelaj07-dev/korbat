@@ -253,6 +253,50 @@ describe.skipIf(!process.env.INTEGRATION)("integration: account deletion", () =>
     expect({ auth: await authRow(userId), profile: await profileRow(userId), bob: await profileRow(bob.id), bobsPost: await postRow(bobsPost.id), requests: (await m.files.deletionRequests()).sort() }).toEqual(before);
   });
 
+  test("2d (4.4, 5.6, 6.7): the purge deletes every Activity entry the account caused or received, every mention that names it and those of its own posts, and its seen marker and rules; what others wrote about others stays", async () => {
+    const owner = await account();
+    const userId = owner.user.id;
+    const [bob, carol] = await Promise.all([s.established(), s.established()]);
+    // The owner names Bob and Carol and follows Carol; Bob names the owner and Carol, and replies to the owner.
+    const ownPost = await createPost(s.deps, userId, { body: `@${bob.handle} and @${carol.handle}`, media: [] });
+    expect(await s.repo.follow(userId, carol.id, s.clock.next())).toBe(true);
+    const bobsPost = await createPost(s.deps, bob.id, { body: `@${owner.handle} and @${carol.handle}`, media: [] });
+    const bobsReply = await createPost(s.deps, bob.id, { body: "a reply", replyToId: ownPost.id, media: [] });
+    await apiDb.execute(sql`insert into activity_state (account_id, seen_at, replies) values (${userId}::uuid, now(), 'following')`);
+    // In one order whatever the times: the entries one post writes share its transaction's time.
+    const key = (row: { recipient: string; actor: string; post: string | null }) => `${row.recipient}:${row.actor}:${row.post ?? ""}`;
+    const sorted = (list: { recipient: string; actor: string; post: string | null }[]) => [...list].sort((a, b) => (key(a) < key(b) ? -1 : 1));
+    const entries = async () =>
+      sorted(
+        (await apiDb.execute<{ recipient: string; actor: string; post: string | null }>(
+          sql`select recipient_id as recipient, actor_id as actor, post_id as post from activity_items where recipient_id = any(${`{${[userId, bob.id, carol.id].join(",")}}`}::uuid[])`,
+        )).map((row) => ({ ...row })),
+      );
+    const mentioned = async (postId: string) => (await apiDb.execute<{ account: string }>(sql`select account_id as account from post_mentions where post_id = ${postId}::uuid order by position`)).map((row) => row.account);
+    expect(await entries()).toEqual(
+      sorted([
+        { recipient: bob.id, actor: userId, post: ownPost.id },
+        { recipient: carol.id, actor: userId, post: ownPost.id },
+        { recipient: carol.id, actor: userId, post: null },
+        { recipient: userId, actor: bob.id, post: bobsPost.id },
+        { recipient: carol.id, actor: bob.id, post: bobsPost.id },
+        { recipient: userId, actor: bob.id, post: bobsReply.id },
+      ]),
+    );
+    expect(await mentioned(ownPost.id)).toEqual([bob.id, carol.id]);
+    expect(await mentioned(bobsPost.id)).toEqual([userId, carol.id]);
+
+    const { flowId } = await startDeletion(deps(), owner.session, h.ctx);
+    await confirmDeletion(deps(), owner.session, { flowId, code: h.mailer.lastCodeFor(owner.email)!, handle: owner.handle });
+
+    expect(await entries()).toEqual([{ recipient: carol.id, actor: bob.id, post: bobsPost.id }]);
+    expect(await mentioned(ownPost.id)).toEqual([]);
+    expect(await mentioned(bobsPost.id)).toEqual([carol.id]);
+    expect(await apiDb.execute(sql`select 1 from activity_state where account_id = ${userId}::uuid`)).toHaveLength(0);
+    // Bob's post keeps its text: only the stored mention of the deleted account went.
+    expect(await postRow(bobsPost.id)).toMatchObject({ state: "visible", body: `@${owner.handle} and @${carol.handle}` });
+  });
+
   test("3e: a suspended account deletes itself its 1b way, with no hold: the purge takes the rows of its followers and those it follows before any post, writes their counters exactly, and writes no standing into the deleted row", async () => {
     const owner = await account();
     const userId = owner.user.id;

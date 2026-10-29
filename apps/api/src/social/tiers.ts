@@ -14,7 +14,13 @@ export const REPOST_MIN_AGE_MS = 48 * HOUR_MS;
 
 /** 3b (design, section 7.6): an import's chunks, its acts (cancel; confirm, stop and undo in later tasks) and its picks. */
 export type ImportAction = "import-chunk" | "import-act" | "import-pick";
-export type WriteAction = "post" | "reply" | "quote" | "repost" | "like" | "bookmark" | "follow" | "block" | "mute" | "upload" | ImportAction;
+/**
+ * 2d (design, section 9.5): the seen marker and the settings of Activity (the activity module counts them through this
+ * module's index), the avatar's set and remove together (Task 3's routes), the link-preview switch and a post's hidden
+ * counts.
+ */
+export type EngagementAction = "activity-seen" | "activity-settings" | "avatar" | "share-previews" | "hide-counts";
+export type WriteAction = "post" | "reply" | "quote" | "repost" | "like" | "bookmark" | "follow" | "block" | "mute" | "upload" | ImportAction | EngagementAction;
 
 export interface WriteLimit {
   /** Counter name; several actions may share one (quotes count as posts). */
@@ -64,5 +70,19 @@ export function limitsFor(action: WriteAction, accountAgeMs: number): WriteLimit
       return [{ bucket: "import-act", max: IMPORT_RULES.actsPerHour, windowMs: HOUR_MS }];
     case "import-pick":
       return [{ bucket: "import-pick", max: IMPORT_RULES.picksPerHour, windowMs: HOUR_MS }];
+    // 2d (design, section 9.5): at any age. The marker moves once a visit, and the app saves a settled choice only (10.8).
+    case "activity-seen":
+      return [{ bucket: "activity-seen", max: 240, windowMs: HOUR_MS }];
+    case "activity-settings":
+      return [{ bucket: "activity-settings", max: 120, windowMs: HOUR_MS }];
+    case "avatar":
+      return [
+        { bucket: "avatar-hour", max: 10, windowMs: HOUR_MS },
+        { bucket: "avatar-day", max: 30, windowMs: DAY_MS },
+      ];
+    case "share-previews":
+      return [{ bucket: "share-previews", max: 30, windowMs: HOUR_MS }];
+    case "hide-counts":
+      return [{ bucket: "hide-counts", max: 60, windowMs: HOUR_MS }];
   }
 }

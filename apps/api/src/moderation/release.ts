@@ -354,6 +354,27 @@ export async function releaseNotices(deps: ModerationDeps, now: Date, due: Date,
 }
 
 /**
+ * The releases the author of `alias` may be told of: never one whose notice is held. The one rule of the Notices list
+ * and (2d, 5.5.2) of Activity's entries, which read releases only through it.
+ */
+const toldRelease = (alias: string, viewer: string) => sql`${sql.raw(alias)}.author_notice <> 'held' and ${AUTHOR(alias)} = ${viewer}::uuid`;
+
+/**
+ * 2d (design, section 5.5.2): the releases about the viewer's posts as Activity lists them, by toldRelease as the Notices
+ * list reads them, with the time that list shows (released_at) to the microsecond: newest first, by id among equal times,
+ * released at or after `since`, after `after` (a time to the microsecond and an id) when given, at most `limit`.
+ */
+export async function activityReleases(q: Runner, viewer: string, after: { at: string; id: string } | null, since: string, limit: number): Promise<{ id: string; at: string }[]> {
+  return rows<{ id: string; at: string }>(
+    q,
+    sql`select r.id, ${microsOf("r.released_at")} as at from public.releases r
+         where ${toldRelease("r", viewer)} and r.released_at >= ${since}::timestamptz
+           and (${after === null} or (r.released_at, r.id) < (${after?.at ?? null}::timestamptz, ${after?.id ?? null}::uuid))
+         order by r.released_at desc, r.id desc limit ${limit}::int`,
+  );
+}
+
+/**
  * GET /api/moderation/notices (sections 9.6 and 10.2): the releases about the viewer's posts, newest first, 20 a page,
  * never one whose notice is held: nothing of the app shows a release while a hold on telling stands.
  */
@@ -363,7 +384,7 @@ export async function authorNotices(deps: Pick<ModerationDeps, "apiDb"> & { medi
     deps.apiDb,
     sql`select r.id, ${iso("r.released_at")} as at, ${microsOf("r.released_at")} as key
           from public.releases r
-         where r.author_notice <> 'held' and ${AUTHOR("r")} = ${viewer}::uuid
+         where ${toldRelease("r", viewer)}
            and (${after === null} or (r.released_at, r.id) < (${after?.at ?? null}::timestamptz, ${after?.id ?? null}::uuid))
          order by r.released_at desc, r.id desc
          limit ${AUTHOR_NOTICES_PAGE_SIZE + 1}`,

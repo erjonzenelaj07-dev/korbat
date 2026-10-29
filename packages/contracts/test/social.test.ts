@@ -3,16 +3,20 @@ import {
   AltText,
   BIO_MAX_LENGTH,
   Bio,
+  CountsRequest,
   CreatePostRequest,
   DisplayName,
+  EngagementResponse,
   HandleChangeRequest,
   HandleParam,
   PostBody,
+  PostCounts,
   PostId,
   PostView,
   ProfileEditRequest,
   ProfileListItem,
   ProfileView,
+  SharePreviewsResponse,
   SocialErrorCode,
   ThreadResponse,
   TimelineItem,
@@ -37,6 +41,8 @@ const post = (n: number, extra: Record<string, unknown> = {}) => ({
   media: [],
   quoteOf: null,
   imported: null,
+  mentions: [],
+  countsHidden: false,
   ...extra,
 });
 
@@ -123,7 +129,8 @@ describe("post views", () => {
   });
   test("3b: an imported post carries its label last, the archive's day and never its second; a native post and a quoted one carry null or the label", () => {
     const label = { source: "x", at: "2019-03-03", shortened: false };
-    expect(Object.keys(PostView.shape).at(-1)).toBe("imported");
+    // 2d (9.3) moved the pin: the label is followed by the mentions and the hidden-counts switch.
+    expect(Object.keys(PostView.shape).slice(-3)).toEqual(["imported", "mentions", "countsHidden"]);
     expect(PostView.parse(post(1, { imported: label })).imported).toEqual(label);
     expect(PostView.parse(post(1)).imported).toBeNull();
     // Required: a view without the member is not a view of this contract.
@@ -136,6 +143,34 @@ describe("post views", () => {
     // A quoted post carries its label too (QuoteEmbed's short line), and is refused without the member.
     expect(PostView.parse(post(1, { quoteOf: post(2, { imported: { ...label, shortened: true } }) })).quoteOf).toMatchObject({ imported: { source: "x", shortened: true } });
     expect(PostView.safeParse(post(1, { quoteOf: without })).success).toBe(false);
+  });
+  test("2d (9.3): likes and reposts may be null, which is how a hidden count reads to anyone but the author, in a view, a quoted embed and an engagement answer; replies and quotes never are", () => {
+    const hidden = { likes: null, reposts: null, replies: 2, quotes: 1 };
+    expect(PostCounts.parse(hidden)).toEqual(hidden);
+    expect(PostCounts.safeParse({ ...hidden, replies: null }).success).toBe(false);
+    expect(PostCounts.safeParse({ ...hidden, quotes: null }).success).toBe(false);
+    expect(PostCounts.safeParse({ ...hidden, likes: -1 }).success).toBe(false);
+    expect(PostCounts.safeParse({ ...hidden, likes: undefined }).success).toBe(false);
+    expect(PostView.parse(post(1, { counts: hidden, countsHidden: true })).counts).toEqual(hidden);
+    expect(PostView.parse(post(1, { quoteOf: post(2, { counts: hidden }) })).quoteOf).toMatchObject({ counts: hidden });
+    expect(EngagementResponse.parse({ counts: hidden, viewer: { liked: true, reposted: false, bookmarked: false } }).counts.likes).toBeNull();
+  });
+  test("2d (4.3, 9.3): a view carries the mentions that link for its reader and whether its counts are hidden, both required; a quoted embed carries neither", () => {
+    expect(PostView.parse(post(1, { mentions: ["ada", "grace"] })).mentions).toEqual(["ada", "grace"]);
+    expect(PostView.safeParse(post(1, { mentions: undefined })).success).toBe(false);
+    expect(PostView.safeParse(post(1, { countsHidden: undefined })).success).toBe(false);
+    expect(PostView.safeParse(post(1, { countsHidden: "yes" })).success).toBe(false);
+    const embed = PostView.parse(post(1, { quoteOf: post(2, { mentions: ["ada"], countsHidden: true }) })).quoteOf;
+    expect(embed).not.toHaveProperty("mentions");
+    expect(embed).not.toHaveProperty("countsHidden");
+  });
+  test("2d (decision 26, 9.2): the composer's hideCounts is off unless sent, the counts switch takes a boolean, and the preview switch answers its state", () => {
+    expect(CreatePostRequest.parse({ body: "x" }).hideCounts).toBe(false);
+    expect(CreatePostRequest.parse({ body: "x", hideCounts: true }).hideCounts).toBe(true);
+    expect(CreatePostRequest.safeParse({ body: "x", hideCounts: "yes" }).success).toBe(false);
+    expect(CountsRequest.parse({ hidden: true })).toEqual({ hidden: true });
+    expect(CountsRequest.safeParse({}).success).toBe(false);
+    expect(SharePreviewsResponse.parse({ sharePreviews: false })).toEqual({ sharePreviews: false });
   });
   test("timeline items are posts or reposts with the reposter", () => {
     expect(TimelineItem.safeParse({ kind: "post", post: post(1) }).success).toBe(true);
@@ -217,8 +252,9 @@ describe("posts with images", () => {
   const img = (n: number, alt = "an image") => ({ id: id(n), alt });
 
   test("a post needs text or an image; the body defaults to empty and media to none", () => {
-    expect(CreatePostRequest.parse({ body: "hello" })).toEqual({ body: "hello", media: [] });
-    expect(CreatePostRequest.parse({ media: [img(1)] })).toEqual({ body: "", media: [img(1)] });
+    // 2d (decision 26): and hideCounts to off.
+    expect(CreatePostRequest.parse({ body: "hello" })).toEqual({ body: "hello", media: [], hideCounts: false });
+    expect(CreatePostRequest.parse({ media: [img(1)] })).toEqual({ body: "", media: [img(1)], hideCounts: false });
     expect(CreatePostRequest.parse({ body: "  ", media: [img(1)] }).body).toBe("");
     expect(CreatePostRequest.safeParse({}).success).toBe(false);
     expect(CreatePostRequest.safeParse({ body: "   ", media: [] }).success).toBe(false);

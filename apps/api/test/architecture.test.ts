@@ -24,8 +24,11 @@ const AUTH_SCHEMA_FILE = "auth.ts";
 const AUTH_POOL_ALLOWED = new Set(["config.ts", "index.ts", "cli/grant-role.ts", "cli/staff.ts"]);
 const AUTH_KEYS_ALLOWED = new Set(["config.ts"]);
 
-/** Modules that may only be entered through their index file. 3d Task 4 adds the seventh, transparency; 3b Task 4 the eighth, imports. */
-const MODULES = ["auth", "social", "media", "account", "staff", "moderation", "transparency", "imports"] as const;
+/**
+ * Modules that may only be entered through their index file. 3d Task 4 adds the seventh, transparency; 3b Task 4 the eighth,
+ * imports; 2d Task 2 the ninth, activity (design, section 5.4), so the rules about who imports it have something to stand on.
+ */
+const MODULES = ["auth", "social", "media", "account", "staff", "moderation", "transparency", "imports", "activity"] as const;
 
 function walk(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -88,6 +91,7 @@ const insideAccount = (path: string) => path.startsWith("account/");
 const insideStaff = (path: string) => path.startsWith("staff/");
 const insideModeration = (path: string) => path.startsWith("moderation/");
 const insideImports = (path: string) => path.startsWith("imports/");
+const insideActivity = (path: string) => path.startsWith("activity/");
 
 function findViolations(files: SourceFile[], publicNames: Set<string>, authNames: Set<string>): string[] {
   const violations: string[] = [];
@@ -127,8 +131,9 @@ function findViolations(files: SourceFile[], publicNames: Set<string>, authNames
     // The staff module (role korbat_api) reads and writes the public audit log; staff keys, staff sessions and enrolments
     // are credentials, the auth module's alone (3a design, section 5). The moderation module owns the moderation tables on
     // the same role: a notifier's contact and the staff links live in the auth schema, out of its reach (3c design, section 5).
-    // 3b: the imports module too, which asks the auth module whether an address is verified (design, section 4.2).
-    if (insideSocial(path) || insideMedia(path) || insideStaff(path) || insideModeration(path) || insideImports(path)) {
+    // 3b: the imports module too, which asks the auth module whether an address is verified (design, section 4.2). 2d:
+    // and the activity module, which reads the public schema's tables and none of the auth schema's.
+    if (insideSocial(path) || insideMedia(path) || insideStaff(path) || insideModeration(path) || insideImports(path) || insideActivity(path)) {
       for (const name of dbImports(source)) {
         if (name === "*") violations.push(`${path}: namespace import of @korbat/db (import public-schema names explicitly)`);
         else if (authNames.has(name)) violations.push(`${path}: imports auth-schema ${name} from @korbat/db`);
@@ -775,6 +780,107 @@ import { createRecipientCounter } from "../transparency/recipients";` },
       "app.ts: imports ./transparency/routes, which is inside the transparency module (use ./transparency)",
       "auth/middleware.ts: imports ../transparency/recipients, which is inside the transparency module (use ./transparency)",
       "cli/figures.ts: imports ../transparency/repo, which is inside the transparency module (use ./transparency)",
+    ]);
+  });
+});
+
+/**
+ * 2d's tables (design, sections 5.3, 5.4 and 12.2; Task 2). One table of pins: the files that may name each table of the
+ * migration activity, in SQL or by drizzle's name, as a whole word, comments included. Entries are written only by the
+ * social repository, in the act's transaction (createPost, follow), and deleted there (deletePost, block, the purge); the
+ * activity module reads them, keeps the seen marker and the rules, and runs the retention; the mentions are the social
+ * module's alone, read by its repository for the views. As an assertion of its own, the one insert into post_mentions is
+ * in createPost, so a mention is added only with its post. And the staff and moderation modules never import the activity
+ * module or name its tables: no staff route reads Activity, and moderation entries are never written, only read.
+ */
+const ACTIVITY_TABLE_PINS: { table: string; names: string[]; allowed: (path: string) => boolean }[] = [
+  { table: "activity_items", names: ["activity_items", "activityItems"], allowed: (path) => path === "social/repo.ts" || insideActivity(path) },
+  { table: "activity_state", names: ["activity_state", "activityState"], allowed: (path) => path === "social/repo.ts" || insideActivity(path) },
+  { table: "post_mentions", names: ["post_mentions", "postMentions"], allowed: (path) => path === "social/repo.ts" || path === "social/views.ts" },
+];
+const MENTION_INSERT = /\binsert\s+into\s+(?:"?public"?\s*\.\s*)?"?post_mentions\b|\.insert\(\s*postMentions\b/gi;
+
+function findActivityTableViolations(files: SourceFile[]): string[] {
+  const violations: string[] = [];
+  for (const file of files) {
+    for (const pin of ACTIVITY_TABLE_PINS) {
+      const named = pin.names.filter((name) => mentions([file], name)[file.path] !== undefined);
+      if (named.length > 0 && !pin.allowed(file.path)) violations.push(`${file.path}: names ${named.join(" and ")}, which only ${pin.table}'s pinned files may`);
+    }
+    if ((insideStaff(file.path) || insideModeration(file.path)) && specifiers(file.source).some((spec) => spec.startsWith(".") && /^activity(\/|$)/.test(posix.normalize(posix.join(posix.dirname(file.path), spec))))) {
+      violations.push(`${file.path}: imports the activity module, which no staff or moderation file may`);
+    }
+  }
+  return violations;
+}
+
+/** Where post_mentions is inserted into: each file, the number of inserts, and for social/repo.ts the method each is in. */
+function mentionInserts(files: SourceFile[]): { path: string; count: number; inCreatePost: number }[] {
+  return files.flatMap((file) => {
+    const count = [...file.source.matchAll(MENTION_INSERT)].length;
+    if (count === 0) return [];
+    const start = file.source.indexOf("async createPost(");
+    const end = start < 0 ? -1 : file.source.indexOf("async deletePost(", start);
+    const inCreatePost = start < 0 || end < 0 ? 0 : [...file.source.slice(start, end).matchAll(MENTION_INSERT)].length;
+    return [{ path: file.path, count, inCreatePost }];
+  });
+}
+
+describe("2d's tables (5.3)", () => {
+  test("each of activity_items, activity_state and post_mentions is named only in its pinned files, and the staff and moderation modules never import the activity module", () => {
+    const files = loadSources();
+    expect(files.map((file) => file.path)).toContain("activity/index.ts");
+    expect(findActivityTableViolations(files)).toEqual([]);
+    // The pins are about files that do name the tables.
+    const named = (path: string, name: string) => mentions(files.filter((file) => file.path === path), name)[path] !== undefined;
+    expect(named("social/repo.ts", "activity_items") && named("social/repo.ts", "activity_state") && named("social/repo.ts", "post_mentions")).toBe(true);
+    expect(named("activity/repo.ts", "activity_items") && named("activity/repo.ts", "activity_state")).toBe(true);
+  });
+
+  test("the one insert into post_mentions is in social/repo.ts, inside createPost", () => {
+    expect(mentionInserts(loadSources())).toEqual([{ path: "social/repo.ts", count: 1, inCreatePost: 1 }]);
+  });
+
+  test("catches a table named outside its files, by SQL or drizzle's name, a second insert of mentions, and the activity module imported by staff or moderation", () => {
+    const files: SourceFile[] = [
+      { path: "moderation/author.ts", source: "await q.execute(sql`select count(*) from activity_items where recipient_id = ${id}::uuid`);" },
+      { path: "staff/cases.ts", source: 'import { activityState } from "@korbat/db";\nimport { createActivity } from "../activity";' },
+      { path: "media/repo.ts", source: "await tx.execute(sql`delete from post_mentions where post_id = ${id}::uuid`);" },
+      { path: "activity/repo.ts", source: "sql`select handle from post_mentions`" },
+      { path: "moderation/release.ts", source: 'import type { ActivityForAccount } from "../activity/index";' },
+      // Allowed: the social repository and the activity module, and a word that only contains a table's name.
+      { path: "social/repo.ts", source: "sql`insert into activity_items (recipient_id) select 1`; sql`delete from activity_state`; sql`insert into post_mentions values (1)`;" },
+      { path: "activity/flows.ts", source: "sql`select seen_at from activity_state`; const activity_items_insert = 1;" },
+      { path: "account/flows/export.ts", source: 'import type { ActivityExport } from "../../activity";' },
+    ];
+    expect(findActivityTableViolations(files)).toEqual([
+      "moderation/author.ts: names activity_items, which only activity_items's pinned files may",
+      "staff/cases.ts: names activityState, which only activity_state's pinned files may",
+      "staff/cases.ts: imports the activity module, which no staff or moderation file may",
+      "media/repo.ts: names post_mentions, which only post_mentions's pinned files may",
+      "activity/repo.ts: names post_mentions, which only post_mentions's pinned files may",
+      "moderation/release.ts: imports the activity module, which no staff or moderation file may",
+    ]);
+    const twice: SourceFile[] = [
+      { path: "social/repo.ts", source: "async createPost() { sql`insert into post_mentions (post_id) values (1)` } async deletePost() {} async publishImportedBatch() { sql`INSERT INTO public.post_mentions select 1` }" },
+      { path: "social/views.ts", source: "await tx.insert(postMentions).values(rows);" },
+    ];
+    expect(mentionInserts(twice)).toEqual([
+      { path: "social/repo.ts", count: 2, inCreatePost: 1 },
+      { path: "social/views.ts", count: 1, inCreatePost: 0 },
+    ]);
+  });
+
+  test("catches a deep import into the activity module and the auth schema inside it", () => {
+    const files: SourceFile[] = [
+      { path: "app.ts", source: `import { createActivityRepo } from "./activity/repo";\nimport { createActivity } from "./activity";` },
+      { path: "account/flows/export.ts", source: `import type { ReceivedEntry } from "../../activity/flows";` },
+      { path: "activity/repo.ts", source: `import { users, type Db } from "@korbat/db";` },
+    ];
+    expect(findViolations(files, new Set(), new Set(["users"]))).toEqual([
+      "app.ts: imports ./activity/repo, which is inside the activity module (use ./activity)",
+      "account/flows/export.ts: imports ../../activity/flows, which is inside the activity module (use ./activity)",
+      "activity/repo.ts: imports auth-schema users from @korbat/db",
     ]);
   });
 });

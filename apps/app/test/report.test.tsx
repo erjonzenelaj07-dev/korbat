@@ -203,6 +203,8 @@ describe("what leads to the form", () => {
     media: [],
     quoteOf: null,
     imported: null,
+    mentions: [],
+    countsHidden: false,
     ...extra,
   });
   const me = (userId: string) => ({ status: "signed-in", me: { user: { id: userId, onboarded: true }, profile: { handle: "me" } } });

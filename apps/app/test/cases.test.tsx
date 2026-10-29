@@ -562,6 +562,8 @@ describe("the chips and the labels", () => {
     media: [],
     quoteOf: null,
     imported: null,
+    mentions: [],
+    countsHidden: false,
     ...extra,
   });
   const me = (userId: string) => ({ status: "signed-in", me: { user: { id: userId, onboarded: true }, profile: { handle: "ada" } } });
@@ -720,7 +722,7 @@ describe("3e: a retired handle in the app (design, sections 9.4, 9.5 and 9.8)", 
   const PLACEHOLDER = "retired_0a1b2c3d4e5f";
   const me = (handle: string, handleChangedAt: string | null = null): MeResponse => ({
     user: { id: id(1), email: "ada@example.com", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 0 },
-    profile: { id: id(1), handle, displayName: "Ada", handleChangedAt, verified: false, showInExplore: true },
+    profile: { id: id(1), handle, displayName: "Ada", handleChangedAt, verified: false, showInExplore: true, sharePreviews: false },
     standing: null,
   });
   const section = (handle: string, handleChangedAt: string | null = null) => textOf(html(<HandleSection me={me(handle, handleChangedAt)} run={async () => undefined} refresh={async () => undefined} />));
@@ -932,6 +934,8 @@ function sheetOf(card: string, decisionId: string): string {
     media: [],
     quoteOf: null,
     imported: null,
+    mentions: [],
+    countsHidden: false,
   };
   return html(<StatusSheetBody load={{ kind: "shown", view: { ...sheetDecision, id: decisionId } }} post={post} me={null} onRetry={() => undefined} />);
 }

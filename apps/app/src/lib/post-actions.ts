@@ -20,12 +20,16 @@ export function isOn(post: PostView, kind: ToggleKind): boolean {
   return (post.viewer ?? NO_VIEWER)[FLAG[kind]];
 }
 
-/** The post with one toggle set to `on`, its count moved by one, never below zero; the post itself when it already is. */
+/**
+ * The post with one toggle set to `on`, its count moved by one, never below zero; the post itself when it already is. 2d
+ * (decision 26, 10.6): a count its author hid is null for this reader, and stays null: the press never makes up a number.
+ */
 export function turned(post: PostView, kind: ToggleKind, on: boolean): PostView {
   const viewer = post.viewer ?? NO_VIEWER;
   if (viewer[FLAG[kind]] === on) return post;
   const key = COUNT[kind];
-  const counts = key === undefined ? post.counts : { ...post.counts, [key]: Math.max(0, post.counts[key] + (on ? 1 : -1)) };
+  const count = key === undefined ? null : post.counts[key];
+  const counts = key === undefined || count === null ? post.counts : { ...post.counts, [key]: Math.max(0, count + (on ? 1 : -1)) };
   return { ...post, viewer: { ...viewer, [FLAG[kind]]: on }, counts };
 }
 
@@ -128,28 +132,31 @@ const COUNT_WORDS: Record<Counted, { many: UiWord; one: UiWord; none: UiWord }> 
 /** Whether the reader's setting hides this kind's count (decision 15: likes and reposts; replies lead to conversation). */
 const hides = (kind: Counted, hideCounts: boolean): boolean => hideCounts && kind !== "reply";
 
-/** A button's name with its count: "Like, 12 likes", "Like, 1 like", and "Like" at zero or when the count is hidden. */
-export function countLabel(kind: Counted, count: number, hideCounts: boolean): string {
+/**
+ * A button's name with its count: "Like, 12 likes", "Like, 1 like", and "Like" at zero, when the reader's setting hides the
+ * count, and (2d, decision 26) when the post's author hid it, which the API answers as null.
+ */
+export function countLabel(kind: Counted, count: number | null, hideCounts: boolean): string {
   const words = COUNT_WORDS[kind];
-  if (count <= 0 || hides(kind, hideCounts)) return UI_WORDS[words.none];
+  if (count === null || count <= 0 || hides(kind, hideCounts)) return UI_WORDS[words.none];
   if (count === 1) return UI_WORDS[words.one];
   return fill(UI_WORDS[words.many], { n: count });
 }
 
-/** The number a button shows beside its icon, or nothing at zero or when the count is hidden. */
-export function shownCount(kind: Counted, count: number, hideCounts: boolean): number | undefined {
-  return count > 0 && !hides(kind, hideCounts) ? count : undefined;
+/** The number a button shows beside its icon, or nothing at zero or when the count is hidden, by the reader or (null) by the author. */
+export function shownCount(kind: Counted, count: number | null, hideCounts: boolean): number | undefined {
+  return count !== null && count > 0 && !hides(kind, hideCounts) ? count : undefined;
 }
 
-/** The thread's stats line (8.3): "12 reposts, 4 quotes, 30 likes", each part left out at zero or when hidden. */
+/** The thread's stats line (8.3): "12 reposts, 4 quotes, 30 likes", each part left out at zero or when hidden (2d: null is hidden by the author). */
 export function threadStats(counts: PostCounts, hideCounts: boolean): string {
-  const parts: [number, UiWord, UiWord, boolean][] = [
+  const parts: [number | null, UiWord, UiWord, boolean][] = [
     [counts.reposts, "thread.stats.reposts", "thread.stats.reposts.one", hideCounts],
     [counts.quotes, "thread.stats.quotes", "thread.stats.quotes.one", false],
     [counts.likes, "thread.stats.likes", "thread.stats.likes.one", hideCounts],
   ];
   return parts
-    .filter(([n, , , hidden]) => n > 0 && !hidden)
+    .flatMap(([n, many, one, hidden]): [number, UiWord, UiWord][] => (n !== null && n > 0 && !hidden ? [[n, many, one]] : []))
     .map(([n, many, one]) => (n === 1 ? UI_WORDS[one] : fill(UI_WORDS[many], { n })))
     .join(", ");
 }

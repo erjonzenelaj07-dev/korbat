@@ -1,4 +1,4 @@
-import type { CreatePostRequest, Pagination, PostView, ThreadResponse } from "@korbat/contracts";
+import { mentionHandles, type CountsResponse, type CreatePostRequest, type Pagination, type PostView, type ThreadResponse } from "@korbat/contracts";
 import { isDeadlock } from "../../lib/lock-bounds";
 import { SocialError, type SocialDeps, type ViewerId } from "../context";
 import { decodeCursor } from "../cursor";
@@ -40,12 +40,15 @@ export async function targetPost(deps: SocialDeps, viewer: string, id: string, h
  * transaction then changed nothing, so it is run once more: the second try finds the purge committed and answers as for
  * any deleted account. A second deadlock is the caller's.
  */
-export async function createPost(deps: SocialDeps, viewer: string, input: CreatePostRequest): Promise<PostView> {
+export async function createPost(deps: SocialDeps, viewer: string, input: Omit<CreatePostRequest, "hideCounts"> & { hideCounts?: boolean }): Promise<PostView> {
   const me = await ownProfile(deps, viewer);
   const action = input.replyToId ? "reply" : input.quoteOfId ? "quote" : "post";
   const targetId = input.replyToId ?? input.quoteOfId;
   const target = targetId ? await targetPost(deps, viewer, targetId, "post_unavailable") : null;
   await enforceWriteLimit(deps.limits, viewer, action, me.createdAt, deps.now());
+  // 2d (4.2): the handles the post names, read from the normalised body (CreatePostRequest normalised it) before the
+  // transaction, which resolves them; the request's hidden-counts switch rides along.
+  const mentions = mentionHandles(input.body);
   const write = () =>
     deps.repo.createPost({
       authorId: viewer,
@@ -54,6 +57,9 @@ export async function createPost(deps: SocialDeps, viewer: string, input: Create
       quoteOfId: input.quoteOfId ?? null,
       now: deps.now(),
       lockWith: target && target.authorId !== viewer ? target.authorId : null,
+      mentions,
+      // The route's request has it, off unless sent; a caller that builds the input itself may leave it out.
+      hideCounts: input.hideCounts ?? false,
       within: (tx, postId) => deps.media.attach(tx, { postId, ownerId: viewer, items: input.media }),
     });
   const id = await onceMoreOnDeadlock(write);
@@ -118,6 +124,19 @@ export async function deletePost(deps: SocialDeps, viewer: string, id: string): 
   const blocked = (await deps.repo.blockedEitherWay(viewer, [row.authorId])).has(row.authorId);
   if (postAccess(viewer, row, blocked) !== "shown") throw new SocialError("not_found", 404);
   throw new SocialError("not_author", 403);
+}
+
+/**
+ * 2d (decision 26, 9.2): PATCH /api/posts/:id/counts, the author's switch of a post's like and repost counts. Counted
+ * under hide-counts before anything is written. A post that is not the viewer's, is deleted or is disabled answers
+ * not_found, as deletePost answers it; a withheld or removed one changes. Hiding is open to a suspended author, showing
+ * again is refused account_suspended by the repository (lockActing).
+ */
+export async function setCountsHidden(deps: SocialDeps, viewer: string, id: string, hidden: boolean): Promise<CountsResponse> {
+  const me = await ownProfile(deps, viewer);
+  await enforceWriteLimit(deps.limits, viewer, "hide-counts", me.createdAt, deps.now());
+  if (!(await deps.repo.setHideCounts(id, viewer, hidden))) throw new SocialError("not_found", 404);
+  return { countsHidden: hidden };
 }
 
 /** The post, its ancestors root first (tombstones where needed), and a page of direct replies oldest first. */

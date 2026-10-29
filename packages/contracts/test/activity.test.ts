@@ -34,6 +34,8 @@ const post = {
   media: [],
   quoteOf: null,
   imported: null,
+  mentions: [],
+  countsHidden: false,
 };
 /** A time as the database writes it for Activity: UTC, to the microsecond. */
 const AT = "2026-10-27T10:00:00.123456Z";

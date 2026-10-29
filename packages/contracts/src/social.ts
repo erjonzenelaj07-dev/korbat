@@ -55,6 +55,8 @@ export const CreatePostRequest = z
     replyToId: PostId.optional(),
     quoteOfId: PostId.optional(),
     media: z.array(MediaAttachment).max(MEDIA_MAX_PER_POST).default([]),
+    /** 2d (decision 26, 10.6): the composer's "Hide like and repost counts", off unless sent. */
+    hideCounts: z.boolean().default(false),
   })
   .refine((post) => !(post.replyToId && post.quoteOfId), { message: "a post is a reply or a quote, not both", path: ["quoteOfId"] })
   .refine((post) => visibleLength(post.body) >= 1 || post.media.length >= 1, { message: "a post needs text or an image", path: ["body"] })
@@ -76,9 +78,15 @@ export type Tombstone = z.infer<typeof Tombstone>;
 export const PostState = z.enum(["visible", "withheld", "removed"]);
 export type PostState = z.infer<typeof PostState>;
 
+/**
+ * A post's counts. 2d (decision 26, 9.3): `likes` and `reposts` are null exactly when the post's author hid its counts and
+ * the reader is not its author, in every answer that carries counts (a view, a quoted embed, and the answer to the
+ * reader's own like, unlike, repost or unrepost), so no reader learns a hidden count by liking. Replies and quotes are
+ * always numbers.
+ */
 export const PostCounts = z.object({
-  likes: z.number().int().min(0),
-  reposts: z.number().int().min(0),
+  likes: z.number().int().min(0).nullable(),
+  reposts: z.number().int().min(0).nullable(),
   replies: z.number().int().min(0),
   quotes: z.number().int().min(0),
 });
@@ -142,6 +150,15 @@ export const PostView = z.object({
   quoteOf: z.union([QuotedPost, Tombstone]).nullable(),
   /** 3b (9.3): the provenance label of an imported post, last; null on a native post. */
   imported: ImportedLabel.nullable(),
+  /**
+   * 2d (4.3): the handles of the post's stored mentions that link for this reader, lowercased, in text order: each one's
+   * account is live, still holds the handle as written, and (for a signed-in reader) has no block either way with the
+   * reader. Always empty for an imported post. After the label; a quoted embed carries none (QuotedPost), since it draws
+   * its text plain.
+   */
+  mentions: z.array(z.string()),
+  /** 2d (decision 26): the author hid the like and repost counts; last. Anyone else then reads them as null (PostCounts). */
+  countsHidden: z.boolean(),
 });
 export type PostView = z.infer<typeof PostView>;
 
@@ -172,6 +189,16 @@ export type ThreadResponse = z.infer<typeof ThreadResponse>;
 
 export const EngagementResponse = z.object({ counts: PostCounts, viewer: ViewerPostState });
 export type EngagementResponse = z.infer<typeof EngagementResponse>;
+
+/** 2d (9.2): PATCH /api/posts/:id/counts, the author's switch of decision 26; its answer is CountsResponse. */
+export const CountsRequest = z.object({ hidden: z.boolean() });
+export type CountsRequest = z.infer<typeof CountsRequest>;
+export const CountsResponse = z.object({ countsHidden: z.boolean() });
+export type CountsResponse = z.infer<typeof CountsResponse>;
+
+/** 2d (9.2, decision 21): what POST and DELETE /api/me/share-previews answer, as /api/me/explore answers its switch. */
+export const SharePreviewsResponse = z.object({ sharePreviews: z.boolean() });
+export type SharePreviewsResponse = z.infer<typeof SharePreviewsResponse>;
 
 export const FollowResponse = z.object({ following: z.boolean(), followerCount: z.number().int().min(0) });
 export type FollowResponse = z.infer<typeof FollowResponse>;

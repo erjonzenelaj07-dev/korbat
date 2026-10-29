@@ -90,6 +90,8 @@ function post(extra: Partial<PostView> = {}): PostView {
     media: [],
     quoteOf: null,
     imported: null,
+    mentions: [],
+    countsHidden: false,
     ...extra,
   };
 }
@@ -99,7 +101,7 @@ function me(userId: string): { status: "signed-in"; me: MeResponse } {
     status: "signed-in",
     me: {
       user: { id: userId, email: "x@korbat.local", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 0 },
-      profile: { id: userId, handle: "reader", displayName: "Reader", handleChangedAt: null, verified: false, showInExplore: true },
+      profile: { id: userId, handle: "reader", displayName: "Reader", handleChangedAt: null, verified: false, showInExplore: true, sharePreviews: false },
       standing: { activeStrikes: 0, measure: null, reporting: null, handleRetired: false },
     } as MeResponse,
   };
@@ -195,6 +197,16 @@ describe("the actions' names (6.6, section 10, decision 15)", () => {
     expect(buttonNames(out).slice(0, 3)).toEqual(["Reply, 4 replies", "Repost", "Like"]);
     expect(textOf(out)).not.toMatch(/\b30\b|\b12\b/);
     expect(textOf(out)).toMatch(/\b4\b/);
+  });
+
+  test("2d (decision 26, 10.6): a count the post's author hid arrives as null and is drawn as no number, in the names, on screen and in the stats line; replies and quotes keep theirs", () => {
+    const hidden = { likes: null, reposts: null, replies: 4, quotes: 2 };
+    const out = html(<PostCard post={post({ counts: hidden, countsHidden: true })} />);
+    expect(buttonNames(out).slice(0, 3)).toEqual(["Reply, 4 replies", "Repost", "Like"]);
+    expect(textOf(out)).toMatch(/\b4\b/);
+    expect(countLabel("like", null, false)).toBe("Like");
+    expect(threadStats(hidden, false)).toBe("2 quotes");
+    expect(textOf(html(<PostCard post={post({ counts: hidden, countsHidden: true })} large />))).toContain("2 quotes");
   });
 
   test("Like and Repost say whether they are on; Save changes its name instead; Repost and More open menus", () => {
@@ -309,6 +321,15 @@ describe("optimistic actions with rollback (6.6, section 5.2)", () => {
     expect(flipped(on, "repost")).toMatchObject({ viewer: { reposted: false }, counts: { reposts: 1 } });
     // Never below zero, whatever a stale count says.
     expect(flipped(post({ counts: { ...counts, likes: 0 }, viewer: { ...viewer, liked: true } }), "like").counts.likes).toBe(0);
+  });
+
+  test("2d (decision 26, 10.6): a press keeps a hidden count null, both ways, and the answer's null and the rollback keep it so", () => {
+    const hidden = post({ counts: { likes: null, reposts: null, replies: 1, quotes: 0 }, countsHidden: true, viewer });
+    const liked = flipped(hidden, "like");
+    expect(liked).toMatchObject({ viewer: { liked: true }, counts: { likes: null, reposts: null } });
+    expect(flipped(flipped(hidden, "repost"), "repost").counts).toEqual(hidden.counts);
+    expect(settled(liked, "like", { counts: hidden.counts, viewer: { ...viewer, liked: true } }).counts.likes).toBeNull();
+    expect(restored(liked, hidden, "like").counts.likes).toBeNull();
   });
 
   /** A fake social client whose answers the test releases one at a time. */

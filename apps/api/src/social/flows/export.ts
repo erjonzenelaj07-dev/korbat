@@ -15,8 +15,9 @@ export type ExportedPost = ExportedPostRow & { media: ExportedMedia[] };
 /**
  * The social module's part of the data export (1b design, section 7.5): the profile with every handle
  * it ever had and its Explore switch (2c design, section 8), every post it wrote whatever its state,
- * with its images, what it liked, reposted and bookmarked, and the accounts it follows, blocks and
- * mutes by the handle they have now. Times are Dates here; the account module writes them as ISO text.
+ * with its images (2d: and its mentions and hidden-counts switch), what it liked, reposted and
+ * bookmarked, and the accounts it follows, blocks and mutes by the handle they have now. Times are
+ * Dates here; the account module writes them as ISO text.
  *
  * The profile is read at once; each list is read page by page while the account module writes it, so
  * an account with many rows never has them all in memory. A list can be iterated more than once; each
@@ -24,7 +25,8 @@ export type ExportedPost = ExportedPostRow & { media: ExportedMedia[] };
  */
 export interface ProfileExport {
   /** `retiredHandles` (3e design, W.8): the handles of the history that korbat retired and that are still retired, with when. */
-  profile: { handle: string; displayName: string; bio: string; createdAt: Date; handleHistory: string[]; showInExplore: boolean; retiredHandles: { handle: string; retiredAt: Date }[] };
+  /** `sharePreviews` (2d design, section 11.2): the link-preview switch as it stands. */
+  profile: { handle: string; displayName: string; bio: string; createdAt: Date; handleHistory: string[]; showInExplore: boolean; retiredHandles: { handle: string; retiredAt: Date }[]; sharePreviews: boolean };
   posts: AsyncIterable<ExportedPost[]>;
   likes: AsyncIterable<PostRefRow[]>;
   reposts: AsyncIterable<PostRefRow[]>;
@@ -94,6 +96,7 @@ export async function exportProfile(deps: SocialDeps, userId: string, pageSize: 
       handleHistory,
       showInExplore: head.showInExplore,
       retiredHandles: head.retiredHandles,
+      sharePreviews: head.sharePreviews,
     },
     posts: withMedia(
       deps,

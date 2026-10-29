@@ -2,6 +2,7 @@ import { serve } from "@hono/node-server";
 import Redis from "ioredis";
 import { closeDb, createDb, ping } from "@korbat/db";
 import { createAccount } from "./account";
+import { createActivity } from "./activity";
 import { createApp } from "./app";
 import { createAuth, verificationProviderFrom } from "./auth";
 import { loadConfig } from "./config";
@@ -125,6 +126,20 @@ const social = createSocial({
 // Explore's ranking: a round at once, so Explore is filled on a new database or after downtime, then one every five minutes.
 const stopExplore = social.startExplore(jobLock);
 
+// 2d: Activity. Built after the social and moderation modules, whose interfaces give it the posts' views, the follow
+// groups' accounts and the moderation entries (authorActivity), and before the account module, whose export lists the
+// account's entries through it. Its limits count in the store the per-IP limit uses, through the social module's table.
+// Its job, activity-retention, deletes the entries older than 90 days, a round every hour.
+const activity = createActivity({
+  apiDb,
+  social: social.forActivity,
+  moderation: moderation.forActivity,
+  rateLimitStore,
+  requireSession: auth.requireSession,
+  logger,
+});
+const stopActivity = activity.startRetention(jobLock);
+
 // 3b: import from other platforms. The module owns the three import tables, writes import-archives and reads import-work
 // (the importer's output) only through openWorkFile; it asks the auth module whether an address is verified and the
 // social module which posts an account already imported. Its job, import-drive, reads finished scans, runs the intake,
@@ -159,6 +174,8 @@ const account = createAccount({
   moderation: moderation.forAccount,
   // 3b Task 6: the purge deletes the account's imports and import key in its transaction; the export lists the imports.
   imports: imports.forAccount,
+  // 2d: the export's member `activity`; the social purge already deletes the account's entries, marker and mentions.
+  activity: activity.forAccount,
   requireSession: auth.requireSession,
   requireFreshAuth: auth.requireFreshAuth(),
   requireStrongFreshAuth: auth.requireStrongFreshAuth(),
@@ -191,6 +208,7 @@ const app = createApp({
   moderation,
   transparency,
   imports,
+  activity,
 });
 
 const server = serve({ fetch: app.fetch, port: config.PORT, hostname: "0.0.0.0" }, (info) => {
@@ -210,6 +228,7 @@ async function shutdown(signal: string) {
   stopExplore();
   stopPurge();
   stopImports();
+  stopActivity();
   stopModeration();
   server.close();
   // A statement, a receipt or a staff alert may be on its way to the relay: it gets five seconds to finish before the

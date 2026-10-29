@@ -40,6 +40,61 @@ const appealUntil = sql`case when d.kind = 'final' and d.outcome = 'restricted'
              then ${iso("public.appeal_deadline(public.appeal_informed_at(d.id))")} end`;
 
 /**
+ * 2d (design, section 5.5.2): the decisions about this account that its author was told of (toldToAuthor, the rows the
+ * Cases screen's list reads), as Activity lists them: newest first by the time the author was told (informed_at, which
+ * Cases' list does not sort by), and by id among equal times; only those told at or after `since`; before `before` when
+ * given, compared as Activity compares places, the key being `d:` and the id in the "C" collation. Each with its target:
+ * the case's post with that post's time, or for a case about the account whether the decision holds one of 3e's
+ * measures of the account's standing (`standing`), which Activity names the account rather than the profile.
+ */
+export async function activityDecisions(
+  q: Runner,
+  accountId: string,
+  before: { at: string; key: string } | null,
+  since: string,
+  standingKinds: readonly string[],
+  limit: number,
+): Promise<{ id: string; at: string; targetType: "post" | "account"; targetId: string; postCreatedAt: string | null; standing: boolean }[]> {
+  const found = await rows<{ id: string; at: string; target_type: "post" | "account"; target_id: string; post_created_at: string | null; standing: boolean }>(
+    q,
+    sql`select d.id, to_char(d.informed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as at, c.target_type, c.target_id,
+               (select ${iso("p.created_at")} from posts p where c.target_type = 'post' and p.id = c.target_id) as post_created_at,
+               exists (select 1 from decision_actions a where a.decision_id = d.id and a.kind::text = any(${`{${standingKinds.join(",")}}`}::text[])) as standing
+          from ${casesAbout(accountId)} c join decisions d on d.case_id = c.id
+         where ${toldToAuthor("d")} and d.informed_at >= ${since}::timestamptz
+           ${before === null ? sql`` : sql`and (d.informed_at, ('d:' || d.id::text) collate "C") < (${before.at}::timestamptz, ${before.key} collate "C")`}
+         order by d.informed_at desc, d.id desc limit ${limit}::int`,
+  );
+  return found.map((row) => ({ id: row.id, at: row.at, targetType: row.target_type, targetId: row.target_id, postCreatedAt: row.post_created_at, standing: row.standing }));
+}
+
+/**
+ * 2d (design, section 5.5.2): the earliest time a moderation entry of Activity may have, `days` before the database's
+ * clock, to the microsecond: one read of the clock for every source of a page.
+ */
+export async function activitySince(q: Runner, days: number): Promise<string> {
+  const [row] = await rows<{ since: string }>(q, sql`select to_char((now() - make_interval(days => ${days}::int)) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as since`);
+  return row!.since;
+}
+
+/**
+ * 2d (design, sections 5.5.2 and 6.5): the account's lost images whose notice 3d's dispatch handled, from the told-only
+ * function lost_told_for (the quarantine stays closed to the API's role): each image with its post, that post's time and
+ * the loss's time to the microsecond, lost at or after `since` and at or before `through` when given, newest first, at
+ * most the function's 100. Its p_before is strict and files lost together share a time, so it is asked from one
+ * microsecond after `through`: the caller drops what it already listed at that time.
+ */
+export async function activityLost(q: Runner, accountId: string, through: string | null, since: string): Promise<{ mediaId: string; postId: string; postCreatedAt: string; at: string }[]> {
+  const found = await rows<{ media_id: string; post_id: string; post_created_at: string; lost_at: string }>(
+    q,
+    sql`select l.media_id, l.post_id, ${iso("l.post_created_at")} as post_created_at, to_char(l.lost_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as lost_at
+          from public.lost_told_for(${accountId}::uuid, ${through === null ? sql`'infinity'::timestamptz` : sql`${through}::timestamptz + interval '1 microsecond'`}, 100) l
+         where l.lost_at >= ${since}::timestamptz`,
+  );
+  return found.map((row) => ({ mediaId: row.media_id, postId: row.post_id, postCreatedAt: row.post_created_at, at: row.lost_at }));
+}
+
+/**
  * The UTC day on which the last measure of decision `d` was lifted, for a final decision that restricted and of which
  * nothing is in force any more. Null while any of its measures stands, and for every other decision: a decision taken
  * while deciding ends with its case, without a reversal.

@@ -40,6 +40,8 @@ const post = (extra: Record<string, unknown> = {}) => ({
   media: [],
   quoteOf: null,
   imported: null,
+  mentions: [],
+  countsHidden: false,
   ...extra,
 });
 

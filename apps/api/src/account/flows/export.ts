@@ -1,5 +1,6 @@
 import type { Logger } from "pino";
-import { OrderNoticeFacts, OrderTexts, STANDING_RULES, type Platform } from "@korbat/contracts";
+import { ACTIVITY_DEFAULTS, OrderNoticeFacts, OrderTexts, STANDING_RULES, type Platform } from "@korbat/contracts";
+import type { ActivityExport, ReceivedEntry } from "../../activity";
 import type { AccountExport } from "../../auth";
 import type { ImportRecord } from "../../imports";
 import type { ModerationExport } from "../../moderation";
@@ -39,6 +40,8 @@ export interface ExportPlan {
   moderation: ModerationExport;
   /** 3b Task 6 (design, section 11.2): the account's imports, newest first, as the imports module hands them over. */
   imports: ImportRecord[];
+  /** 2d (design, section 11.2): the seen marker and the rules, read at once, and the received entries, read in pages. */
+  activity: ActivityExport;
   images: { id: string; open: OpenFile }[];
   /** The images whose file the checked open refused or could not find, filled while the images are written. */
   missingMedia: string[];
@@ -92,6 +95,17 @@ const NO_MODERATION: ModerationExport = {
   releases: [],
 };
 
+/** What an account module built without the activity module writes: the member is part of the format, so it is always there. */
+const NO_ACTIVITY: ActivityExport = {
+  seenAt: null,
+  settings: { ...ACTIVITY_DEFAULTS },
+  received: {
+    async *[Symbol.asyncIterator]() {
+      // No entry to list.
+    },
+  },
+};
+
 /**
  * Reads what is needed before the first byte: the account's facts, sessions, devices and events (one
  * read, bounded by the 90 days of events), the profile's own fields, the list of images, and the
@@ -101,7 +115,7 @@ const NO_MODERATION: ModerationExport = {
  * `pageSize` is how many rows of each profile list are read at a time; tests lower it.
  */
 export async function buildExport(deps: AccountDeps, userId: string, currentSession: string, now: Date, pageSize?: number): Promise<ExportPlan> {
-  const [account, profile, images, moderation, imports] = await Promise.all([
+  const [account, profile, images, moderation, imports, activity] = await Promise.all([
     deps.auth.exportAccount(userId),
     deps.social.exportProfile(userId, pageSize),
     deps.media.exportImages(userId),
@@ -109,8 +123,10 @@ export async function buildExport(deps: AccountDeps, userId: string, currentSess
     deps.moderation ? deps.moderation.exportFor(userId) : NO_MODERATION,
     // 3b Task 6: and the imports module; without it the member is empty.
     deps.imports ? deps.imports.exportFor(userId) : Promise.resolve([]),
+    // 2d (11.2): and the activity module; without it the member holds the defaults and no entry.
+    deps.activity ? deps.activity.exportEntries(userId, pageSize) : Promise.resolve(NO_ACTIVITY),
   ]);
-  return { exportedAt: now, currentSession, account, profile, moderation, imports, images, missingMedia: [] };
+  return { exportedAt: now, currentSession, account, profile, moderation, imports, activity, images, missingMedia: [] };
 }
 
 /** A list member of export.json, read in pages and written one element at a time. */
@@ -119,6 +135,11 @@ class Paged<T> {
     readonly pages: AsyncIterable<readonly T[]>,
     readonly element: (row: T) => unknown,
   ) {}
+}
+
+/** An object member written member by member, so that one of its members may be a list read in pages (2d's `activity`). */
+class Members {
+  constructor(readonly members: [string, unknown][]) {}
 }
 
 /** An array already in memory, as one page. */
@@ -189,6 +210,8 @@ async function* documentFragments(plan: ExportPlan): AsyncGenerator<string> {
         showInExplore: profile.profile.showInExplore,
         // After it, where 3e added it (W.8): the retired handles of the history, with when.
         retiredHandles: profile.profile.retiredHandles.map((retired) => ({ handle: retired.handle, retiredAt: iso(retired.retiredAt) })),
+        // 2d (11.2): the link-preview switch, last in the profile for now.
+        sharePreviews: profile.profile.sharePreviews,
       },
     ],
     [
@@ -202,8 +225,11 @@ async function* documentFragments(plan: ExportPlan): AsyncGenerator<string> {
         state: post.state,
         deletedAt: isoOrNull(post.deletedAt),
         media: post.media.map((image) => ({ id: image.id, file: mediaEntry(image.id), altText: image.altText, width: image.width, height: image.height })),
-        // 3b (11.2): last in the post, where the format added it; null on a native post and on a tombstone.
+        // 3b (11.2): after the images, where the format added it; null on a native post and on a tombstone.
         imported: post.imported === null ? null : { source: post.imported.source, originalCreatedAt: iso(post.imported.originalCreatedAt), shortened: post.imported.shortened },
+        // 2d (11.2): last, the handles its stored mentions name as written, in text order, and its hidden-counts switch.
+        mentions: [...post.mentions],
+        countsHidden: post.countsHidden,
       })),
     ],
     ["likes", new Paged(profile.likes, ref)],
@@ -227,7 +253,7 @@ async function* documentFragments(plan: ExportPlan): AsyncGenerator<string> {
     // Where the format added it (3c). Each entry is written member by member in the format's order, so the bytes
     // do not depend on how the moderation module builds its objects, and nothing beyond the format is ever written.
     ["moderation", moderationMember(plan.moderation)],
-    // 3b Task 6 (11.2): last, the account's imports, newest first, member by member in the format's order.
+    // 3b Task 6 (11.2): the account's imports, newest first, member by member in the format's order.
     [
       "imports",
       plan.imports.map((entry) => ({
@@ -244,15 +270,34 @@ async function* documentFragments(plan: ExportPlan): AsyncGenerator<string> {
         counts: { postsPublished: entry.counts.postsPublished, postsRemoved: entry.counts.postsRemoved, imagesKept: entry.counts.imagesKept, imagesLeftOut: entry.counts.imagesLeftOut },
       })),
     ],
+    // 2d (11.2): last, the account's Activity: the marker, the rules in the format's order, and every entry it received,
+    // newest first and ungrouped, read page by page as it is written.
+    [
+      "activity",
+      new Members([
+        ["seenAt", plan.activity.seenAt],
+        ["settings", { replies: plan.activity.settings.replies, mentions: plan.activity.settings.mentions, quotes: plan.activity.settings.quotes, follows: plan.activity.settings.follows }],
+        ["received", new Paged(plan.activity.received, (entry: ReceivedEntry) => ({ kind: entry.kind, at: entry.at, postId: entry.postId, actorHandle: entry.actorHandle, shown: entry.shown }))],
+      ]),
+    ],
   ];
 
+  yield* objectFragments(members, "");
+}
+
+/**
+ * An object's members at the depth `pad` gives, as JSON.stringify(value, null, 2) writes them there: a list read in pages
+ * element by element, an object of Members member by member, anything else stringified whole and indented to its depth.
+ */
+async function* objectFragments(members: [string, unknown][], pad: string): AsyncGenerator<string> {
   yield "{\n";
   for (const [index, [key, value]] of members.entries()) {
-    yield `${index === 0 ? "" : ",\n"}  ${JSON.stringify(key)}: `;
-    if (value instanceof Paged) yield* listFragments(value);
-    else yield indented(JSON.stringify(value, null, 2), "  ");
+    yield `${index === 0 ? "" : ",\n"}${pad}  ${JSON.stringify(key)}: `;
+    if (value instanceof Paged) yield* listFragments(value, `${pad}  `);
+    else if (value instanceof Members) yield* objectFragments(value.members, `${pad}  `);
+    else yield indented(JSON.stringify(value, null, 2), `${pad}  `);
   }
-  yield "\n}";
+  yield `\n${pad}}`;
 }
 
 /** An object's members in the order of a format's shape, and no other member. */
@@ -348,16 +393,16 @@ function moderationMember(moderation: ModerationExport): ModerationExport {
   };
 }
 
-/** A top-level member's array, as JSON.stringify writes it at that depth: "[]" when empty, else one element per line group. */
-async function* listFragments<T>(list: Paged<T>): AsyncGenerator<string> {
+/** A member's array at the depth `pad` gives, as JSON.stringify writes it there: "[]" when empty, else one element per line group. */
+async function* listFragments<T>(list: Paged<T>, pad: string): AsyncGenerator<string> {
   let first = true;
   for await (const page of list.pages) {
     for (const row of page) {
-      yield `${first ? "[\n" : ",\n"}    ${indented(JSON.stringify(list.element(row), null, 2), "    ")}`;
+      yield `${first ? "[\n" : ",\n"}${pad}  ${indented(JSON.stringify(list.element(row), null, 2), `${pad}  `)}`;
       first = false;
     }
   }
-  yield first ? "[]" : "\n  ]";
+  yield first ? "[]" : `\n${pad}]`;
 }
 
 const indented = (json: string, pad: string): string => json.replaceAll("\n", `\n${pad}`);

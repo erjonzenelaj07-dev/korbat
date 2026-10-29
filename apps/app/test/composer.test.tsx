@@ -69,6 +69,8 @@ const POST: PostView = {
   media: [],
   quoteOf: null,
   imported: null,
+  mentions: [],
+  countsHidden: false,
 };
 
 afterEach(() => {

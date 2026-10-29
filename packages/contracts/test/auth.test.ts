@@ -148,7 +148,7 @@ describe("auth requests and responses", () => {
   });
   test("the own profile in the me response says when the handle last changed, whether the badge is held and whether the account's posts show in Explore", () => {
     const user = { id: userId, email: "a@b.io", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 0 };
-    const profile = { id: userId, handle: "ada", displayName: "Ada", handleChangedAt: null, verified: false, showInExplore: true };
+    const profile = { id: userId, handle: "ada", displayName: "Ada", handleChangedAt: null, verified: false, showInExplore: true, sharePreviews: false };
     expect(MeResponse.parse({ user, profile, standing: null })).toEqual({ user, profile, standing: null });
     expect(MeProfile.parse({ ...profile, handleChangedAt: "2026-09-24T10:00:00.000Z", verified: true }).verified).toBe(true);
     // The author's own switch (2c design, section 8), off as well as on.
@@ -159,6 +159,9 @@ describe("auth requests and responses", () => {
     expect(MeProfile.safeParse({ ...profile, verified: "yes" }).success).toBe(false);
     expect(MeProfile.safeParse({ ...profile, showInExplore: undefined }).success).toBe(false);
     expect(MeProfile.safeParse({ ...profile, showInExplore: "on" }).success).toBe(false);
+    // 2d (9.3, decision 21): the link-preview switch beside it, as required.
+    expect(MeProfile.parse({ ...profile, sharePreviews: true }).sharePreviews).toBe(true);
+    expect(MeProfile.safeParse({ ...profile, sharePreviews: undefined }).success).toBe(false);
   });
   test("every documented auth error code exists", () => {
     expect(AuthErrorCode.options).toHaveLength(35);

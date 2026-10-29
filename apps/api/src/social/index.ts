@@ -2,6 +2,7 @@
  * The only file outside `src/social/` may import. Everything else in the module is private and the
  * architecture test fails the build if another file reaches into it.
  */
+import type { Author, PostView } from "@korbat/contracts";
 import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
 import type { Db, DbTx } from "@korbat/db";
@@ -17,12 +18,13 @@ import { exportProfile, type ProfileExport } from "./flows/export";
 import { publishImportedBatch, removeImportedBatch } from "./flows/imports";
 import { createSocialRepo, type AccountLockMode, type CapturedPost, type CapturedProfile, type ImportBatchJob, type ImportBatchPost, type ImportBatchResult, type LockedAccount } from "./repo";
 import { postStatusRoutes, socialRoutes } from "./routes";
+import { authorOf, isTombstone, loadPostViews } from "./views";
 
 export { SocialError } from "./context";
 export { enforceWriteLimit } from "./limits";
 // 3b (design, section 7.6): the imports module counts its chunks, acts and picks in this module's one table of limits.
 export { limitsFor } from "./tiers";
-export type { ImportAction, WriteAction } from "./tiers";
+export type { EngagementAction, ImportAction, WriteAction } from "./tiers";
 export type { SocialDeps, SocialEvents, ViewerId } from "./context";
 export type { AccountLockMode, CapturedPost, CapturedProfile, ImportBatchJob, ImportBatchPost, ImportBatchResult, LockedAccount } from "./repo";
 export type { ExportedMedia, ExportedPost, ProfileExport } from "./flows/export";
@@ -86,6 +88,21 @@ export interface SocialForImports {
 }
 
 /**
+ * What the activity module needs from this one (2d design, sections 5.5 and 9.1): the views of an Activity page's posts
+ * and of a follow group's accounts, built here so that whatever a view or an Author carries (Task 3's avatar) lands in one
+ * place. Its limits it counts through enforceWriteLimit, which this file exports.
+ */
+export interface SocialForActivity {
+  /**
+   * Views of these posts for the reader through loadPostViews, so each passes postAccess as every read of a post does:
+   * only the posts the reader is shown are in the answer, each with its mentions and its counts as this reader gets them.
+   */
+  postViews(viewer: string, postIds: readonly string[]): Promise<Map<string, PostView>>;
+  /** These accounts as an Author, by id; an id with no profile row is not in the answer. */
+  authors(ids: readonly string[]): Promise<Map<string, Author>>;
+}
+
+/**
  * The moderation module's interface over the social repository on the pool it is given. A factory of its own, not a
  * member of createSocial's result: the social module's views take facts from the moderation module, which is therefore
  * built between the two.
@@ -135,6 +152,16 @@ export function createSocial(options: CreateSocialOptions) {
     purgeProfile: (userId, now, within) => deps.repo.purgeProfile(userId, now, within),
     exportProfile: (userId, pageSize) => exportProfile(deps, userId, pageSize),
   };
+  const forActivity: SocialForActivity = {
+    async postViews(viewer, postIds) {
+      const loaded = await loadPostViews(deps, viewer, [...postIds]);
+      return new Map([...loaded].flatMap(([id, view]) => (isTombstone(view) ? [] : [[id, view] as const])));
+    },
+    async authors(ids) {
+      const found = await deps.repo.findProfiles([...ids]);
+      return new Map([...found].map(([id, profile]) => [id, authorOf(profile)] as const));
+    },
+  };
   const forImports: SocialForImports = {
     importedKeys: (ownerId, keys) => deps.repo.importedKeys(ownerId, keys),
     publishImportedBatch: (job, batch, now) => publishImportedBatch(deps, job, batch, now),
@@ -146,6 +173,8 @@ export function createSocial(options: CreateSocialOptions) {
     forAccount,
     /** 3b: the interface the imports module uses. */
     forImports,
+    /** 2d: the interface the activity module uses. */
+    forActivity,
     routes: socialRoutes(deps, options.requireSession, options.requireFreshAuth),
     /**
      * 3f (design, section 7.12): GET /api/posts/:id/status, a router of its own that app.ts mounts after the global limit

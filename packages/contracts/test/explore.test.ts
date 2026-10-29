@@ -15,6 +15,8 @@ const post = (n: number, extra: Record<string, unknown> = {}) => ({
   media: [],
   quoteOf: null,
   imported: null,
+  mentions: [],
+  countsHidden: false,
   ...extra,
 });
 const at = "2026-09-28T12:05:00.000Z";

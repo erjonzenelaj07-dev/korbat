@@ -980,6 +980,11 @@ export async function removeFixtures(migrateDb: Db, profileIds: readonly string[
     // import_keys_delete, which refuse others while the profile is live.
     await tx.execute(sql`delete from import_jobs where owner_id = any(${profiles})`);
     await tx.execute(sql`delete from import_keys where owner_id = any(${profiles})`);
+    // 2d: the Activity entries these accounts caused or received, the mentions that name them and their seen markers and
+    // rules, which name the profiles without an on delete clause (an entry's and a mention's post goes with its post).
+    await tx.execute(sql`delete from activity_items where recipient_id = any(${profiles}) or actor_id = any(${profiles})`);
+    await tx.execute(sql`delete from post_mentions where account_id = any(${profiles})`);
+    await tx.execute(sql`delete from activity_state where account_id = any(${profiles})`);
     await tx.execute(sql`delete from profiles where id = any(${profiles})`);
   });
 }

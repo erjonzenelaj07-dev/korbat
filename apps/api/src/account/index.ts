@@ -4,6 +4,7 @@
  */
 import type { MiddlewareHandler } from "hono";
 import type { Logger } from "pino";
+import type { ActivityForAccount } from "../activity";
 import type { AuthForAccount } from "../auth";
 import type { ImportsForAccount } from "../imports";
 import type { AppEnv } from "../env";
@@ -28,6 +29,8 @@ export interface CreateAccountOptions {
   moderation?: ModerationForAccount;
   /** 3b Task 6: the imports module's interface for this one, imports.forAccount: the purge's step and the export's member. */
   imports?: ImportsForAccount;
+  /** 2d: the activity module's interface for this one, activity.forAccount: the export's member `activity`. */
+  activity?: ActivityForAccount;
   /** The auth module's requireSession: an onboarded account with CSRF and Origin checked. */
   requireSession: MiddlewareHandler<AppEnv>;
   /** The auth module's requireFreshAuth: a credential proven in the last five minutes, which the export needs. */
@@ -47,6 +50,7 @@ export function createAccount(options: CreateAccountOptions) {
     media: options.media,
     moderation: options.moderation,
     imports: options.imports,
+    activity: options.activity,
     limits: options.rateLimitStore,
     log: options.logger,
     now: options.now ?? (() => new Date()),

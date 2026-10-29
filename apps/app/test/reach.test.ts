@@ -28,6 +28,8 @@ function post(extra: Partial<PostView> = {}): PostView {
     media: [],
     quoteOf: null,
     imported: null,
+    mentions: [],
+    countsHidden: false,
     ...extra,
   };
 }
@@ -37,7 +39,7 @@ const STANDING: AccountStanding = { activeStrikes: 0, measure: null, reporting: 
 function me(extra: { showInExplore?: boolean; standing?: AccountStanding } = {}): MeResponse {
   return {
     user: { id: ADA.id, email: "ada@korbat.local", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 0 },
-    profile: { id: ADA.id, handle: "ada", displayName: "Ada", handleChangedAt: null, verified: false, showInExplore: extra.showInExplore ?? true },
+    profile: { id: ADA.id, handle: "ada", displayName: "Ada", handleChangedAt: null, verified: false, showInExplore: extra.showInExplore ?? true, sharePreviews: false },
     standing: extra.standing ?? STANDING,
   } as MeResponse;
 }

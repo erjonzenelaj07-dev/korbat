@@ -123,6 +123,8 @@ function post(n: number, signedIn: boolean, extra: Partial<PostView> = {}): Post
     media: n === 8 ? [image(8), image(80)] : n % 4 === 0 ? [image(n)] : [],
     quoteOf: null,
     imported: null,
+    mentions: [],
+    countsHidden: false,
     ...extra,
   };
   if (signedIn) view.viewer = { liked: n % 5 === 0, reposted: false, bookmarked: false };
@@ -197,7 +199,7 @@ function me() {
     MeResponse,
     {
       user: { id: ADA.id, email: "ada@korbat.local", role: "user", onboarded: true, mfaEnabled: false, hasPassword: false, passkeys: 1 },
-      profile: { id: ADA.id, handle: ADA.handle, displayName: ADA.displayName, handleChangedAt: null, verified: false, showInExplore: true },
+      profile: { id: ADA.id, handle: ADA.handle, displayName: ADA.displayName, handleChangedAt: null, verified: false, showInExplore: true, sharePreviews: false },
       standing: { activeStrikes: 0, measure: null, reporting: null, handleRetired: false },
     },
     "me",
@@ -726,8 +728,9 @@ export function createFixtureApi(): FixtureApi {
       const on = method === "POST";
       const base = post(numberOf(engaged[1]!), true);
       const counts = { ...base.counts };
-      if (kind === "like") counts.likes = base.counts.likes + (on ? 1 + OTHERS : 0);
-      if (kind === "repost") counts.reposts = base.counts.reposts + (on ? 1 : 0);
+      // 2d (9.3): a count the post's author hid is null, and the answer keeps it null.
+      if (kind === "like" && base.counts.likes !== null) counts.likes = base.counts.likes + (on ? 1 + OTHERS : 0);
+      if (kind === "repost" && base.counts.reposts !== null) counts.reposts = base.counts.reposts + (on ? 1 : 0);
       return ok(parse(EngagementResponse, { counts, viewer: { ...base.viewer!, [FLAGS[kind]]: on } }, "engagement"));
     }
     const follow = /^\/api\/profiles\/([a-z0-9_]+)\/follow$/.exec(path);
@@ -772,6 +775,8 @@ export function createFixtureApi(): FixtureApi {
           viewer: { liked: false, reposted: false, bookmarked: false },
           quoteOf: quoted ? { ...quoted, quoteOf: null } : null,
           imported: null,
+          mentions: [],
+          countsHidden: false,
         },
         "written post",
       );

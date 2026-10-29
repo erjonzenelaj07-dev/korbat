@@ -247,9 +247,10 @@ export type NotMeRequest = z.infer<typeof NotMeRequest>;
  * The signed-in account's own profile as /me returns it (the profile-editing routes answer the public ProfileView): the public facts
  * plus when the handle last changed (the app shows when the next change is allowed), whether the
  * verified badge is held, and whether the account's posts show in Explore (2c design, section 8), a
- * switch that is the author's own and never part of the public profile.
+ * switch that is the author's own and never part of the public profile. 2d (9.3, decision 21): and beside it the
+ * person's link-preview switch, off until they turn it on, which no public answer carries either.
  */
-export const MeProfile = Profile.extend({ handleChangedAt: z.iso.datetime().nullable(), verified: z.boolean(), showInExplore: z.boolean() });
+export const MeProfile = Profile.extend({ handleChangedAt: z.iso.datetime().nullable(), verified: z.boolean(), showInExplore: z.boolean(), sharePreviews: z.boolean() });
 export type MeProfile = z.infer<typeof MeProfile>;
 
 /**

@@ -16,7 +16,7 @@ import { fakeClock } from "./auth-fixtures";
 
 /**
  * Handles unique per store, like the real public.profiles index. A new profile has never changed its handle, holds no
- * badge and shows its posts in Explore, as the column's default has it.
+ * badge and shows its posts in Explore, and (2d) shows no link preview, as the columns' defaults have it.
  */
 export function memoryProfiles(): ProfileStore {
   const byHandle = new Map<string, MeProfile>();
@@ -24,7 +24,7 @@ export function memoryProfiles(): ProfileStore {
   return {
     async create({ id, handle, displayName }) {
       if (byHandle.has(handle) || byId.has(id)) return { ok: false, reason: "handle_taken" };
-      const profile = { id, handle, displayName, handleChangedAt: null, verified: false, showInExplore: true };
+      const profile = { id, handle, displayName, handleChangedAt: null, verified: false, showInExplore: true, sharePreviews: false };
       byHandle.set(handle, profile);
       byId.set(id, profile);
       return { ok: true, profile: { id, handle, displayName } };

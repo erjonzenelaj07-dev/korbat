@@ -5,6 +5,7 @@ import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import type { Logger } from "pino";
 import { AccountError, type Account } from "./account";
+import { ActivityError, type Activity } from "./activity";
 import { AuthError, type Auth } from "./auth";
 import type { Config } from "./config";
 import type { AppEnv } from "./env";
@@ -62,9 +63,11 @@ export interface AppDeps {
   transparency?: Transparency;
   /** 3b: import from other platforms. Optional as the other modules are; the server always wires it. */
   imports?: Imports;
+  /** 2d: Activity. Optional as the other modules are; the server always wires it. */
+  activity?: Activity;
 }
 
-export function createApp({ config, logger, rateLimitStore, healthChecks, auth, social, media, account, staff, moderation, advisoryChecks, transparency, imports }: AppDeps) {
+export function createApp({ config, logger, rateLimitStore, healthChecks, auth, social, media, account, staff, moderation, advisoryChecks, transparency, imports, activity }: AppDeps) {
   const app = new Hono<AppEnv>();
 
   app.use(observability(logger));
@@ -104,6 +107,8 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
   if (media) app.route("/api/media", media.routes);
   // 3b (design, section 9.1): every route behind the auth module's requireSession, CSRF included, like the social routes.
   if (imports) app.route("/api/imports", imports.routes);
+  // 2d (design, section 9.2): every route behind the auth module's requireSession, CSRF included for the two writes.
+  if (activity) app.route("/api/activity", activity.routes);
   if (account) app.route("/api/account", account.routes);
   // The console is off while CONSOLE_ORIGIN is unset: nothing is mounted, and every staff path is the unknown route below.
   if (staff && config.CONSOLE_ORIGIN !== undefined) app.route("/api/staff", staff.routes(config.CONSOLE_ORIGIN));
@@ -130,6 +135,8 @@ export function createApp({ config, logger, rateLimitStore, healthChecks, auth, 
       if (err.retryAfterSeconds) c.header("Retry-After", String(err.retryAfterSeconds));
       return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);
     }
+    // 2d: a cursor of Activity that names no place; the limits of its two writes are the social module's (above).
+    if (err instanceof ActivityError) return c.json(errorBody(err.code, err.message, c.get("requestId")), err.status);
     // The account routes render nothing themselves: their own errors and those of the three modules they call all land here.
     if (err instanceof AccountError) {
       if (err.retryAfterSeconds) c.header("Retry-After", String(err.retryAfterSeconds));

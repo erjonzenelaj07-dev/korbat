@@ -1,7 +1,7 @@
-import type { HandleChangeRequest, ProfileEditRequest, ProfileView } from "@korbat/contracts";
+import type { HandleChangeRequest, ProfileEditRequest, ProfileView, SharePreviewsResponse } from "@korbat/contracts";
 import { checkHandle } from "../../auth";
 import { SocialError, type SocialDeps } from "../context";
-import { enforceAccountLimit } from "../limits";
+import { enforceAccountLimit, enforceWriteLimit } from "../limits";
 import type { ProfileRow } from "../repo";
 import { DAY_MS, HOUR_MS } from "../tiers";
 import { profileView } from "./profiles";
@@ -16,6 +16,18 @@ async function own(deps: SocialDeps, viewer: string): Promise<ProfileRow> {
   const row = await deps.repo.findProfileById(viewer);
   if (!row) throw new SocialError("not_found", 404);
   return row;
+}
+
+/**
+ * 2d (decision 21, 9.2): POST and DELETE /api/me/share-previews, the link-preview switch, as /me/explore answers its own.
+ * Counted under share-previews first. Turning previews on is refused account_suspended while a suspension runs (the
+ * repository's lockActing); turning them off only reduces what others see and is open to everyone.
+ */
+export async function setSharePreviews(deps: SocialDeps, viewer: string, on: boolean): Promise<SharePreviewsResponse> {
+  const row = await own(deps, viewer);
+  await enforceWriteLimit(deps.limits, viewer, "share-previews", row.createdAt, deps.now());
+  if (!(await deps.repo.setSharePreviews(viewer, on))) throw new SocialError("not_found", 404);
+  return { sharePreviews: on };
 }
 
 /** Sets the display name, the bio, or both, and answers with the profile as its owner sees it on the profile route. */

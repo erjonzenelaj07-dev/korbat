@@ -345,6 +345,8 @@ export function PostCard({
 }) {
   const { state } = useSession();
   const me = state.status === "signed-in" ? state.me.user.id : null;
+  // The reader's own setting (UI decision 15). 2d (decision 26): a count the post's author hid arrives as null, and the
+  // buttons and the stats line draw no number for it, as they draw none for a count this setting hides.
   const { hideCounts } = useAppearance();
   const phone = useLayout() === "phone";
   const motion = useMotion();

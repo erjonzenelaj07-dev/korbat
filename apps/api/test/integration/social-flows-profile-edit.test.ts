@@ -88,10 +88,11 @@ describe.skipIf(!process.env.INTEGRATION)("integration: profile editing and hand
       handleChangedAt: row.handleChangedAt!.toISOString(),
       verified: false,
       showInExplore: true,
+      sharePreviews: false,
     });
-    // The Explore switch is read from the row as it stands, like the handle.
-    await db.update(profiles).set({ showInExplore: false }).where(eq(profiles.id, ada.id));
-    expect((await createProfileStore(db).find(ada.id))!.showInExplore).toBe(false);
+    // The Explore switch is read from the row as it stands, like the handle; and (2d) the link-preview switch.
+    await db.update(profiles).set({ showInExplore: false, sharePreviews: true }).where(eq(profiles.id, ada.id));
+    expect(await createProfileStore(db).find(ada.id)).toMatchObject({ showInExplore: false, sharePreviews: true });
   });
 
   test("a handle another profile holds, in any case, or ever held is handle_taken; the profile itself may go back after the cooldown", async () => {

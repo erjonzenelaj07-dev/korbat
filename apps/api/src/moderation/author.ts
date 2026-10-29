@@ -1,6 +1,10 @@
 import {
+  ACTIVITY_KEEP_DAYS,
   AUTHOR_CASES_PAGE_SIZE,
+  MEASURES,
   mediaPath,
+  type ActivityEntry,
+  type ActivityPlace,
   type AuthorCasesPage,
   type DecisionAppeal,
   type DecisionContent,
@@ -11,9 +15,10 @@ import {
   type PostModeration,
   type RuleId,
 } from "@korbat/contracts";
-import { askPersonOf, authorDecision, authorDecisions, chipFacts, type AuthorAppealFacts, type AuthorDecisionFacts, type AuthorDecisionRow } from "./author-repo";
+import { activityDecisions, activityLost, activitySince, askPersonOf, authorDecision, authorDecisions, chipFacts, type AuthorAppealFacts, type AuthorDecisionFacts, type AuthorDecisionRow } from "./author-repo";
 import { objectionOf } from "./automated-repo";
 import { ModerationError, type ModerationDeps } from "./context";
+import { activityReleases } from "./release";
 import { decisionStatement } from "./statement";
 import { orderNoticeOf } from "./statement-repo";
 import { decisionStandingView, reportingStandingView } from "./standing";
@@ -54,6 +59,85 @@ export function decodeListCursor(cursor: string): ListCursor {
   const [at, id] = parts as unknown[];
   if (typeof at !== "string" || !CURSOR_TIME.test(at) || typeof id !== "string" || !CURSOR_ID.test(id)) throw new ModerationError("invalid_request");
   return { at, id };
+}
+
+// ---------------------------------------------------------------- Activity (2d)
+
+/** A moderation entry of Activity as this module answers it; the activity module adds `new`, which only it can judge. */
+export type ModerationActivityEntry = Omit<Extract<ActivityEntry, { type: "moderation" }>, "new">;
+
+/**
+ * The kinds of 3e's measures of an account's standing and their reversals (a strike, a suspension, a termination, a
+ * retired handle, the reporting measures, and what lifts each), read from MEASURES: a decision about an account that holds
+ * one is about the account, any other decision about an account is about its profile (its display name or bio).
+ */
+const STANDING_KINDS = Object.entries(MEASURES)
+  .filter(([, spec]) => spec.target === "account" || spec.target === "handle" || spec.target === "reporting")
+  .map(([kind]) => kind);
+
+/** The largest and the smallest id, which no row has: a bound that keeps every row at a time, or none. */
+const ID_MAX = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+const ID_MIN = "00000000-0000-0000-0000-000000000000";
+
+/**
+ * Where a source whose keys are `prefix:` and an id starts, in its own (time, id) order, for Activity's place (at, key):
+ * the rows whose key is below the place's. At the place's time a row's key is below it exactly when the prefix is lower,
+ * or when it is the same and the id is lower; so the bound keeps every row at that time, none of them, or those below
+ * the place's own id. Keys are compared code unit by code unit, as the activity module and the "C" collation do.
+ */
+function sourceAfter(place: ActivityPlace, prefix: string): { at: string; id: string } {
+  const own = place.key.slice(0, 1);
+  return { at: place.at, id: own === prefix ? place.key.slice(2) : own > prefix ? ID_MAX : ID_MIN };
+}
+
+/** Whether (at, key) comes before `place` in Activity's order, newest first: a later time, or the same time and a higher key. */
+const isBelow = (entry: { at: string; key: string }, place: ActivityPlace | null) =>
+  place === null || entry.at < place.at || (entry.at === place.at && entry.key < place.key);
+
+/**
+ * 2d (design, section 5.5.2): the moderation entries of `viewer`'s Activity, newest first by (at, key), before `before`
+ * when given, at most `limit`, none older than ACTIVITY_KEEP_DAYS by the time the author was told (the list's end
+ * sentence is then true of both sources, while Cases keeps the full history). Built only from the reads the author's own
+ * screens use, so nothing is listed earlier than the author may be told of it, and nothing the author may not see:
+ *   - a decision told to its author (`d:`), the rows of Cases' list by toldToAuthor, at informed_at; its target the post
+ *     (with the post's time), the account for a decision holding one of 3e's measures of its standing, else the profile;
+ *   - a release of sealed images (`r:`), by the Notices list's rule (never one whose notice is held), at the time that
+ *     list shows; its target the account, since a seal's images may span several posts and the release opens by its id;
+ *   - a refused upload (`u:`), the media module's refusalsOf as the Notices list reads it; its target the account, since
+ *     a refused upload was on no post;
+ *   - a lost image (`l:` and the image's id), from lost_told_for, once 3d's dispatch handled its notice; its target the
+ *     post, which the entry opens.
+ * One statement reads the clock for the 90 days, and every time is to the microsecond. lost_told_for answers rows through
+ * the place's time (activityLost), since files lost together share a time, and those at or after the place are dropped
+ * here, as every source's are compared with the place again. Each source is asked for `limit` rows; the union is cut to
+ * `limit`.
+ */
+export async function authorActivity(deps: Pick<ModerationDeps, "apiDb" | "media">, viewer: string, before: ActivityPlace | null, limit: number): Promise<ModerationActivityEntry[]> {
+  const since = await activitySince(deps.apiDb, ACTIVITY_KEEP_DAYS);
+  const [decisions, releases, refusals, lost] = await Promise.all([
+    activityDecisions(deps.apiDb, viewer, before, since, STANDING_KINDS, limit),
+    activityReleases(deps.apiDb, viewer, before === null ? null : sourceAfter(before, "r"), since, limit),
+    deps.media.refusalsOf(viewer, before === null ? null : sourceAfter(before, "u"), limit),
+    activityLost(deps.apiDb, viewer, before === null ? null : before.at, since),
+  ]);
+  const entries: ModerationActivityEntry[] = [
+    ...decisions.flatMap((row): ModerationActivityEntry[] => {
+      const base = { type: "moderation" as const, kind: "decision" as const, key: `d:${row.id}`, at: row.at, id: row.id };
+      if (row.targetType === "post") {
+        // A decision about a post names its post and that post's time; a post's row is never deleted, so both are there.
+        return row.postCreatedAt === null ? [] : [{ ...base, target: "post", postId: row.targetId, postCreatedAt: row.postCreatedAt }];
+      }
+      return [{ ...base, target: row.standing ? "account" : "profile", postId: null, postCreatedAt: null }];
+    }),
+    ...releases.map((row): ModerationActivityEntry => ({ type: "moderation", kind: "release", key: `r:${row.id}`, at: row.at, target: "account", id: row.id, postId: null, postCreatedAt: null })),
+    // refusalsOf answers each time to the millisecond as `at` and to the microsecond as `key`, the time Activity keeps.
+    ...refusals
+      .filter((row) => row.key >= since)
+      .map((row): ModerationActivityEntry => ({ type: "moderation", kind: "upload", key: `u:${row.id}`, at: row.key, target: "account", id: row.id, postId: null, postCreatedAt: null })),
+    ...lost.map((row): ModerationActivityEntry => ({ type: "moderation", kind: "lost", key: `l:${row.mediaId}`, at: row.at, target: "post", id: row.mediaId, postId: row.postId, postCreatedAt: row.postCreatedAt })),
+  ].filter((entry) => isBelow(entry, before));
+  entries.sort((a, b) => (a.at !== b.at ? (a.at < b.at ? 1 : -1) : a.key < b.key ? 1 : a.key > b.key ? -1 : 0));
+  return entries.slice(0, limit);
 }
 
 // ---------------------------------------------------------------- the list

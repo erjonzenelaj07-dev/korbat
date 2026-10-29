@@ -45,4 +45,17 @@ describe("account tiers", () => {
       ]);
     }
   });
+  test("2d (9.5): the five new actions and their buckets, at any age: the seen marker 240 an hour, the settings 120, the avatar 10 an hour and 30 a day, the preview switch 30 and hidden counts 60", () => {
+    for (const age of [0, NEW_ACCOUNT_MS - 1, 10 * DAY_MS]) {
+      expect(limitsFor("activity-seen", age)).toEqual([{ bucket: "activity-seen", max: 240, windowMs: HOUR_MS }]);
+      expect(limitsFor("activity-settings", age)).toEqual([{ bucket: "activity-settings", max: 120, windowMs: HOUR_MS }]);
+      // Setting and removing an avatar count together, in two windows.
+      expect(limitsFor("avatar", age)).toEqual([
+        { bucket: "avatar-hour", max: 10, windowMs: HOUR_MS },
+        { bucket: "avatar-day", max: 30, windowMs: DAY_MS },
+      ]);
+      expect(limitsFor("share-previews", age)).toEqual([{ bucket: "share-previews", max: 30, windowMs: HOUR_MS }]);
+      expect(limitsFor("hide-counts", age)).toEqual([{ bucket: "hide-counts", max: 60, windowMs: HOUR_MS }]);
+    }
+  });
 });

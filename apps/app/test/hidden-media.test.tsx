@@ -60,6 +60,8 @@ function post(n: number, extra: Partial<PostView> = {}): PostView {
     media: [],
     quoteOf: null,
     imported: null,
+    mentions: [],
+    countsHidden: false,
     ...extra,
   };
 }

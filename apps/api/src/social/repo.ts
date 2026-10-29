@@ -1,5 +1,5 @@
 import { and, eq, isNull, ne, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
-import { EXPLORE_V2, type ExploreFormula, type ImportSource } from "@korbat/contracts";
+import { ACTIVITY_MIN_AGE_HOURS, EXPLORE_V2, MENTION_NOTIFY_MAX, MENTION_STORE_MAX, type ExploreFormula, type ImportSource } from "@korbat/contracts";
 import { blocks, bookmarks, follows, handleHistory, likes, mutes, posts, profiles, reposts, type Db, type DbTx } from "@korbat/db";
 import { handleRefusal, isUniqueViolation } from "../auth";
 import { WRITE_CLOCK, closingJudgment, liveNotSuspended, reportsRestrictedAt, suspendedAt } from "../lib/standing";
@@ -55,6 +55,8 @@ export interface PostRow {
    * (never its second); null for a native post and for a tombstone, whose columns are cleared.
    */
   imported: { source: ImportSource; at: string; shortened: boolean } | null;
+  /** 2d (decision 26): the author hid the like and repost counts from everyone else. */
+  hideCounts: boolean;
 }
 
 /** One line of a list: which post, when it sorts, and who reposted it (timelines only). */
@@ -92,6 +94,9 @@ export interface ExportedPostRow {
   deletedAt: Date | null;
   /** 3b (design, section 11.2): an imported post's source, the date its archive gave it and whether it was shortened. */
   imported: { source: ImportSource; originalCreatedAt: Date; shortened: boolean } | null;
+  /** 2d (design, section 11.2): the handles its stored mentions name as written, in text order, and its hidden-counts switch. */
+  mentions: string[];
+  countsHidden: boolean;
 }
 
 /**
@@ -312,6 +317,7 @@ interface RawPost {
   import_source: ImportSource | null;
   original_day: string | null;
   import_shortened: boolean | null;
+  hide_counts: boolean;
 }
 
 interface RawListRow {
@@ -404,6 +410,7 @@ const toPost = (r: RawPost): PostRow => ({
   replyToAuthorId: r.reply_to_author_id,
   replyToState: r.reply_to_state,
   imported: r.import_source !== null && r.original_day !== null ? { source: r.import_source, at: r.original_day, shortened: r.import_shortened === true } : null,
+  hideCounts: r.hide_counts,
 });
 
 const toListRow = (r: RawListRow): ListRow => ({ postId: r.post_id, sortAt: new Date(r.sort_at), reposterId: r.reposter_id });
@@ -462,7 +469,7 @@ const POST_COLUMNS = sql`p.id, p.author_id, p.body, p.reply_to_id, p.quote_of_id
   ${iso("p.created_at")} as created_at, ${iso("p.deleted_at")} as deleted_at,
   a.handle as author_handle, a.display_name as author_display_name, (a.verified_at is not null) as author_verified,
   rp.handle as reply_to_handle, pp.author_id as reply_to_author_id, pp.state as reply_to_state,
-  p.import_source::text as import_source, to_char(p.original_created_at at time zone 'UTC', 'YYYY-MM-DD') as original_day, p.import_shortened`;
+  p.import_source::text as import_source, to_char(p.original_created_at at time zone 'UTC', 'YYYY-MM-DD') as original_day, p.import_shortened, p.hide_counts`;
 const POST_JOINS = sql`from posts p join profiles a on a.id = p.author_id left join posts pp on pp.id = p.reply_to_id left join profiles rp on rp.id = pp.author_id`;
 const PROFILE_COLUMNS = sql`id, handle, display_name, bio, (verified_at is not null) as verified, follower_count, following_count, post_count, ${iso("created_at")} as created_at, ${iso("handle_changed_at")} as handle_changed_at`;
 const PROFILE_SELECT = sql`select ${PROFILE_COLUMNS} from profiles`;
@@ -587,6 +594,18 @@ export function createSocialRepo(db: Db) {
      * The transaction ends with the closing judgment of the author (judgeActing), after `within`: a post that waited at
      * the other author's row, the parent's counter or a foreign key commits only if the author's suspension still has not
      * started.
+     *
+     * 2d (design, sections 4.2 and 5.3): after the insert and the counters, and before `within` and the closing judgment
+     * (so a post the judgment refuses leaves neither), the post's mentions and then its Activity entries. The mentions:
+     * one statement looks the handles up as they are held now (handle_history is not read: a handle names the account
+     * that holds it at the moment of writing) and takes each live mentioned profile's row FOR KEY SHARE in id order, as
+     * lockLive takes rows; a purge holding a row FOR UPDATE makes it wait, and a profile the purge deleted meanwhile fails
+     * `deleted_at is null` when the row is read again after the wait, so it is dropped, never refused. Blocks are not read
+     * (decision 12): a mention is stored whatever blocks exist, and the author's own handle too (stored and linked, never
+     * told). The accounts kept, in the order their handles first appear, are cut to MENTION_STORE_MAX and inserted in one
+     * statement, the only statement that adds a mention (the architecture test holds it). Then writeEntries, with the
+     * parent's author, the quoted author and the stored mentions by position (postCandidates). The parent's and the
+     * quoted author's rows are already held by lockLive, the mentioned ones by the lookup, and the author's by lockActing.
      */
     async createPost(input: {
       authorId: string;
@@ -595,6 +614,13 @@ export function createSocialRepo(db: Db) {
       quoteOfId: string | null;
       now: Date;
       lockWith?: string | null;
+      /**
+       * 2d (4.2): mentionHandles of the normalised body, which the flow reads before the transaction: lowercased, each
+       * once, in text order. None unless given, as for the tests that write posts directly.
+       */
+      mentions?: readonly string[];
+      /** 2d (decision 26): the composer's "Hide like and repost counts"; off unless given. */
+      hideCounts?: boolean;
       within?: (tx: DbTx, postId: string) => Promise<void>;
     }): Promise<string> {
       return db.transaction(async (tx) => {
@@ -606,7 +632,7 @@ export function createSocialRepo(db: Db) {
         if (input.replyToId && input.quoteOfId) await lockPostsInOrder(tx, [input.replyToId, input.quoteOfId]);
         const [row] = await tx
           .insert(posts)
-          .values({ authorId: input.authorId, body: input.body, replyToId: input.replyToId, quoteOfId: input.quoteOfId, createdAt: input.now })
+          .values({ authorId: input.authorId, body: input.body, replyToId: input.replyToId, quoteOfId: input.quoteOfId, createdAt: input.now, hideCounts: input.hideCounts ?? false })
           .returning({ id: posts.id });
         if (input.replyToId) {
           await tx.update(posts).set({ replyCount: bump(posts.replyCount, 1) }).where(eq(posts.id, input.replyToId));
@@ -614,6 +640,24 @@ export function createSocialRepo(db: Db) {
           await tx.update(profiles).set({ postCount: bump(profiles.postCount, 1) }).where(eq(profiles.id, input.authorId));
         }
         if (input.quoteOfId) await tx.update(posts).set({ quoteCount: bump(posts.quoteCount, 1) }).where(eq(posts.id, input.quoteOfId));
+        const handles = input.mentions ?? [];
+        if (handles.length > 0) {
+          // Handles are ASCII letters, digits and underscores (mentionHandles), so a comma joins them safely.
+          const found = (await tx.execute(
+            sql`select id, lower(handle) as handle from profiles where lower(handle) = any(string_to_array(${handles.join(",")}, ',')) and deleted_at is null order by id for key share`,
+          )) as unknown as { id: string; handle: string }[];
+          const byHandle = new Map(found.map((profile) => [profile.handle, profile.id]));
+          const kept = handles.flatMap((handle) => (byHandle.has(handle) ? [{ id: byHandle.get(handle)!, handle }] : [])).slice(0, MENTION_STORE_MAX);
+          if (kept.length > 0) {
+            await tx.execute(
+              sql`insert into post_mentions (post_id, account_id, handle, position) values ${sql.join(
+                kept.map((mention, position) => sql`(${row!.id}::uuid, ${mention.id}::uuid, ${mention.handle}, ${position})`),
+                sql`, `,
+              )}`,
+            );
+          }
+        }
+        await writeEntries(tx, input.authorId, row!.id, postCandidates(input.authorId, row!.id, input.replyToId, input.quoteOfId));
         await input.within?.(tx, row!.id);
         await judgeActing(tx, input.authorId);
         return row!.id;
@@ -651,6 +695,9 @@ export function createSocialRepo(db: Db) {
           .where(and(eq(posts.id, id), eq(posts.authorId, authorId), ne(posts.state, "deleted_by_author"), ne(posts.state, "disabled")))
           .returning({ replyToId: posts.replyToId, quoteOfId: posts.quoteOfId });
         if (!old) return false;
+        // 2d (4.4, 5.6): the statement after the tombstone deletes the post's stored mentions and its Activity entries, so
+        // nothing of a deleted post's mentions stays and nobody is told of a post that is gone.
+        await tx.execute(sql`with gone as (delete from post_mentions where post_id = ${id}::uuid) delete from activity_items where post_id = ${id}::uuid`);
         if (old.replyToId) {
           await tx.update(posts).set({ replyCount: bump(posts.replyCount, -1) }).where(eq(posts.id, old.replyToId));
         } else {
@@ -784,6 +831,9 @@ export function createSocialRepo(db: Db) {
         if (inserted.length > 0) {
           await tx.update(profiles).set({ followerCount: bump(profiles.followerCount, 1) }).where(eq(profiles.id, followeeId));
           await tx.update(profiles).set({ followingCount: bump(profiles.followingCount, 1) }).where(eq(profiles.id, followerId));
+          // 2d (5.3): a follow that did not exist tells the followed account, under its rules, by createPost's statement;
+          // a follow, unfollow and follow again within the entry's 90 days is one entry (activity_items_follow_once).
+          await writeEntries(tx, followerId, null, sql`select ${followeeId}::uuid as recipient_id, 'follow'::text as kind`);
         }
         await judgeActing(tx, followerId);
         return inserted.length > 0;
@@ -815,6 +865,10 @@ export function createSocialRepo(db: Db) {
         await removeFollow(tx, blockedId, blockerId);
         await retractEngagement(tx, blockedId, blockerId);
         await retractEngagement(tx, blockerId, blockedId);
+        // 2d (5.6): and the pair's Activity entries, both ways, so neither keeps an entry about the other.
+        await tx.execute(
+          sql`delete from activity_items where (recipient_id = ${blockerId}::uuid and actor_id = ${blockedId}::uuid) or (recipient_id = ${blockedId}::uuid and actor_id = ${blockerId}::uuid)`,
+        );
         return inserted.length > 0;
       });
     },
@@ -1171,6 +1225,62 @@ export function createSocialRepo(db: Db) {
       return updated.length === 1;
     },
 
+    /**
+     * 2d (decision 21, 9.2): turns link previews off, as setShowInExplore is written: it only reduces what others see, so a
+     * suspended account may. Turning them on takes the acting row FOR NO KEY UPDATE through lockActing, the mode of the
+     * row then written, with 3e's predicate (a suspended account is refused account_suspended), and ends with the closing
+     * judgment. False when there is no such live profile.
+     */
+    async setSharePreviews(id: string, on: boolean): Promise<boolean> {
+      if (!on) {
+        const updated = await db.update(profiles).set({ sharePreviews: false }).where(and(eq(profiles.id, id), isNull(profiles.deletedAt))).returning({ id: profiles.id });
+        return updated.length === 1;
+      }
+      return db.transaction(async (tx) => {
+        await lockActing(tx, id, "no key update");
+        const updated = await tx.update(profiles).set({ sharePreviews: true }).where(and(eq(profiles.id, id), isNull(profiles.deletedAt))).returning({ id: profiles.id });
+        await judgeActing(tx, id);
+        return updated.length === 1;
+      });
+    },
+
+    /**
+     * 2d (decision 26, 9.2): the author's switch of a post's like and repost counts. False for a post that is not the
+     * author's, is deleted, or is disabled for an order (all answered not_found, as deletePost answers them); a withheld or
+     * removed post, which its author still sees, may change. Hiding only reduces what others see, and is open to a
+     * suspended author; showing them again takes the author's row through lockActing FOR KEY SHARE, since only the post's
+     * row is written, with 3e's predicate, and ends with the closing judgment.
+     */
+    async setHideCounts(postId: string, authorId: string, hidden: boolean): Promise<boolean> {
+      return db.transaction(async (tx) => {
+        if (!hidden) await lockActing(tx, authorId, "key share");
+        const updated = (await tx.execute(
+          sql`update posts set hide_counts = ${hidden} where id = ${postId}::uuid and author_id = ${authorId}::uuid and state::text not in ('deleted_by_author', 'disabled') returning id`,
+        )) as unknown as { id: string }[];
+        if (updated.length === 0) return false;
+        if (!hidden) await judgeActing(tx, authorId);
+        return true;
+      });
+    },
+
+    /**
+     * 2d (design, section 4.3): the mentions of these posts that link for the reader, each post's handles in text order:
+     * its stored mentions whose account is not deleted and still holds the handle as written (so a rename or a retirement
+     * leaves the old mention plain), and, for a signed-in reader, with no block either way between the reader and the
+     * mentioned account, the pair test every read uses. A signed-out reader gets every live mention whose handle is
+     * unchanged. One statement for a page of posts; a post without a linking mention is not in the answer.
+     */
+    async mentionsFor(viewer: string | null, postIds: readonly string[]): Promise<Map<string, string[]>> {
+      const found = new Map<string, string[]>();
+      if (postIds.length === 0) return found;
+      const raw = await rows<{ post_id: string; handle: string }>(sql`
+        select m.post_id, m.handle from post_mentions m join profiles a on a.id = m.account_id
+         where m.post_id = any(${uuidArray([...postIds])}) and a.deleted_at is null and lower(a.handle) = m.handle and ${otherNotBlocked(viewer, sql`m.account_id`)}
+         order by m.post_id, m.position`);
+      for (const row of raw) found.set(row.post_id, [...(found.get(row.post_id) ?? []), row.handle]);
+      return found;
+    },
+
     // ------------------------------------------------------------ profiles
 
     async findProfileByHandle(handle: string): Promise<ProfileRow | null> {
@@ -1197,8 +1307,13 @@ export function createSocialRepo(db: Db) {
      * retired one that is still retired (3e). Null when there is no live profile. The lists come page by page from the
      * reads below.
      */
-    async exportHead(id: string): Promise<{ profile: ProfileRow; showInExplore: boolean; handleHistory: string[]; retiredHandles: { handle: string; retiredAt: Date }[] } | null> {
-      const [r] = await rows<RawProfile & { show_in_explore: boolean }>(sql`select ${PROFILE_COLUMNS}, show_in_explore from profiles where id = ${id}::uuid and deleted_at is null`);
+    async exportHead(
+      id: string,
+    ): Promise<{ profile: ProfileRow; showInExplore: boolean; sharePreviews: boolean; handleHistory: string[]; retiredHandles: { handle: string; retiredAt: Date }[] } | null> {
+      // 2d (11.2): and the link-preview switch, the owner's as the Explore switch is.
+      const [r] = await rows<RawProfile & { show_in_explore: boolean; share_previews: boolean }>(
+        sql`select ${PROFILE_COLUMNS}, show_in_explore, share_previews from profiles where id = ${id}::uuid and deleted_at is null`,
+      );
       if (!r) return null;
       const history = await rows<{ handle_lower: string; retired_at: string | null }>(
         sql`select handle_lower, ${iso("retired_at")} as retired_at from handle_history where profile_id = ${id}::uuid order by changed_at, handle_lower`,
@@ -1206,6 +1321,7 @@ export function createSocialRepo(db: Db) {
       return {
         profile: toProfile(r),
         showInExplore: r.show_in_explore,
+        sharePreviews: r.share_previews,
         handleHistory: history.map((row) => row.handle_lower),
         retiredHandles: history.flatMap((row) => (row.retired_at === null ? [] : [{ handle: row.handle_lower, retiredAt: new Date(row.retired_at) }])),
       };
@@ -1229,11 +1345,15 @@ export function createSocialRepo(db: Db) {
         import_source: ImportSource | null;
         original_created_at: string | null;
         import_shortened: boolean | null;
+        mentions: string[];
+        hide_counts: boolean;
         key_at: string;
         key_id: string;
       }>(sql`
         select id, body, ${iso("created_at")} as created_at, reply_to_id, quote_of_id, state, ${iso("deleted_at")} as deleted_at,
-               import_source::text as import_source, ${iso("original_created_at")} as original_created_at, import_shortened, ${isoMicro("created_at")} as key_at, id as key_id
+               import_source::text as import_source, ${iso("original_created_at")} as original_created_at, import_shortened,
+               array(select m.handle from post_mentions m where m.post_id = posts.id order by m.position) as mentions, hide_counts,
+               ${isoMicro("created_at")} as key_at, id as key_id
         from posts where author_id = ${id}::uuid and state::text <> 'disabled' and ${exportAfter(after, sql`created_at`, sql`id`)} order by created_at, id limit ${limit}`);
       return exportPage(raw, limit, (row) => ({
         id: row.id,
@@ -1248,6 +1368,9 @@ export function createSocialRepo(db: Db) {
           row.import_source !== null && row.original_created_at !== null
             ? { source: row.import_source, originalCreatedAt: new Date(row.original_created_at), shortened: row.import_shortened === true }
             : null,
+        // 2d (11.2): the handles as written, whether or not they still link; a deleted post's rows went with it.
+        mentions: row.mentions,
+        countsHidden: row.hide_counts,
       }));
     },
 
@@ -1676,6 +1799,13 @@ export function createSocialRepo(db: Db) {
           update profiles set following_count = greatest(0, following_count - c.n) from (select follower_id, count(*)::int as n from gone group by follower_id) c where profiles.id = c.follower_id`);
         await tx.delete(blocks).where(or(eq(blocks.fromId, id), eq(blocks.toId, id)));
         await tx.delete(mutes).where(or(eq(mutes.fromId, id), eq(mutes.toId, id)));
+        // 2d (4.4, 5.6, 6.7): after the tombstones, the mentions that name the account and those of its own posts, every
+        // Activity entry it caused or received, and its seen marker and rules. A post in flight that mentions it took its
+        // row FOR KEY SHARE (createPost's lookup), so it either committed first, and its rows go here, or waits and then
+        // finds the account deleted and stores nothing.
+        await tx.execute(sql`delete from post_mentions where account_id = ${id}::uuid or post_id in (select p.id from posts p where p.author_id = ${id}::uuid)`);
+        await tx.execute(sql`delete from activity_items where recipient_id = ${id}::uuid or actor_id = ${id}::uuid`);
+        await tx.execute(sql`delete from activity_state where account_id = ${id}::uuid`);
         // The media rows go last (3c design, section 7.10): they are the last rows this transaction locks, after every
         // post and profile row it takes, and the requests for their files, which cannot be rolled back, are written as
         // close to the commit as they can be.
@@ -1798,6 +1928,61 @@ async function removeFollow(tx: Tx, followerId: string, followeeId: string): Pro
     await tx.update(profiles).set({ followingCount: sql`greatest(0, ${profiles.followingCount} - 1)` }).where(eq(profiles.id, followerId));
   }
   return deleted.length > 0;
+}
+
+/**
+ * 2d (design, section 5.3): who a new post tells, as rows (recipient_id, kind) for writeEntries. The parent's author for
+ * a reply, the quoted author for a quote, then the stored mentions by position with the author and the accounts already
+ * listed removed, cut to MENTION_NOTIFY_MAX; one row per recipient, the first in that order (reply, then quote, then
+ * mention), so a reply that also names its parent's author is one reply entry. Only the parent's author is told of a
+ * reply, never the thread's root or its other authors. The cut comes before the recipients' rules, so whether the
+ * eleventh mention is told never depends on the first ten's settings.
+ */
+function postCandidates(authorId: string, postId: string, replyToId: string | null, quoteOfId: string | null): SQL {
+  return sql`
+    with listed as (
+      select p.author_id as recipient_id, 'reply'::text as kind, 0 as place from posts p where p.id = ${replyToId}::uuid
+      union all
+      select p.author_id, 'quote', 1 from posts p where p.id = ${quoteOfId}::uuid
+    ),
+    named as (
+      select m.account_id as recipient_id, 'mention'::text as kind, 2 + m.position as place from post_mentions m
+       where m.post_id = ${postId}::uuid and m.account_id <> ${authorId}::uuid and m.account_id not in (select l.recipient_id from listed l)
+       order by m.position limit ${MENTION_NOTIFY_MAX}
+    )
+    select distinct on (t.recipient_id) t.recipient_id, t.kind from (select * from listed union all select * from named) t order by t.recipient_id, t.place`;
+}
+
+/**
+ * 2d (design, sections 5.2 and 5.3): the one statement that writes Activity entries, for createPost's candidates and for
+ * a follow's one. `candidates` answers rows (recipient_id, kind); each becomes an entry of `actorId`'s act (about
+ * `postId`, or none for a follow) only when every rule of the recipient holds, read in the act's own transaction: the
+ * recipient is not the actor and is not deleted; no block stands between them either way; the recipient does not mute
+ * the actor (decision 8); and the recipient's setting for the kind lets the actor in (activity_state, the defaults
+ * Everyone and On without a row): `everyone`; `older` when the actor's account was made at least ACTIVITY_MIN_AGE_HOURS
+ * before the act, judged by now(), the transaction's start, which is also the time activity_items_insert gives the entry,
+ * against profiles.created_at; `following` when the recipient follows the actor; for a follow, `follows`. A refused rule
+ * writes nothing. The unique keys make a repeat write nothing (`on conflict do nothing`). The time is the database's.
+ */
+async function writeEntries(tx: Tx, actorId: string, postId: string | null, candidates: SQL): Promise<void> {
+  await tx.execute(sql`
+    with c as (${candidates})
+    insert into activity_items (recipient_id, kind, actor_id, post_id)
+    select c.recipient_id, c.kind::activity_kind, ${actorId}::uuid, ${postId}::uuid
+      from c
+      join profiles r on r.id = c.recipient_id and r.deleted_at is null
+      cross join (select a.created_at from profiles a where a.id = ${actorId}::uuid) actor
+      left join activity_state s on s.account_id = c.recipient_id
+     where c.recipient_id <> ${actorId}::uuid
+       and not exists (select 1 from blocks b where (b.blocker_id = c.recipient_id and b.blocked_id = ${actorId}::uuid) or (b.blocker_id = ${actorId}::uuid and b.blocked_id = c.recipient_id))
+       and not exists (select 1 from mutes m where m.muter_id = c.recipient_id and m.muted_id = ${actorId}::uuid)
+       and case when c.kind = 'follow' then coalesce(s.follows, true)
+                else case coalesce(case c.kind when 'reply' then s.replies::text when 'quote' then s.quotes::text else s.mentions::text end, 'everyone')
+                       when 'everyone' then true
+                       when 'older' then actor.created_at <= now() - make_interval(hours => ${ACTIVITY_MIN_AGE_HOURS}::int)
+                       when 'following' then exists (select 1 from follows f where f.follower_id = c.recipient_id and f.followee_id = ${actorId}::uuid)
+                       else false end end
+    on conflict do nothing`);
 }
 
 export type SocialRepo = ReturnType<typeof createSocialRepo>;

@@ -8,9 +8,10 @@ import { Deflate, strFromU8, unzipSync } from "fflate";
 import { Hono, type MiddlewareHandler } from "hono";
 import pino from "pino";
 import { afterAll, describe, expect, test, vi } from "vitest";
-import { ExportFormat, STANDING_RULES } from "@korbat/contracts";
+import { ACTIVITY_DEFAULTS, ExportFormat, STANDING_RULES } from "@korbat/contracts";
 import { MAX_VARIANT_BYTES } from "@korbat/media-protocol";
 import { AccountError, type AccountDeps } from "../../src/account/context";
+import type { ReceivedEntry } from "../../src/activity";
 import { EXPORT_WINDOW_MS, buildExport, enforceExportLimit, exportFilename, exportJson, mediaEntry, writeExport } from "../../src/account/flows/export";
 import { accountRoutes } from "../../src/account/routes";
 import { createZipWriter, type OpenFile } from "../../src/account/zip";
@@ -208,6 +209,8 @@ interface Lists {
   following: HandleRefRow[];
   blocks: HandleRefRow[];
   mutes: HandleRefRow[];
+  /** 2d (11.2): the Activity entries the account received, newest first, as the activity module hands them over. */
+  received: ReceivedEntry[];
 }
 
 /**
@@ -396,8 +399,11 @@ function harness() {
           { id: imageB, altText: "a lighthouse", width: 900, height: 1600 },
         ],
         imported: null,
+        // 2d (11.2): two stored mentions as written, one of an account renamed since, and the counts hidden.
+        mentions: ["bob", "old_name"],
+        countsHidden: true,
       },
-      { id: deletedId, body: "", createdAt: new Date(T0 - DAY_MS), replyToId: postId, quoteOfId: null, state: "deleted_by_author", deletedAt: new Date(T0 - 1_000), media: [], imported: null },
+      { id: deletedId, body: "", createdAt: new Date(T0 - DAY_MS), replyToId: postId, quoteOfId: null, state: "deleted_by_author", deletedAt: new Date(T0 - 1_000), media: [], imported: null, mentions: [], countsHidden: false },
     ],
     likes: [{ postId: likedId, at: new Date(T0 - DAY_MS) }],
     reposts: [],
@@ -405,6 +411,13 @@ function harness() {
     following: [{ handle: "bob", since: new Date(T0 - 2 * DAY_MS) }],
     blocks: [{ handle: "eve", since: new Date(T0 - DAY_MS) }],
     mutes: [{ handle: "carol", since: new Date(T0 - 200) }],
+    // 2d (11.2): a reply shown, a mention from a muted account, and a follow that is gone, each object's members in
+    // another order than the format's.
+    received: [
+      { shown: true, actorHandle: "bob", postId: likedId, at: "2026-09-21T10:00:00.000002Z", kind: "reply" },
+      { shown: "muted", actorHandle: "carol", postId: bookmarkedId, at: "2026-09-21T09:00:00.000001Z", kind: "mention" },
+      { shown: "unfollowed", actorHandle: "dave", postId: null, at: "2026-09-20T09:00:00.000000Z", kind: "follow" },
+    ] as ReceivedEntry[],
   };
   /** A list in pages of `pageSize`, each read when the one before has been used, as the social module pages its keyset reads. */
   function paged<T>(name: keyof Lists, rows: T[], pageSize: number): AsyncIterable<T[]> {
@@ -443,7 +456,17 @@ function harness() {
       purgeProfile: notHere,
       exportProfile: async (_id, pageSize = 1000) => ({
         // The Explore switch is off, not the column's default, so the export is seen to carry what the profile holds.
-        profile: { handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: new Date(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"], showInExplore: false, retiredHandles: [{ handle: "ada_old", retiredAt: new Date(T0 - DAY_MS) }] },
+        // 2d: link previews on, not the column's default, for the same reason.
+        profile: {
+          handle: "ada",
+          displayName: "Ada",
+          bio: "Analytical engines.",
+          createdAt: new Date(T0 - 3 * DAY_MS),
+          handleHistory: ["ada_old", "ada"],
+          showInExplore: false,
+          retiredHandles: [{ handle: "ada_old", retiredAt: new Date(T0 - DAY_MS) }],
+          sharePreviews: true,
+        },
         posts: paged("posts", lists.posts, pageSize),
         likes: paged("likes", lists.likes, pageSize),
         reposts: paged("reposts", lists.reposts, pageSize),
@@ -456,6 +479,14 @@ function harness() {
     media: { purgeOwner: notHere, requestDeletion: notHere, exportImages: async () => images },
     // 3b Task 6: the account's imports, newest first, as the imports module hands them over (11.2).
     imports: { purgeOwner: notHere, removeFiles: notHere, exportFor: async () => imports },
+    // 2d (11.2): the account's Activity: the marker and the rules at once, the received entries in pages as they are written.
+    activity: {
+      exportEntries: async (_id, pageSize = 1000) => ({
+        seenAt: "2026-09-21T09:30:00.123456Z",
+        settings: { follows: false, quotes: "off", mentions: "following", replies: "older" },
+        received: paged("received", lists.received, pageSize),
+      }),
+    },
     moderation: {
       forgetAccount: notHere,
       takeDownDue: notHere,
@@ -526,7 +557,17 @@ function expectedDocument(h: Harness, missingMedia: string[] = []) {
         { name: "Laptop", createdAt: iso(T0 - 2 * DAY_MS), lastUsedAt: iso(T0 - DAY_MS), synced: true, createdOn: "Chrome on Windows" },
       ],
     },
-    profile: { handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: iso(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"], showInExplore: false, retiredHandles: [{ handle: "ada_old", retiredAt: iso(T0 - DAY_MS) }] },
+    profile: {
+      handle: "ada",
+      displayName: "Ada",
+      bio: "Analytical engines.",
+      createdAt: iso(T0 - 3 * DAY_MS),
+      handleHistory: ["ada_old", "ada"],
+      showInExplore: false,
+      retiredHandles: [{ handle: "ada_old", retiredAt: iso(T0 - DAY_MS) }],
+      // 2d (11.2): last in the profile.
+      sharePreviews: true,
+    },
     posts: h.lists.posts.map((post) => ({
       id: post.id,
       body: post.body,
@@ -536,8 +577,11 @@ function expectedDocument(h: Harness, missingMedia: string[] = []) {
       state: post.state,
       deletedAt: post.deletedAt ? post.deletedAt.toISOString() : null,
       media: post.media.map((image) => ({ id: image.id, file: `media/${image.id}.webp`, altText: image.altText, width: image.width, height: image.height })),
-      // 3b (11.2): last in the post.
+      // 3b (11.2): after the images.
       imported: post.imported === null ? null : { source: post.imported.source, originalCreatedAt: post.imported.originalCreatedAt.toISOString(), shortened: post.imported.shortened },
+      // 2d (11.2): last in the post.
+      mentions: post.mentions,
+      countsHidden: post.countsHidden,
     })),
     likes: h.lists.likes.map(ref),
     reposts: h.lists.reposts.map(ref),
@@ -571,6 +615,12 @@ function expectedDocument(h: Harness, missingMedia: string[] = []) {
           : { from: entry.choice.from, to: entry.choice.to, replies: entry.choice.replies, warnings: entry.choice.warnings, protected: entry.choice.protected, images: entry.choice.images, long: entry.choice.long },
       counts: entry.counts,
     })),
+    // 2d (11.2): last, the account's Activity, its rules and every received entry in the format's order.
+    activity: {
+      seenAt: "2026-09-21T09:30:00.123456Z",
+      settings: { replies: "older", mentions: "following", quotes: "off", follows: false },
+      received: h.lists.received.map((entry) => ({ kind: entry.kind, at: entry.at, postId: entry.postId, actorHandle: entry.actorHandle, shown: entry.shown })),
+    },
   };
 }
 
@@ -726,8 +776,11 @@ function addManyRows(h: Harness): void {
       deletedAt: null,
       media: i === 1 ? [{ id: randomUUID(), altText: `alt ${accented}`, width: 10, height: 20 }] : [],
       imported: null,
+      mentions: i === 2 ? ["bob"] : [],
+      countsHidden: i === 3,
     });
   }
+  for (let i = 0; i < 5; i++) h.lists.received.push({ kind: i % 2 === 0 ? "follow" : "quote", at: `2026-09-19T0${i}:00:00.000000Z`, postId: i % 2 === 0 || i === 3 ? null : randomUUID(), actorHandle: `actor_${i}`, shown: i === 3 ? "post_not_visible" : true });
   for (let i = 0; i < 6; i++) h.lists.likes.push({ postId: randomUUID(), at: new Date(T0 - 900 + i) });
   for (let i = 0; i < 3; i++) h.lists.reposts.push({ postId: randomUUID(), at: new Date(T0 - 800 + i) });
   for (let i = 0; i < 4; i++) h.lists.bookmarks.push({ postId: randomUUID(), at: new Date(T0 - 700 + i) });
@@ -772,7 +825,7 @@ describe("building the export", () => {
       { type: "signup", at: iso(T0 - 3 * DAY_MS) },
     ]);
     // With the author's Explore switch as the profile holds it (off here); the byte-for-byte tests below place it after the handle history.
-    expect(json.profile).toEqual({ handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: iso(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"], showInExplore: false, retiredHandles: [{ handle: "ada_old", retiredAt: iso(T0 - DAY_MS) }] });
+    expect(json.profile).toEqual({ handle: "ada", displayName: "Ada", bio: "Analytical engines.", createdAt: iso(T0 - 3 * DAY_MS), handleHistory: ["ada_old", "ada"], showInExplore: false, retiredHandles: [{ handle: "ada_old", retiredAt: iso(T0 - DAY_MS) }], sharePreviews: true });
     expect(json.posts).toHaveLength(2);
     expect(json.posts[0]).toEqual({
       id: h.postId,
@@ -788,8 +841,11 @@ describe("building the export", () => {
       ],
       // 3b (11.2): a native post carries no import.
       imported: null,
+      // 2d (11.2): its mentions as written, in order, and its hidden counts.
+      mentions: ["bob", "old_name"],
+      countsHidden: true,
     });
-    expect(json.posts[1]).toEqual({ id: h.deletedId, body: "", createdAt: iso(T0 - DAY_MS), replyToId: h.postId, quoteOfId: null, state: "deleted_by_author", deletedAt: iso(T0 - 1_000), media: [], imported: null });
+    expect(json.posts[1]).toEqual({ id: h.deletedId, body: "", createdAt: iso(T0 - DAY_MS), replyToId: h.postId, quoteOfId: null, state: "deleted_by_author", deletedAt: iso(T0 - 1_000), media: [], imported: null, mentions: [], countsHidden: false });
     expect(json.likes).toEqual([{ postId: h.likedId, at: iso(T0 - DAY_MS) }]);
     expect(json.reposts).toEqual([]);
     expect(json.bookmarks).toEqual([{ postId: h.bookmarkedId, at: iso(T0 - 500) }]);
@@ -820,7 +876,8 @@ describe("building the export", () => {
     expect(text).toBe(JSON.stringify(expectedDocument(h), null, 2));
     expect(() => ExportFormat.parse(JSON.parse(text))).not.toThrow();
     // Every list was read in pages of two, one page after the other, in the document's order.
-    const order: (keyof Lists)[] = ["posts", "likes", "reposts", "bookmarks", "following", "blocks", "mutes"];
+    // 2d: and Activity's received entries, last.
+    const order: (keyof Lists)[] = ["posts", "likes", "reposts", "bookmarks", "following", "blocks", "mutes", "received"];
     expect(h.reads).toEqual(order.flatMap((name) => Array.from({ length: readsFor(h.lists[name].length, 2) }, () => name)));
     // The same account in one page per list is the same text.
     const whole = await buildExport(h.deps, h.userId, h.currentSession, h.now());
@@ -842,14 +899,15 @@ describe("building the export", () => {
     expect(h.asked).toEqual([h.userId]);
     const text = (await collect(exportJson(plan))).join("");
     const raw = JSON.parse(text) as Record<string, unknown>;
-    // 3b Task 6 (11.2): the account's imports follow it, the document's last member since.
-    expect(Object.keys(raw).slice(-2)).toEqual(["moderation", "imports"]);
+    // 3b Task 6 (11.2): the account's imports follow it, and 2d's Activity follows them, the document's last member since.
+    expect(Object.keys(raw).slice(-3)).toEqual(["moderation", "imports", "activity"]);
     expect(raw.moderation).toStrictEqual(expectedModeration(h));
     // The contract reads it whole: nothing of it lies outside the format.
     expect(ExportFormat.parse(raw).moderation).toStrictEqual(raw.moderation);
     // Member for member in the format's order, though the module handed every object over in another one.
     const NL = String.fromCharCode(10);
-    expect(text.endsWith(`,${NL}  "moderation": ${JSON.stringify(expectedModeration(h), null, 2).replaceAll(NL, `${NL}  `)},${NL}  "imports": []${NL}}`)).toBe(true);
+    const activity = JSON.stringify(expectedDocument(h).activity, null, 2).replaceAll(NL, `${NL}  `);
+    expect(text.endsWith(`,${NL}  "moderation": ${JSON.stringify(expectedModeration(h), null, 2).replaceAll(NL, `${NL}  `)},${NL}  "imports": [],${NL}  "activity": ${activity}${NL}}`)).toBe(true);
     // What the module's objects carry beyond the format is not written.
     expect(text).not.toContain("decidedBy");
     expect(text).not.toContain("a staff member the export must never name");
@@ -868,7 +926,7 @@ describe("building the export", () => {
   test("3b (11.2): an imported post carries its source, the archive's date and its mark last; the document ends with the account's imports, member by member", async () => {
     const h = harness();
     const original = new Date(Date.UTC(2019, 2, 3, 12, 0, 0));
-    h.lists.posts.push({ id: randomUUID(), body: "from the archive", createdAt: new Date(T0 - 500), replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [], imported: { source: "mastodon", originalCreatedAt: original, shortened: true } });
+    h.lists.posts.push({ id: randomUUID(), body: "from the archive", createdAt: new Date(T0 - 500), replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [], imported: { source: "mastodon", originalCreatedAt: original, shortened: true }, mentions: [], countsHidden: false });
     // Handed over with the choice's members in another order: the export writes the format's.
     h.imports.push(
       {
@@ -886,7 +944,8 @@ describe("building the export", () => {
     const text = (await collect(exportJson(await buildExport(h.deps, h.userId, h.currentSession, h.now())))).join("");
     const document = JSON.parse(text) as { posts: { imported: unknown }[]; imports: { choice: Record<string, unknown> | null }[] };
     expect(ExportFormat.parse(document)).toEqual(document);
-    expect(Object.keys(document).at(-1)).toBe("imports");
+    // 2d (11.2) moved the pin: Activity follows the imports.
+    expect(Object.keys(document).slice(-2)).toEqual(["imports", "activity"]);
     expect(document.posts.at(-1)!.imported).toEqual({ source: "mastodon", originalCreatedAt: original.toISOString(), shortened: true });
     expect(document.posts[0]!.imported).toBeNull();
     expect(Object.keys(document.imports[0]!.choice!)).toEqual(["from", "to", "replies", "warnings", "protected", "images", "long"]);
@@ -894,11 +953,31 @@ describe("building the export", () => {
     expect(text).toBe(JSON.stringify(expectedDocument(h), null, 2));
   });
 
+  test("2d (11.2): the activity member comes last, read with the account's facts and its received entries in pages, written member by member in the format's order; without the activity module, the defaults and no entry", async () => {
+    const h = harness();
+    addManyRows(h);
+    const plan = await buildExport(h.deps, h.userId, h.currentSession, h.now(), 2);
+    const text = (await collect(exportJson(plan))).join("");
+    const raw = JSON.parse(text) as { activity: { settings: Record<string, unknown>; received: Record<string, unknown>[] } };
+    expect(Object.keys(raw).at(-1)).toBe("activity");
+    expect(Object.keys(raw.activity)).toEqual(["seenAt", "settings", "received"]);
+    expect(Object.keys(raw.activity.settings)).toEqual(["replies", "mentions", "quotes", "follows"]);
+    expect(raw.activity.received.map((entry) => Object.keys(entry))).toEqual(h.lists.received.map(() => ["kind", "at", "postId", "actorHandle", "shown"]));
+    expect(ExportFormat.parse(raw).activity.received).toHaveLength(h.lists.received.length);
+    // Read in pages of two, after every other list, one page after the other.
+    expect(h.reads.filter((name) => name === "received")).toHaveLength(readsFor(h.lists.received.length, 2));
+    expect(h.reads.at(-1)).toBe("received");
+    const without: AccountDeps = { ...h.deps, activity: undefined };
+    const bare = JSON.parse((await collect(exportJson(await buildExport(without, h.userId, h.currentSession, h.now())))).join("")) as { activity: unknown };
+    expect(bare.activity).toEqual({ seenAt: null, settings: { ...ACTIVITY_DEFAULTS }, received: [] });
+    expect(() => ExportFormat.parse(bare)).not.toThrow();
+  });
+
   test("a large account's export.json comes in several pieces of at most 64 KiB of UTF-8", async () => {
     const h = harness();
     const accented = String.fromCharCode(0xe9).repeat(200);
     for (let i = 0; i < 3_000; i++) h.lists.likes.push({ postId: randomUUID(), at: new Date(T0 - 100_000 + i) });
-    for (let i = 0; i < 1_000; i++) h.lists.posts.push({ id: randomUUID(), body: accented, createdAt: new Date(T0 - 50_000 + i), replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [], imported: null });
+    for (let i = 0; i < 1_000; i++) h.lists.posts.push({ id: randomUUID(), body: accented, createdAt: new Date(T0 - 50_000 + i), replyToId: null, quoteOfId: null, state: "visible", deletedAt: null, media: [], imported: null, mentions: [], countsHidden: false });
     const pieces = await collect(exportJson(await buildExport(h.deps, h.userId, h.currentSession, h.now())));
     expect(pieces.length).toBeGreaterThan(5);
     for (const piece of pieces) expect(Buffer.byteLength(piece, "utf8")).toBeLessThanOrEqual(KIB64);
