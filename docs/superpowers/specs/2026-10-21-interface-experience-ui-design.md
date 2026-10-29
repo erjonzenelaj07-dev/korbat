@@ -1094,7 +1094,7 @@ Sub-project 5, native builds:
 
 Sub-project 2d, engagement:
 
-- Notifications (grouped, a seen-at snapshot, no re-engagement pushes; study 4.6), uploaded avatars in the Avatar component's place, mentions as data, share cards with server-rendered titles and meta, help on a first visit, and the author's per-post "hide counts".
+- Notifications (grouped, a seen-at snapshot, no re-engagement pushes; study 4.6), uploaded avatars in the Avatar component's place, mentions as data, share cards with server-rendered titles and meta, help on a first visit, and the author's per-post "hide counts". Delivered by sub-project 2d (`docs/superpowers/specs/2026-10-22-engagement-2d-design.md`; the main design's section 9, 2026-10-29), with one difference: titles are not server-rendered. The served `<title>` stays "korbat" on every page and the app's own title, which never names an account, replaces it once the bundle runs, so a card names its post's author or its profile in its Open Graph tags alone (2d decision 23). Notifications are the Activity screen, with follows grouped by UTC day and the seen marker kept on the server (2d decisions 5 and 6).
 
 Other places:
 
