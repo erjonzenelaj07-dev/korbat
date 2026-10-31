@@ -1,7 +1,8 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { open, type FileHandle } from "node:fs/promises";
 import path from "node:path";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { IMPORT_RULES } from "@korbat/contracts";
 import type { AdapterItem, DraftPost } from "../src/adapters/types";
 import { ScanCore, importKey, type CoreOptions } from "../src/core";
@@ -130,7 +131,7 @@ describe("dates, lengths and empty posts", () => {
 });
 
 describe("the caps", () => {
-  test("the newest 50,000 posts are kept and the rest counted over_post_cap", { timeout: 300_000 }, async () => {
+  test("the newest 50,000 posts are kept and the rest counted over_post_cap", async () => {
     const total = IMPORT_RULES.maxPosts + 3;
     const items: AdapterItem[] = [];
     // In an order that is neither ascending nor descending, so the heap has to work.
@@ -144,6 +145,7 @@ describe("the caps", () => {
     expect(lines[0]!.text).toBe("p3");
     expect(lines.at(-1)!.text).toBe(`p${total - 1}`);
     expect(lines.at(-1)!.ref).toBe(IMPORT_RULES.maxPosts - 1);
+    expect(lines.every((line, i) => line.text === `p${i + 3}`)).toBe(true);
   });
 
   test("an adapter's over_item_cap marks the scan read in part, counted once", async () => {
@@ -267,6 +269,26 @@ describe("files", () => {
     const controller = new AbortController();
     controller.abort();
     await expect(runCore([{ kept: draft("a", T0) }], { signal: controller.signal })).rejects.toThrow();
+  });
+
+  test("the kept posts' records come back from the scratch file a megabyte at a time, not one read each", async () => {
+    const probe = await open(path.join(ws.dir, "probe"), "w");
+    const read = vi.spyOn(Object.getPrototypeOf(probe) as FileHandle, "read");
+    await probe.close();
+    try {
+      const total = 5_000;
+      const items: AdapterItem[] = [];
+      for (let i = 0; i < total; i++) {
+        const n = (i * 7_919) % total;
+        items.push({ kept: draft(`n${n}`, T0 + n * 1_000, { text: `p${n}` }) });
+      }
+      const { lines } = await runCore(items);
+      expect(lines.map((line) => line.text)).toEqual(Array.from({ length: total }, (_, n) => `p${n}`));
+      // About 570 KB of records, so one read; one a post took 5,000, each a trip to the thread pool.
+      expect(read.mock.calls.length).toBeLessThan(10);
+    } finally {
+      read.mockRestore();
+    }
   });
 
   test("a stash keeps a text in the scratch file and gives it back", async () => {

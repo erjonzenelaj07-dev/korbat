@@ -22,13 +22,18 @@ import { ScanAborted, type AdapterItem, type DraftPost, type ReadContext, type S
  * of at most maxPosts candidates (each one's date, key, source id, parent's source id and where its text lies in the
  * scratch file); the converted text and the media names wait in the scratch file on the work volume. After the read it
  * sorts the kept posts by date (ties by key), numbers them from 0, gives the image slots to the newest posts first,
- * inflates only the images of kept posts, and writes each line through the contract and the one serialiser.
+ * reads their texts back a megabyte at a time, inflates only the images of kept posts, and writes each line through the
+ * contract and the one serialiser.
  */
 
 const DAY_MS = 86_400_000;
 const EARLIEST_MS = Date.parse(`${IMPORT_RULES.earliestDate}T00:00:00Z`);
 /** How much of posts.jsonl is gathered before one write. */
 const FLUSH_BYTES = 1_048_576;
+/** At most how much of the kept posts' records finish() holds at once, and how far one read of the scratch file reaches. */
+const RECALL_BYTES = 1_048_576;
+/** The widest gap between two records that one read spans: reading through it costs less than another read. */
+const RECALL_GAP_BYTES = 65_536;
 
 export interface CoreLimits {
   maxPosts: number;
@@ -250,6 +255,44 @@ export class ScanCore {
     return buffer.toString("utf8", 0, bytesRead);
   }
 
+  /**
+   * The kept candidates' records, in the candidates' order, read a megabyte at a time: one read each left finish() waiting
+   * on the thread pool once a post, milliseconds each on a busy machine. The candidates go in runs of at most
+   * RECALL_BYTES of records; a run's records are read in the order of their offsets, records near one another sharing one
+   * read of at most RECALL_BYTES, so about a megabyte is held however the archive ordered its posts.
+   */
+  private async *recallInOrder(kept: readonly Candidate[]): AsyncGenerator<[Candidate, string]> {
+    const scratch = this.scratch;
+    if (!scratch) throw new Error("the scratch file is not open");
+    await this.flushScratch();
+    for (let from = 0; from < kept.length; ) {
+      let to = from + 1;
+      for (let bytes = kept[from]!.length; to < kept.length && bytes + kept[to]!.length <= RECALL_BYTES; to++) bytes += kept[to]!.length;
+      const run = kept.slice(from, to);
+      const byOffset = [...run].sort((a, b) => a.offset - b.offset);
+      const texts = new Map<Candidate, string>();
+      for (let first = 0; first < byOffset.length; ) {
+        const start = byOffset[first]!.offset;
+        let end = start + byOffset[first]!.length;
+        let last = first + 1;
+        for (; last < byOffset.length; last++) {
+          const next = byOffset[last]!;
+          if (next.offset - end > RECALL_GAP_BYTES || next.offset + next.length - start > RECALL_BYTES) break;
+          end = next.offset + next.length;
+        }
+        const buffer = Buffer.alloc(end - start);
+        const { bytesRead } = await scratch.read(buffer, 0, buffer.length, start);
+        for (const candidate of byOffset.slice(first, last)) {
+          const at = candidate.offset - start;
+          texts.set(candidate, buffer.toString("utf8", at, Math.min(at + candidate.length, bytesRead)));
+        }
+        first = last;
+      }
+      for (const candidate of run) yield [candidate, texts.get(candidate)!];
+      from = to;
+    }
+  }
+
   private skip(reason: ImportSkipReason, by = 1): void {
     this.counts.skipped[reason] = (this.counts.skipped[reason] ?? 0) + by;
   }
@@ -375,7 +418,7 @@ export class ScanCore {
     let pending = "";
     let previousKey: string | null = null;
     try {
-      for (const candidate of kept) {
+      for await (const [candidate, text] of this.recallInOrder(kept)) {
         this.checkAborted();
         // The same source id twice: the second copy is no new post.
         if (candidate.key === previousKey) {
@@ -383,7 +426,7 @@ export class ScanCore {
           continue;
         }
         previousKey = candidate.key;
-        const record = JSON.parse(await this.readScratch(candidate)) as ScratchRecord;
+        const record = JSON.parse(text) as ScratchRecord;
         const ref = this.counts.posts;
         const media: { file: string; alt: string | null }[] = [];
         const imageSkips: ImportImageSkip[] = [...record.skips];
